@@ -2,6 +2,9 @@
 node_modules/
 dist/
 .vite/
+*.tsbuildinfo
+# Compiled JS next to TS sources (we ship TS, vite/tsc handles output)
+frontend/src/**/*.js
 
 # Go
 backend/bin/

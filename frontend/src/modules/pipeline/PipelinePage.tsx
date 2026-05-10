@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import { Card, Pill, Empty, Skeleton } from "@/components/ui";
+import { Pill, Empty, Skeleton } from "@/components/ui";
 import { Plus } from "lucide-react";
 
 const STAGES = [
