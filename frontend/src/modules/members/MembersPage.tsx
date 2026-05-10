@@ -8,6 +8,7 @@ import {
   Copy, KeyRound, CheckCircle2, Clock, Send, Link as LinkIcon, Circle,
 } from "lucide-react";
 import { type Presence, presenceLabel, PRESENCE_COLORS } from "@/lib/presence";
+import { confirmAction } from "@/lib/confirm";
 
 type MemberStatus = "active" | "invited" | "disabled";
 
@@ -83,7 +84,7 @@ export function MembersPage() {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | MemberStatus>("all");
   const [roleFilter, setRoleFilter] = useState<string>("all");
-  const [presenceFilter, setPresenceFilter] = useState<"all" | Presence>("all");
+  const [presenceFilter] = useState<"all" | Presence>("all");
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Member | null>(null);
 
@@ -105,12 +106,6 @@ export function MembersPage() {
     const c = { all: items.length, active: 0, invited: 0, disabled: 0 };
     items.forEach((m) => { c[m.status]++; });
     return c;
-  }, [items]);
-
-  const presenceCounts = useMemo(() => {
-    const p = { all: items.length, online: 0, away: 0, offline: 0 };
-    items.forEach((m) => { p[m.presence]++; });
-    return p;
   }, [items]);
 
   const create = useMutation({
@@ -186,37 +181,6 @@ export function MembersPage() {
         </SmartButton>
       </header>
 
-      {/* Presence summary — live, refreshes every 30s */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex gap-1 p-1 bg-surface border border-border rounded-full w-fit" title="Filter by who's online">
-          {(["all", "online", "away", "offline"] as const).map((k) => {
-            const colorCls = k === "all" ? "" : `${PRESENCE_COLORS[k as Presence].dot}`;
-            return (
-              <button
-                key={k}
-                onClick={() => setPresenceFilter(k)}
-                className={`text-[12px] font-semibold px-3 py-1.5 rounded-full transition-colors inline-flex items-center gap-1.5 ${
-                  presenceFilter === k ? "bg-accent text-white" : "text-muted hover:text-text"
-                }`}
-              >
-                {k !== "all" && <span className={`w-1.5 h-1.5 rounded-full ${colorCls}`} />}
-                {k === "all" ? "Everyone" : k.charAt(0).toUpperCase() + k.slice(1)}
-                <span className="ml-0.5 opacity-70">{presenceCounts[k as keyof typeof presenceCounts]}</span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="text-[11px] text-muted">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-success opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-success"></span>
-            </span>
-            live · refreshes every 30s
-          </span>
-        </div>
-      </div>
-
       {/* Status pills */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex gap-1 p-1 bg-surface border border-border rounded-full w-fit">
@@ -254,6 +218,8 @@ export function MembersPage() {
         </div>
       </div>
 
+      <InvitationsPanel />
+
       {/* Body */}
       {isLoading ? (
         <div className="text-muted">Loading members…</div>
@@ -275,9 +241,22 @@ export function MembersPage() {
         <MemberTable
           rows={filtered}
           onEdit={setEditing}
-          onRemove={(id, name) => { if (confirm(`Remove ${name}? This soft-deletes their account.`)) remove.mutate(id); }}
+          onRemove={async (id, name) => {
+            const ok = await confirmAction({
+              title: `Remove ${name}?`,
+              body: "This soft-deletes their account. They won't be able to sign in. You can re-invite them later, but their session ends now.",
+              confirmLabel: "Remove member",
+              danger: true,
+            });
+            if (ok) remove.mutate(id);
+          }}
           onReset={async (m) => {
-            if (!confirm(`Issue a new temporary password for ${m.email}? This invalidates their current credentials.`)) return;
+            const ok = await confirmAction({
+              title: "Issue a new temporary password?",
+              body: `This invalidates ${m.email}'s current credentials and replaces them with a fresh one-time password. Make sure you can deliver it to them securely.`,
+              confirmLabel: "Reset password",
+            });
+            if (!ok) return;
             const r = await reset.mutateAsync(m.id);
             qc.invalidateQueries({ queryKey: ["members"] });
             // Show one-time password modal-style via toast — for a real reset we'd open a richer dialog.
@@ -741,3 +720,137 @@ function EditMemberDialog({
     </div>
   );
 }
+
+/* ------------------ Invitations panel ------------------ */
+
+type Invitation = {
+  id: string;
+  token: string;
+  email: string;
+  name: string;
+  roles: string[] | null;
+  message: string;
+  created_at: string;
+  expires_at: string;
+  accepted_at: string | null;
+  revoked_at:  string | null;
+  status: "pending" | "accepted" | "expired" | "revoked";
+};
+
+function InvitationsPanel() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<{ items: Invitation[] }>({
+    queryKey: ["members", "invitations"],
+    queryFn: () => api("/api/v1/members/invitations"),
+    refetchInterval: 60_000,
+  });
+  const items = data?.items ?? [];
+
+  const revoke = useMutation({
+    mutationFn: (id: string) => api(`/api/v1/member-invitations/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["members", "invitations"] });
+      toast.success("Invitation revoked");
+    },
+  });
+
+  if (isLoading && items.length === 0) return null;
+  if (items.length === 0) return null;
+
+  // Sort: pending first, then accepted, then expired/revoked. Newest within each.
+  const order: Record<Invitation["status"], number> = { pending: 0, accepted: 1, expired: 2, revoked: 3 };
+  const sorted = [...items].sort((a, b) => {
+    const d = order[a.status] - order[b.status];
+    return d !== 0 ? d : (b.created_at.localeCompare(a.created_at));
+  });
+
+  const pending = items.filter((i) => i.status === "pending").length;
+  const accepted = items.filter((i) => i.status === "accepted").length;
+  const expired = items.filter((i) => i.status === "expired").length;
+
+  return (
+    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-3 border-b border-border">
+        <div className="flex items-center gap-2">
+          <Send size={14} className="text-accent" />
+          <div className="font-semibold text-text">Invitations</div>
+          <div className="text-xs text-muted">
+            {pending} pending · {accepted} accepted{expired > 0 ? ` · ${expired} expired` : ""}
+          </div>
+        </div>
+      </div>
+      <ul className="divide-y divide-border">
+        {sorted.map((inv) => (
+          <InvitationRow key={inv.id} inv={inv} onRevoke={() => revoke.mutate(inv.id)} />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function InvitationRow({ inv, onRevoke }: { inv: Invitation; onRevoke: () => void }) {
+  const inviteUrl = `${window.location.origin}/member-invite/${inv.token}`;
+  const fmt = (iso: string | null) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  };
+  const pill = STATUS_PILL[inv.status];
+
+  return (
+    <li className="px-5 py-3 flex items-center gap-4">
+      <div className="w-9 h-9 rounded-full bg-accent-soft text-accent grid place-items-center font-bold text-sm shrink-0">
+        {(inv.name || inv.email).charAt(0).toUpperCase()}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold text-text truncate">{inv.name || inv.email}</div>
+        <div className="text-xs text-muted truncate">{inv.email}</div>
+      </div>
+      <div className="hidden md:flex flex-col items-end text-[11px] text-muted leading-tight">
+        <span>sent {fmt(inv.created_at)}</span>
+        {inv.status === "accepted"
+          ? <span className="text-success">accepted {fmt(inv.accepted_at)}</span>
+          : inv.status === "pending"
+            ? <span>expires {fmt(inv.expires_at)}</span>
+            : null}
+      </div>
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${pill.cls}`}>
+        {pill.icon}{pill.label}
+      </span>
+      <div className="flex items-center gap-1">
+        {inv.status === "pending" && (
+          <>
+            <button
+              type="button"
+              title="Copy invite link"
+              className="p-1.5 rounded hover:bg-bg text-muted"
+              onClick={() => {
+                navigator.clipboard.writeText(inviteUrl).then(
+                  () => toast.success("Invite link copied"),
+                  () => toast.error("Could not copy link"),
+                );
+              }}
+            >
+              <Copy size={14} />
+            </button>
+            <button
+              type="button"
+              title="Revoke invite"
+              className="p-1.5 rounded hover:bg-bg text-muted hover:text-danger"
+              onClick={onRevoke}
+            >
+              <X size={14} />
+            </button>
+          </>
+        )}
+      </div>
+    </li>
+  );
+}
+
+const STATUS_PILL: Record<Invitation["status"], { label: string; cls: string; icon: React.ReactNode }> = {
+  pending:  { label: "Pending",  cls: "bg-accent-soft text-accent",     icon: <Clock        size={11} /> },
+  accepted: { label: "Accepted", cls: "bg-success/15 text-success",     icon: <CheckCircle2 size={11} /> },
+  expired:  { label: "Expired",  cls: "bg-warn/15 text-warn",           icon: <Clock        size={11} /> },
+  revoked:  { label: "Revoked",  cls: "bg-muted/15 text-muted",         icon: <X            size={11} /> },
+};

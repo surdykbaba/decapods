@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
+import { confirmAction } from "@/lib/confirm";
 import {
   Users, Search, Mail, Phone, Briefcase, FolderKanban, Pencil, Trash2, X,
   LayoutGrid, Rows3, UserCheck, UserPlus,
@@ -131,14 +132,6 @@ export function StakeholdersPage() {
         </div>
       </header>
 
-      {/* KPI strip */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Kpi label="Total"        value={counts.all} />
-        <Kpi label="Internal"     value={counts.internal} tone="info" />
-        <Kpi label="External"     value={counts.external} tone="warn" />
-        <Kpi label="Active leads" value={counts.opportunity + counts.project} sub={`${counts.opportunity} pipeline · ${counts.project} project`} />
-      </div>
-
       {/* Filter pills */}
       <div className="flex flex-wrap gap-2">
         <Pills
@@ -210,17 +203,6 @@ export function StakeholdersPage() {
 }
 
 /* ---------- Sub-components ---------- */
-
-function Kpi({ label, value, sub, tone }: { label: string; value: number; sub?: string; tone?: "info" | "warn" | "neutral" }) {
-  const cls = { info: "text-accent", warn: "text-warn", neutral: "text-text" }[tone ?? "neutral"];
-  return (
-    <div className="bg-surface border border-border rounded-2xl p-4">
-      <div className="text-[11px] uppercase tracking-wider font-bold text-muted">{label}</div>
-      <div className={`text-2xl font-extrabold mt-1 ${cls}`}>{value}</div>
-      {sub && <div className="text-[11px] text-muted mt-0.5">{sub}</div>}
-    </div>
-  );
-}
 
 function Pills<T extends string>({
   value, onChange, options,
@@ -312,7 +294,15 @@ function StakeholderTable({
                   <td className="px-3 py-3 text-[11px] text-muted whitespace-nowrap">{fmtRel(s.created_at)}</td>
                   <td className="px-3 py-3 text-right whitespace-nowrap">
                     <button onClick={() => onEdit(s)} className="text-muted hover:text-accent p-1" title="Edit"><Pencil size={13} /></button>
-                    <button onClick={() => { if (confirm(`Remove ${s.name} from ${s.entity_name}?`)) onRemove(s.id); }} className="text-muted hover:text-danger p-1 ml-1" title="Remove"><Trash2 size={13} /></button>
+                    <button onClick={async () => {
+                      const ok = await confirmAction({
+                        title: `Remove ${s.name}?`,
+                        body: `They'll be detached from ${s.entity_name}. The original entity is unaffected.`,
+                        confirmLabel: "Remove stakeholder",
+                        danger: true,
+                      });
+                      if (ok) onRemove(s.id);
+                    }} className="text-muted hover:text-danger p-1 ml-1" title="Remove"><Trash2 size={13} /></button>
                   </td>
                 </tr>
               );
@@ -375,7 +365,10 @@ function EntityCard({
             </div>
             <div className="flex items-center gap-1 shrink-0">
               <button onClick={() => onEdit(s)} className="text-muted hover:text-accent p-1" title="Edit"><Pencil size={11} /></button>
-              <button onClick={() => { if (confirm(`Remove ${s.name}?`)) onRemove(s.id); }} className="text-muted hover:text-danger p-1" title="Remove"><Trash2 size={11} /></button>
+              <button onClick={async () => {
+                const ok = await confirmAction({ title: `Remove ${s.name}?`, confirmLabel: "Remove", danger: true });
+                if (ok) onRemove(s.id);
+              }} className="text-muted hover:text-danger p-1" title="Remove"><Trash2 size={11} /></button>
             </div>
           </li>
         ))}
