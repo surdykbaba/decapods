@@ -552,12 +552,53 @@ func (h *Me) PutProfile(c *gin.Context) {
 
 func intStr(n int) string { return strconv.Itoa(n) }
 
-/* ---------- Presence (heartbeat) ----------
+/* ---------- Presence (heartbeat + manual status) ----------
  *
- * Front-end pings this every ~60s while the document is visible. Server
- * just bumps `last_seen_at`. Members API derives the online/away/offline
- * state from the timestamp — no extra storage needed.
+ * Frontend pings /me/heartbeat every ~60s while visible. The server bumps
+ * `last_seen_at`. Presence is then derived per-user:
+ *
+ *   manual_status = 'invisible'                         → always "offline"
+ *   manual_status in ('online','away','busy')           → forced badge
+ *   manual_status = NULL / 'auto'                       → auto-derived from
+ *                                                          last_seen_at
+ *                                                          (online <90s,
+ *                                                           away <5min, else
+ *                                                           offline)
+ *
+ * Manual status can carry an expiry (manual_status_until) so users can pick
+ * "busy for the next hour" without remembering to switch it back.
  */
+
+// derivePresence applies the rules above. Returned values match what the
+// frontend already understands ("online" | "away" | "busy" | "offline").
+func derivePresence(manual *string, manualUntil *time.Time, lastSeen *time.Time) string {
+	// Expired manual status falls back to auto.
+	m := ""
+	if manual != nil {
+		m = *manual
+		if manualUntil != nil && time.Now().After(*manualUntil) {
+			m = ""
+		}
+	}
+	switch m {
+	case "invisible":
+		return "offline"
+	case "online", "away", "busy":
+		return m
+	}
+	if lastSeen == nil {
+		return "offline"
+	}
+	delta := time.Since(*lastSeen)
+	switch {
+	case delta < 90*time.Second:
+		return "online"
+	case delta < 5*time.Minute:
+		return "away"
+	}
+	return "offline"
+}
+
 func (h *Me) Heartbeat(c *gin.Context) {
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	if _, err := h.db.Exec(c, `UPDATE users SET last_seen_at = now() WHERE id = $1`, uid); err != nil {
@@ -567,12 +608,90 @@ func (h *Me) Heartbeat(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true, "last_seen_at": time.Now().UTC()})
 }
 
+// SetMyStatus lets a user pick a manual presence override. Body:
+//
+//	{ status: "online" | "away" | "busy" | "invisible" | "auto", until?: ISO }
+//
+// "auto" clears the override and reverts to heartbeat-based derivation.
+// `until` is optional; without it the override holds until manually changed.
+func (h *Me) SetMyStatus(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	var req struct {
+		Status string     `json:"status" binding:"required"`
+		Until  *time.Time `json:"until"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	valid := map[string]bool{"online": true, "away": true, "busy": true, "invisible": true, "auto": true}
+	if !valid[req.Status] {
+		c.JSON(400, gin.H{"error": "invalid status"})
+		return
+	}
+	if req.Status == "auto" {
+		// Clear override.
+		if _, err := h.db.Exec(c,
+			`UPDATE users SET manual_status = NULL, manual_status_until = NULL, updated_at = now()
+			 WHERE id = $1`, uid); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"ok": true, "status": "auto"})
+		return
+	}
+	if _, err := h.db.Exec(c, `
+		UPDATE users SET manual_status = $1, manual_status_until = $2, updated_at = now()
+		WHERE id = $3`, req.Status, req.Until, uid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	// Also bump last_seen_at on manual change — even an "appear offline" pick
+	// counts as the user being around, server side. Presence rule still
+	// reports them offline; this just keeps the audit honest.
+	_, _ = h.db.Exec(c, `UPDATE users SET last_seen_at = now() WHERE id = $1`, uid)
+	c.JSON(200, gin.H{"ok": true, "status": req.Status, "until": req.Until})
+}
+
+// MyStatus reports the calling user's current presence info — used by the
+// top-bar status badge to pick the right colour and dropdown selection.
+func (h *Me) MyStatus(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	var (
+		manual            *string
+		manualUntil       *time.Time
+		lastSeen          *time.Time
+	)
+	if err := h.db.QueryRow(c, `
+		SELECT manual_status, manual_status_until, last_seen_at
+		FROM users WHERE id = $1`, uid).Scan(&manual, &manualUntil, &lastSeen); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	// Surface the effective manual value (clearing expired ones).
+	effectiveManual := ""
+	if manual != nil {
+		if manualUntil != nil && time.Now().After(*manualUntil) {
+			effectiveManual = ""
+		} else {
+			effectiveManual = *manual
+		}
+	}
+	c.JSON(200, gin.H{
+		"presence":      derivePresence(manual, manualUntil, lastSeen),
+		"manual_status": effectiveManual, // "" when auto / expired
+		"manual_until":  manualUntil,
+		"last_seen_at":  lastSeen,
+	})
+}
+
 // Presence returns just every member's current online state — light enough to
 // poll on a 30s timer in the UI without invalidating the heavier members list.
 func (h *Me) Presence(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	rows, err := h.db.Query(c, `
-		SELECT id, last_seen_at FROM users
+		SELECT id, last_seen_at, manual_status, manual_status_until
+		FROM users
 		WHERE tenant_id = $1 AND deleted_at IS NULL
 		ORDER BY last_seen_at DESC NULLS LAST`, tid)
 	if err != nil {
@@ -583,20 +702,16 @@ func (h *Me) Presence(c *gin.Context) {
 	out := []gin.H{}
 	for rows.Next() {
 		var (
-			id      uuid.UUID
-			lastSeen *time.Time
+			id           uuid.UUID
+			lastSeen     *time.Time
+			manual       *string
+			manualUntil  *time.Time
 		)
-		if err := rows.Scan(&id, &lastSeen); err == nil {
-			state := "offline"
+		if err := rows.Scan(&id, &lastSeen, &manual, &manualUntil); err == nil {
+			state := derivePresence(manual, manualUntil, lastSeen)
 			var sinceSec int64 = -1
 			if lastSeen != nil {
-				delta := time.Since(*lastSeen)
-				sinceSec = int64(delta.Seconds())
-				switch {
-				case delta < 90*time.Second:    state = "online"
-				case delta < 5*time.Minute:     state = "away"
-				default:                        state = "offline"
-				}
+				sinceSec = int64(time.Since(*lastSeen).Seconds())
 			}
 			out = append(out, gin.H{
 				"user_id":         id,
