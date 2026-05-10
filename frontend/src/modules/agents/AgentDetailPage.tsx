@@ -87,7 +87,7 @@ const DOC_KIND_META: Record<string, { label: string; mandatory?: boolean; descri
 
 type Tab = "overview" | "compliance" | "engagements" | "introductions" | "commissions" | "monitoring" | "performance" | "portal" | "audit";
 
-const TABS: { key: Tab; label: string; icon: React.ComponentType<{ size?: number }> }[] = [
+const TABS: { key: Tab; label: string; icon: React.ComponentType<any> }[] = [
   { key: "overview",      label: "Overview",      icon: Activity },
   { key: "compliance",    label: "Compliance",    icon: FileCheck2 },
   { key: "engagements",   label: "Engagements",   icon: ListTodo },

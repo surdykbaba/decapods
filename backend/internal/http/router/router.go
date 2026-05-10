@@ -177,6 +177,8 @@ func New(d Deps) http.Handler {
 	authed.POST("/finance/payments", mw.RequirePermission("payment:write"), fin.RecordPayment)
 	authed.GET("/finance/receivables", mw.RequirePermission("invoice:read"), fin.Receivables)
 	authed.GET("/finance/summary",     mw.RequirePermission("invoice:read"), fin.Summary)
+	authed.GET("/finance/billable",    mw.RequirePermission("invoice:read"), fin.Billable)
+	authed.PATCH("/finance/invoices/:id/status", mw.RequirePermission("invoice:write"), fin.UpdateInvoiceStatus)
 
 	gov := handlers.NewGovernance(d.DB)
 	authed.GET("/governance/policies", mw.RequirePermission("policy:read"), gov.ListPolicies)
