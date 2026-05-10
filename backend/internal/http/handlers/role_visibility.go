@@ -36,6 +36,7 @@ var NavSections = []struct {
 	{"finance",       "Finance"},
 	{"files",         "Files & media"},
 	{"leave",         "Leave"},
+	{"campfire",      "Campfire"},
 	{"settings",      "Settings"},
 }
 
@@ -55,6 +56,7 @@ var DefaultRoleVisibility = map[string][]string{
 	"finance":      {"super_admin", "ceo", "coo", "finance", "auditor"},
 	"files":        {"*"}, // everyone — same default as my_work
 	"leave":        {"*"}, // everyone can request leave; visibility of others' is gated by handlers
+	"campfire":     {"*"}, // everyone — Campfire is the workspace social layer
 	// Settings menu is visible to everyone by default. The page *contents*
 	// (workflow edits, team rates, governance, integrations) are still gated
 	// by `governance:write` at the API level — non-admins see a read-only view.

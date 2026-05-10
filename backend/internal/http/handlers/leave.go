@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -16,6 +17,27 @@ import (
 type Leave struct{ db *pgxpool.Pool }
 
 func NewLeave(db *pgxpool.Pool) *Leave { return &Leave{db: db} }
+
+// Roles that can act at each approval stage. Manager-stage covers anyone who
+// runs delivery; HR-stage gates the workspace's compliance/people lens.
+// super_admin can act at either stage.
+func canApproveAsManager(roles []string) bool {
+	for _, r := range roles {
+		switch r {
+		case "super_admin", "ceo", "coo", "delivery_manager", "project_manager":
+			return true
+		}
+	}
+	return false
+}
+func canApproveAsHR(roles []string) bool {
+	for _, r := range roles {
+		if r == "super_admin" || r == "hr" {
+			return true
+		}
+	}
+	return false
+}
 
 // ListTypes — GET /api/v1/leave/types
 // Returns the tenant's leave-type catalog.
@@ -103,8 +125,9 @@ func (h *Leave) Balances(c *gin.Context) {
 }
 
 // ListRequests — GET /api/v1/leave/requests?scope=mine|team&status=pending|...&from=&to=
-// scope=mine returns the caller's own requests; scope=team returns every request
-// in the tenant (used by managers/HR). Defaults to mine.
+// scope=mine returns the caller's own requests; scope=team returns every
+// request in the tenant (used by managers/HR). Includes approval_stage and
+// the audit log of decisions made so far.
 func (h *Leave) ListRequests(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
@@ -114,15 +137,15 @@ func (h *Leave) ListRequests(c *gin.Context) {
 	args := []any{tid}
 	q := `SELECT r.id, r.user_id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
 	             r.leave_type_id, lt.code, lt.name, lt.paid,
-	             r.start_date, r.end_date, r.days::float8, r.reason, r.handover_notes,
+	             r.start_date, r.end_date, r.days::float8, r.duration,
+	             r.reason, r.handover_notes,
 	             r.backup_user_id, COALESCE(bu.full_name, ''),
-	             r.status, r.decision_by, COALESCE(du.full_name, ''),
-	             r.decision_at, r.decision_comment, r.submitted_at, r.created_at
+	             r.status, r.approval_stage, r.approvals,
+	             r.submitted_at, r.created_at
 	        FROM leave_requests r
 	        JOIN users u   ON u.id = r.user_id
 	        JOIN leave_types lt ON lt.id = r.leave_type_id
 	        LEFT JOIN users bu ON bu.id = r.backup_user_id
-	        LEFT JOIN users du ON du.id = r.decision_by
 	       WHERE r.tenant_id = $1`
 	if scope == "mine" {
 		args = append(args, uid)
@@ -151,28 +174,30 @@ func (h *Leave) ListRequests(c *gin.Context) {
 	out := []gin.H{}
 	for rows.Next() {
 		var (
-			id, userID, typeID                                                    uuid.UUID
-			backupID, decisionBy                                                  *uuid.UUID
-			userName, userEmail, code, typeName, reason, handover, backupName    string
-			status, decisionName, decisionComment                                 string
-			paid                                                                  bool
-			start, end                                                            time.Time
-			decisionAt                                                            *time.Time
-			submittedAt, createdAt                                                any
-			days                                                                  float64
+			id, userID, typeID                                                  uuid.UUID
+			backupID                                                            *uuid.UUID
+			userName, userEmail, code, typeName, reason, handover, backupName   string
+			status, stage, duration                                             string
+			paid                                                                bool
+			start, end                                                          time.Time
+			submittedAt, createdAt                                              any
+			days                                                                float64
+			approvalsRaw                                                        []byte
 		)
 		if err := rows.Scan(&id, &userID, &userName, &userEmail, &typeID, &code, &typeName, &paid,
-			&start, &end, &days, &reason, &handover, &backupID, &backupName,
-			&status, &decisionBy, &decisionName, &decisionAt, &decisionComment, &submittedAt, &createdAt); err == nil {
+			&start, &end, &days, &duration, &reason, &handover, &backupID, &backupName,
+			&status, &stage, &approvalsRaw, &submittedAt, &createdAt); err == nil {
+			var approvals []map[string]any
+			_ = json.Unmarshal(approvalsRaw, &approvals)
 			out = append(out, gin.H{
 				"id": id, "user_id": userID, "user_name": userName, "user_email": userEmail,
 				"leave_type_id": typeID, "code": code, "type_name": typeName, "paid": paid,
 				"start_date": start.Format("2006-01-02"),
 				"end_date":   end.Format("2006-01-02"),
-				"days":       days, "reason": reason, "handover_notes": handover,
+				"days": days, "duration": duration,
+				"reason": reason, "handover_notes": handover,
 				"backup_user_id": backupID, "backup_user_name": backupName,
-				"status": status, "decision_by": decisionBy, "decision_by_name": decisionName,
-				"decision_at": decisionAt, "decision_comment": decisionComment,
+				"status": status, "approval_stage": stage, "approvals": approvals,
 				"submitted_at": submittedAt, "created_at": createdAt,
 			})
 		}
@@ -181,16 +206,21 @@ func (h *Leave) ListRequests(c *gin.Context) {
 }
 
 // CreateRequest — POST /api/v1/leave/requests
+// Accepts optional duration (full_day | half_day_am | half_day_pm) which
+// downscales the working-days count for half-day requests. New requests enter
+// approval_stage="manager_pending", status="pending".
 func (h *Leave) CreateRequest(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	var req struct {
-		LeaveTypeID  string  `json:"leave_type_id" binding:"required,uuid"`
-		StartDate    string  `json:"start_date"    binding:"required"`
-		EndDate      string  `json:"end_date"      binding:"required"`
-		Reason       string  `json:"reason"`
+		LeaveTypeID   string `json:"leave_type_id" binding:"required,uuid"`
+		StartDate     string `json:"start_date"    binding:"required"`
+		EndDate       string `json:"end_date"      binding:"required"`
+		Duration      string `json:"duration"`
+		Reason        string `json:"reason"`
 		HandoverNotes string `json:"handover_notes"`
-		BackupUserID string  `json:"backup_user_id"`
+		BackupUserID  string `json:"backup_user_id"`
+		SupportingDocs []map[string]any `json:"supporting_docs"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -210,7 +240,6 @@ func (h *Leave) CreateRequest(c *gin.Context) {
 	typeID, err := uuid.Parse(req.LeaveTypeID)
 	if err != nil { c.JSON(http.StatusBadRequest, gin.H{"error": "bad leave_type_id"}); return }
 
-	// Validate the type exists for this tenant.
 	var typeName string
 	if err := h.db.QueryRow(c, `SELECT name FROM leave_types WHERE id=$1 AND tenant_id=$2 AND active=true`, typeID, tid).Scan(&typeName); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown leave type"}); return
@@ -220,28 +249,63 @@ func (h *Leave) CreateRequest(c *gin.Context) {
 	if strings.TrimSpace(req.BackupUserID) != "" {
 		b, err := uuid.Parse(req.BackupUserID)
 		if err != nil { c.JSON(http.StatusBadRequest, gin.H{"error": "bad backup_user_id"}); return }
+		// Backup must be a member of this tenant — otherwise we'd be sending the
+		// handover docs to a stranger.
+		var ok bool
+		if err := h.db.QueryRow(c, `SELECT EXISTS (SELECT 1 FROM users WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL)`, b, tid).Scan(&ok); err != nil || !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "backup user not in this workspace"}); return
+		}
 		backupID = &b
 	}
 
+	duration := strings.TrimSpace(req.Duration)
+	if duration == "" { duration = "full_day" }
+	switch duration {
+	case "full_day", "half_day_am", "half_day_pm":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "duration must be full_day, half_day_am or half_day_pm"}); return
+	}
 	days := workingDays(start, end)
+	if duration != "full_day" {
+		// Half-day requests must start and end on the same day.
+		if !start.Equal(end) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "half-day leave must span a single date"}); return
+		}
+		days = 0.5
+	}
+
+	docsJSON, _ := json.Marshal(req.SupportingDocs)
+	if len(docsJSON) == 0 { docsJSON = []byte("[]") }
+
 	var id uuid.UUID
 	if err := h.db.QueryRow(c, `
-		INSERT INTO leave_requests (tenant_id, user_id, leave_type_id, start_date, end_date, days,
-		                            reason, handover_notes, backup_user_id, status)
-		VALUES ($1,$2,$3,$4::date,$5::date,$6,$7,$8,$9,'pending')
+		INSERT INTO leave_requests (tenant_id, user_id, leave_type_id, start_date, end_date, days, duration,
+		                            reason, handover_notes, backup_user_id, supporting_docs,
+		                            status, approval_stage)
+		VALUES ($1,$2,$3,$4::date,$5::date,$6,$7,$8,$9,$10,$11::jsonb,'pending','manager_pending')
 		RETURNING id`,
-		tid, uid, typeID, req.StartDate, req.EndDate, days,
-		strings.TrimSpace(req.Reason), strings.TrimSpace(req.HandoverNotes), backupID).Scan(&id); err != nil {
+		tid, uid, typeID, req.StartDate, req.EndDate, days, duration,
+		strings.TrimSpace(req.Reason), strings.TrimSpace(req.HandoverNotes), backupID,
+		string(docsJSON)).Scan(&id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"id": id, "days": days})
+	c.JSON(http.StatusCreated, gin.H{"id": id, "days": days, "approval_stage": "manager_pending"})
 }
 
-// Decide — POST /api/v1/leave/requests/:id/decision  body: {decision:"approved"|"rejected", comment?}
+// Decide — POST /api/v1/leave/requests/:id/decision  body: {decision, comment?}
+// Two-stage workflow:
+//   • approval_stage=manager_pending → only line-manager-class roles can act.
+//     Approve → stage advances to hr_pending; reject → status=rejected.
+//   • approval_stage=hr_pending      → only HR-class roles can act.
+//     Approve → status=approved + balance debited; reject → status=rejected.
+// super_admin can act at either stage. Every decision is appended to the
+// approvals[] audit log.
 func (h *Leave) Decide(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	actor := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	actorRolesRaw, _ := c.Get(mw.CtxRoles)
+	actorRoles, _ := actorRolesRaw.([]string)
 	rid, err := uuid.Parse(c.Param("id"))
 	if err != nil { c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"}); return }
 	var req struct {
@@ -260,11 +324,14 @@ func (h *Leave) Decide(c *gin.Context) {
 		uid, typeID  uuid.UUID
 		days         float64
 		curStatus    string
+		stage        string
 		startDate    time.Time
+		approvalsRaw []byte
 	)
 	if err := tx.QueryRow(c, `
-		SELECT user_id, leave_type_id, days::float8, status, start_date
-		  FROM leave_requests WHERE id=$1 AND tenant_id=$2`, rid, tid).Scan(&uid, &typeID, &days, &curStatus, &startDate); err != nil {
+		SELECT user_id, leave_type_id, days::float8, status, approval_stage, start_date, approvals
+		  FROM leave_requests WHERE id=$1 AND tenant_id=$2`, rid, tid).
+		Scan(&uid, &typeID, &days, &curStatus, &stage, &startDate, &approvalsRaw); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "request not found"}); return
 		}
@@ -274,16 +341,62 @@ func (h *Leave) Decide(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "Only pending requests can be decided.", "code": "not_pending"}); return
 	}
 
+	// Stage-role authority check.
+	var stageLabel string
+	switch stage {
+	case "manager_pending":
+		stageLabel = "manager"
+		if !canApproveAsManager(actorRoles) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "This request is awaiting the line manager. Your role can't act on it yet.",
+				"code":  "wrong_stage",
+			}); return
+		}
+	case "hr_pending":
+		stageLabel = "hr"
+		if !canApproveAsHR(actorRoles) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "Manager has approved; HR sign-off is required next.",
+				"code":  "wrong_stage",
+			}); return
+		}
+	default:
+		c.JSON(http.StatusConflict, gin.H{"error": "request not in an approvable stage", "code": "wrong_stage"}); return
+	}
+
+	// Append to the approvals audit log.
+	var approvals []map[string]any
+	_ = json.Unmarshal(approvalsRaw, &approvals)
+	approvals = append(approvals, map[string]any{
+		"stage":    stageLabel,
+		"decision": req.Decision,
+		"by":       actor,
+		"at":       time.Now().UTC().Format(time.RFC3339),
+		"comment":  strings.TrimSpace(req.Comment),
+	})
+	updatedApprovals, _ := json.Marshal(approvals)
+
+	// Compute the next state.
+	var nextStatus, nextStage string
+	switch {
+	case req.Decision == "rejected":
+		nextStatus, nextStage = "rejected", "completed"
+	case stage == "manager_pending":
+		nextStatus, nextStage = "pending", "hr_pending"
+	case stage == "hr_pending":
+		nextStatus, nextStage = "approved", "completed"
+	}
+
 	if _, err := tx.Exec(c, `
 		UPDATE leave_requests
-		   SET status=$3, decision_by=$4, decision_at=now(), decision_comment=$5
+		   SET status=$3, approval_stage=$4, approvals=$5::jsonb
 		 WHERE id=$1 AND tenant_id=$2`,
-		rid, tid, req.Decision, actor, strings.TrimSpace(req.Comment)); err != nil {
+		rid, tid, nextStatus, nextStage, string(updatedApprovals)); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()}); return
 	}
 
-	// On approval, debit the balance for the start year of the request.
-	if req.Decision == "approved" {
+	// Debit balance only on the final HR approval.
+	if nextStatus == "approved" {
 		if _, err := tx.Exec(c, `
 			INSERT INTO leave_balances (tenant_id, user_id, leave_type_id, year, used_days)
 			VALUES ($1, $2, $3, $4, $5)
@@ -298,7 +411,20 @@ func (h *Leave) Decide(c *gin.Context) {
 	if err := tx.Commit(c); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()}); return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "status": nextStatus, "approval_stage": nextStage})
+}
+
+// Eligibility — GET /api/v1/leave/decision-authority
+// Tiny helper the SPA uses to render the right Approve buttons for the current
+// user. Returns which stages they can act on, so the UI doesn't show a button
+// that the server will then reject.
+func (h *Leave) DecisionAuthority(c *gin.Context) {
+	rolesRaw, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesRaw.([]string)
+	c.JSON(http.StatusOK, gin.H{
+		"can_approve_manager": canApproveAsManager(roles),
+		"can_approve_hr":      canApproveAsHR(roles),
+	})
 }
 
 // Cancel — POST /api/v1/leave/requests/:id/cancel
@@ -411,7 +537,7 @@ func (h *Leave) Dashboard(c *gin.Context) {
 	pending := []gin.H{}
 	if rows, err := h.db.Query(c, `
 		SELECT r.id, COALESCE(u.full_name, ''), u.email::text, lt.name,
-		       r.start_date, r.end_date, r.days::float8, r.reason, r.submitted_at
+		       r.start_date, r.end_date, r.days::float8, r.reason, r.submitted_at, r.approval_stage
 		  FROM leave_requests r
 		  JOIN users u       ON u.id = r.user_id
 		  JOIN leave_types lt ON lt.id = r.leave_type_id
@@ -421,16 +547,17 @@ func (h *Leave) Dashboard(c *gin.Context) {
 		for rows.Next() {
 			var (
 				id uuid.UUID
-				name, email, typeName, reason string
+				name, email, typeName, reason, stage string
 				start, end time.Time
 				days float64
 				submitted any
 			)
-			if err := rows.Scan(&id, &name, &email, &typeName, &start, &end, &days, &reason, &submitted); err == nil {
+			if err := rows.Scan(&id, &name, &email, &typeName, &start, &end, &days, &reason, &submitted, &stage); err == nil {
 				pending = append(pending, gin.H{
 					"id": id, "user_name": name, "user_email": email, "type_name": typeName,
 					"start_date": start.Format("2006-01-02"), "end_date": end.Format("2006-01-02"),
 					"days": days, "reason": reason, "submitted_at": submitted,
+					"approval_stage": stage,
 				})
 			}
 		}

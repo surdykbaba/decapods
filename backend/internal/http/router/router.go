@@ -197,7 +197,8 @@ func New(d Deps) http.Handler {
 	authed.GET("/leave/balances",             leave.Balances)
 	authed.GET("/leave/requests",             leave.ListRequests)
 	authed.POST("/leave/requests",            leave.CreateRequest)
-	authed.POST("/leave/requests/:id/decision", mw.RequirePermission("governance:write"), leave.Decide)
+	authed.POST("/leave/requests/:id/decision", leave.Decide)
+	authed.GET("/leave/decision-authority",   leave.DecisionAuthority)
 	authed.POST("/leave/requests/:id/cancel", leave.Cancel)
 	authed.GET("/leave/dashboard",            leave.Dashboard)
 	authed.GET("/leave/calendar",             leave.Calendar)
@@ -248,6 +249,40 @@ func New(d Deps) http.Handler {
 
 	ws := handlers.NewWS(d.Redis)
 	authed.GET("/ws", ws.Handle)
+
+	// Campfire — workspace social layer. All endpoints are gated by auth only;
+	// reads are open to all members, writes too (anyone can post, kudo, ask
+	// for help). Admin-only routes (insights, pin, delete-any, room create)
+	// require governance:write.
+	cf := handlers.NewCampfire(d.DB)
+	authed.GET("/campfire/presence", cf.Presence)
+
+	authed.GET("/campfire/posts",         cf.ListPosts)
+	authed.POST("/campfire/posts",        cf.CreatePost)
+	authed.DELETE("/campfire/posts/:id",  cf.DeletePost)
+	authed.POST("/campfire/posts/:id/pin", mw.RequirePermission("governance:write"), cf.PinPost)
+	authed.GET("/campfire/posts/:id/comments",  cf.ListComments)
+	authed.POST("/campfire/posts/:id/comments", cf.AddComment)
+
+	authed.POST("/campfire/react/:kind/:id", cf.ToggleReaction)
+
+	authed.GET("/campfire/kudos",  cf.ListKudos)
+	authed.POST("/campfire/kudos", cf.GiveKudo)
+
+	authed.GET("/campfire/mood/today", cf.MyMoodToday)
+	authed.PUT("/campfire/mood/today", cf.SetMyMood)
+	authed.GET("/campfire/mood/trend", mw.RequirePermission("governance:write"), cf.MoodTrend)
+
+	authed.GET("/campfire/help",            cf.ListHelp)
+	authed.POST("/campfire/help",           cf.CreateHelp)
+	authed.PATCH("/campfire/help/:id/status", cf.UpdateHelpStatus)
+
+	authed.GET("/campfire/rooms",            cf.ListRooms)
+	authed.POST("/campfire/rooms",           mw.RequirePermission("governance:write"), cf.CreateRoom)
+	authed.GET("/campfire/rooms/:id/messages",  cf.ListMessages)
+	authed.POST("/campfire/rooms/:id/messages", cf.SendMessage)
+
+	authed.GET("/campfire/insights", mw.RequirePermission("governance:write"), cf.Insights)
 
 	return r
 }

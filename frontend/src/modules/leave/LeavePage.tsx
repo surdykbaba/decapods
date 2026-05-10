@@ -5,8 +5,8 @@ import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
 import { useAuth } from "@/lib/auth";
 import {
-  Plane, Plus, CheckCircle2, X, Calendar as CalendarIcon, Briefcase, AlertTriangle,
-  ListChecks, Users as UsersIcon, BarChart3, Clock,
+  Plane, Plus, CheckCircle2, X, Calendar as CalendarIcon, AlertTriangle,
+  ListChecks, Users as UsersIcon, BarChart3, Clock, UploadCloud, FileText,
 } from "lucide-react";
 
 /* ---------- Types ---------- */
@@ -49,6 +49,9 @@ type LeaveRequest = {
   backup_user_id: string | null;
   backup_user_name: string;
   status: "draft" | "pending" | "approved" | "rejected" | "cancelled";
+  approval_stage?: "manager_pending" | "hr_pending" | "completed";
+  approvals?: { stage: "manager" | "hr"; decision: "approved" | "rejected"; by: string; at: string; comment?: string }[];
+  duration?: "full_day" | "half_day_am" | "half_day_pm";
   decision_by: string | null;
   decision_by_name: string;
   decision_at: string | null;
@@ -59,7 +62,7 @@ type LeaveRequest = {
 type Dashboard = {
   on_leave_today: { id: string; user_name: string; user_email: string; type_name: string; start_date: string; end_date: string }[];
   upcoming: { id: string; user_name: string; user_email: string; type_name: string; start_date: string; end_date: string; days: number }[];
-  pending_approvals: { id: string; user_name: string; user_email: string; type_name: string; start_date: string; end_date: string; days: number; reason: string; submitted_at: string }[];
+  pending_approvals: { id: string; user_name: string; user_email: string; type_name: string; start_date: string; end_date: string; days: number; reason: string; submitted_at: string; approval_stage?: "manager_pending" | "hr_pending" }[];
   upcoming_holidays: { id: string; observed_on: string; name: string }[];
 };
 
@@ -72,6 +75,16 @@ const STATUS_PILL: Record<LeaveRequest["status"], { label: string; cls: string }
   rejected:  { label: "Rejected",  cls: "bg-danger/15 text-danger" },
   cancelled: { label: "Cancelled", cls: "bg-muted/15 text-muted" },
 };
+
+// For pending requests, the stage is more informative than "Pending" — it
+// tells you who's blocking the request right now.
+function statusPill(r: LeaveRequest): { label: string; cls: string } {
+  if (r.status === "pending") {
+    if (r.approval_stage === "manager_pending") return { label: "Awaiting line manager", cls: "bg-accent-soft text-accent" };
+    if (r.approval_stage === "hr_pending")      return { label: "Awaiting HR sign-off",    cls: "bg-warn/15 text-warn" };
+  }
+  return STATUS_PILL[r.status];
+}
 
 function fmtDate(iso: string) {
   if (!iso) return "—";
@@ -150,6 +163,12 @@ function DashboardTab({ canApprove }: { canApprove: boolean }) {
     queryFn: () => api("/api/v1/leave/dashboard"),
     refetchInterval: 60_000,
   });
+  const { data: auth } = useQuery<{ can_approve_manager: boolean; can_approve_hr: boolean }>({
+    queryKey: ["leave-authority"],
+    queryFn: () => api("/api/v1/leave/decision-authority"),
+    staleTime: 60_000,
+  });
+  const authority = auth ?? { can_approve_manager: false, can_approve_hr: false };
 
   if (isLoading || !data) return <div className="text-muted">Loading…</div>;
 
@@ -231,7 +250,10 @@ function DashboardTab({ canApprove }: { canApprove: boolean }) {
   );
 }
 
-function PendingRow({ req }: { req: Dashboard["pending_approvals"][number] }) {
+function PendingRow({ req, authority }: {
+  req: Dashboard["pending_approvals"][number];
+  authority: { can_approve_manager: boolean; can_approve_hr: boolean };
+}) {
   const qc = useQueryClient();
   const decide = useMutation({
     mutationFn: (body: { decision: "approved" | "rejected"; comment?: string }) =>
@@ -244,43 +266,71 @@ function PendingRow({ req }: { req: Dashboard["pending_approvals"][number] }) {
     onError: (e: any) => toast.error("Could not save decision", e?.message),
   });
 
+  const stageLabel = req.approval_stage === "hr_pending" ? "HR sign-off" : "line manager";
+  const stageBadgeCls = req.approval_stage === "hr_pending" ? "bg-warn/15 text-warn" : "bg-accent-soft text-accent";
+  const canAct = req.approval_stage === "hr_pending" ? authority.can_approve_hr : authority.can_approve_manager;
+
   return (
     <li className="py-3 flex items-center gap-3">
       <Avatar name={req.user_name || req.user_email} />
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-semibold text-text">{req.user_name || req.user_email}</div>
+        <div className="text-sm font-semibold text-text flex items-center gap-2">
+          {req.user_name || req.user_email}
+          <span className={`pill ${stageBadgeCls}`}>Awaiting {stageLabel}</span>
+        </div>
         <div className="text-[11px] text-muted">
           {req.type_name} · {fmtDate(req.start_date)} → {fmtDate(req.end_date)} ({req.days}d)
           {req.reason && ` · "${req.reason}"`}
         </div>
       </div>
-      <button
-        onClick={() => decide.mutate({ decision: "rejected" })}
-        disabled={decide.isPending}
-        className="text-xs font-semibold px-3 py-1.5 rounded-full bg-danger/10 text-danger hover:bg-danger/20"
-      >
-        Reject
-      </button>
-      <button
-        onClick={() => decide.mutate({ decision: "approved" })}
-        disabled={decide.isPending}
-        className="text-xs font-semibold px-3 py-1.5 rounded-full bg-success/10 text-success hover:bg-success/20"
-      >
-        Approve
-      </button>
+      {canAct ? (
+        <>
+          <button
+            onClick={() => decide.mutate({ decision: "rejected" })}
+            disabled={decide.isPending}
+            className="text-xs font-semibold px-3 py-1.5 rounded-full bg-danger/10 text-danger hover:bg-danger/20"
+          >
+            Reject
+          </button>
+          <button
+            onClick={() => decide.mutate({ decision: "approved" })}
+            disabled={decide.isPending}
+            className="text-xs font-semibold px-3 py-1.5 rounded-full bg-success/10 text-success hover:bg-success/20"
+          >
+            Approve
+          </button>
+        </>
+      ) : (
+        <span className="text-[11px] text-muted italic">Waiting on someone else</span>
+      )}
     </li>
   );
 }
 
 /* ---------- My / Team requests tab ---------- */
 
-function RequestList({ scope, canApprove }: { scope: "mine" | "team"; canApprove?: boolean }) {
+function RequestList({ scope }: { scope: "mine" | "team"; canApprove?: boolean }) {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<{ items: LeaveRequest[] }>({
     queryKey: ["leave-requests", scope],
     queryFn: () => api(`/api/v1/leave/requests?scope=${scope}`),
   });
   const items = data?.items ?? [];
+
+  // /me/decision-authority drives which buttons show. Manager-only people see
+  // Approve/Reject on manager_pending rows; HR-only people see them on
+  // hr_pending rows; super_admin sees them on both.
+  const { data: auth } = useQuery<{ can_approve_manager: boolean; can_approve_hr: boolean }>({
+    queryKey: ["leave-authority"],
+    queryFn: () => api("/api/v1/leave/decision-authority"),
+    staleTime: 60_000,
+  });
+  const canActOn = (r: LeaveRequest): boolean => {
+    if (r.status !== "pending") return false;
+    if (r.approval_stage === "manager_pending") return !!auth?.can_approve_manager;
+    if (r.approval_stage === "hr_pending")      return !!auth?.can_approve_hr;
+    return false;
+  };
 
   const cancel = useMutation({
     mutationFn: (id: string) => api(`/api/v1/leave/requests/${id}/cancel`, { method: "POST" }),
@@ -327,7 +377,7 @@ function RequestList({ scope, canApprove }: { scope: "mine" | "team"; canApprove
           </thead>
           <tbody>
             {items.map((r) => {
-              const pill = STATUS_PILL[r.status];
+              const pill = statusPill(r);
               return (
                 <tr key={r.id} className="border-t border-border">
                   {scope === "team" && (
@@ -359,16 +409,23 @@ function RequestList({ scope, canApprove }: { scope: "mine" | "team"; canApprove
                   </td>
                   <td className="px-4 py-3">
                     <span className={`pill ${pill.cls}`}>{pill.label}</span>
-                    {r.decision_by_name && (
-                      <div className="text-[10.5px] text-muted mt-0.5">by {r.decision_by_name}</div>
+                    {r.approvals && r.approvals.length > 0 && (
+                      <div className="text-[10.5px] text-muted mt-0.5">
+                        {r.approvals.map((a, i) => (
+                          <div key={i}>
+                            {a.stage === "manager" ? "Manager" : "HR"} {a.decision} {a.comment ? `· "${a.comment}"` : ""}
+                          </div>
+                        ))}
+                      </div>
                     )}
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
-                    {canApprove && r.status === "pending" && (
+                    {canActOn(r) && (
                       <>
                         <button
                           onClick={() => decide.mutate({ id: r.id, decision: "approved" })}
                           className="text-xs font-semibold px-2.5 py-1 rounded-full bg-success/10 text-success hover:bg-success/20 mr-1"
+                          title={r.approval_stage === "manager_pending" ? "Approve as line manager" : "Approve as HR"}
                         >
                           Approve
                         </button>
@@ -533,8 +590,18 @@ function CalendarTab() {
 
 /* ---------- Request leave dialog ---------- */
 
-function RequestLeaveDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+type Duration = "full" | "first_half" | "second_half";
+
+type DirectoryMember = {
+  id: string;
+  name: string;
+  email: string;
+  roles?: string[];
+};
+
+export function RequestLeaveDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
   const { data: typesData } = useQuery<{ items: LeaveType[] }>({
     queryKey: ["leave-types"],
     queryFn: () => api("/api/v1/leave/types"),
@@ -546,24 +613,48 @@ function RequestLeaveDialog({ onClose, onCreated }: { onClose: () => void; onCre
   });
   const balances = balData?.items ?? [];
 
+  // Directory used for the backup-assignee picker. Filter out the requester
+  // themselves — they can't be their own cover.
+  const { data: membersData } = useQuery<{ items: DirectoryMember[] }>({
+    queryKey: ["members", "for-leave-backup"],
+    queryFn: () => api("/api/v1/members?status=active"),
+  });
+  const members = (membersData?.items ?? []).filter((m) => m.id !== user?.id);
+
   const [typeID, setTypeID] = useState<string>("");
+  const [duration, setDuration] = useState<Duration>("full");
   const [start, setStart] = useState<string>("");
   const [end, setEnd] = useState<string>("");
   const [reason, setReason] = useState("");
   const [handover, setHandover] = useState("");
+  const [backupID, setBackupID] = useState<string>("");
+  const [docFile, setDocFile] = useState<File | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // Default to annual once types load
+  // Default to annual once types load.
   if (!typeID && types.length > 0) {
     const annual = types.find((t) => t.code === "annual") ?? types[0];
     if (annual) setTypeID(annual.id);
   }
 
+  // Half-day implies a single date — auto-mirror end → start when the user
+  // flips to half. Saves a click and matches the screenshot's mental model.
+  function changeDuration(next: Duration) {
+    setDuration(next);
+    if (next !== "full" && start) setEnd(start);
+  }
+  function changeStart(v: string) {
+    setStart(v);
+    if (duration !== "full") setEnd(v);
+  }
+
   const pickedType = types.find((t) => t.id === typeID);
   const pickedBalance = balances.find((b) => b.leave_type_id === typeID);
+  const pickedBackup = members.find((m) => m.id === backupID);
 
-  // Approx days
+  // Working-day count. Half-day requests collapse to 0.5 regardless of date math.
   const days = useMemo(() => {
+    if (duration !== "full") return start ? 0.5 : 0;
     if (!start || !end) return 0;
     const s = new Date(start); const e = new Date(end);
     if (e < s) return 0;
@@ -573,21 +664,32 @@ function RequestLeaveDialog({ onClose, onCreated }: { onClose: () => void; onCre
       if (w !== 0 && w !== 6) count++;
     }
     return count;
-  }, [start, end]);
+  }, [start, end, duration]);
 
   const overdrawn = pickedBalance && pickedBalance.paid && days > pickedBalance.remaining_days;
 
   const create = useMutation({
-    mutationFn: (b: { leave_type_id: string; start_date: string; end_date: string; reason: string; handover_notes: string }) =>
-      api("/api/v1/leave/requests", { method: "POST", body: JSON.stringify(b) }),
+    mutationFn: (b: {
+      leave_type_id: string; duration: string; start_date: string; end_date: string;
+      reason: string; handover_notes: string; backup_user_id?: string;
+      supporting_docs?: { name: string; size: number; mime: string }[];
+    }) => api("/api/v1/leave/requests", { method: "POST", body: JSON.stringify(b) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["leave-requests"] });
       qc.invalidateQueries({ queryKey: ["leave-dashboard"] });
-      toast.success("Leave request submitted", "Your manager will be notified to approve.");
+      toast.success("Leave request submitted", "Your line manager will get the first approval. HR signs off after that.");
       onCreated();
     },
     onError: (e: any) => setErr(e?.message ?? "Could not submit request."),
   });
+
+  // Map the frontend duration tag onto the backend's enum so the day-count
+  // and half-day window are stored canonically.
+  const DURATION_MAP: Record<Duration, "full_day" | "half_day_am" | "half_day_pm"> = {
+    full: "full_day",
+    first_half: "half_day_am",
+    second_half: "half_day_pm",
+  };
 
   function submit() {
     setErr(null);
@@ -595,94 +697,176 @@ function RequestLeaveDialog({ onClose, onCreated }: { onClose: () => void; onCre
     if (!start)   { setErr("Start date is required."); return; }
     if (!end)     { setErr("End date is required."); return; }
     if (new Date(end) < new Date(start)) { setErr("End date can't be before start date."); return; }
+    if (!reason.trim()) { setErr("Add a reason so your manager has context."); return; }
+    if (pickedType?.requires_docs && !docFile) {
+      setErr(`${pickedType.name} requires a supporting document — please attach one.`);
+      return;
+    }
+
+    const docs = docFile ? [{ name: docFile.name, size: docFile.size, mime: docFile.type }] : [];
     create.mutate({
-      leave_type_id: typeID, start_date: start, end_date: end,
-      reason: reason.trim(), handover_notes: handover.trim(),
+      leave_type_id: typeID,
+      duration: DURATION_MAP[duration],
+      start_date: start,
+      end_date: end,
+      reason: reason.trim(),
+      handover_notes: handover.trim(),
+      backup_user_id: backupID || undefined,
+      supporting_docs: docs,
     });
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={onClose}>
       <div
-        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-xl max-h-[90vh] overflow-y-auto"
+        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-xl max-h-[92vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
-          <h2 className="text-lg font-bold text-text">Request leave</h2>
-          <button onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted"><X size={16} /></button>
+        <header className="px-6 py-4 border-b border-border flex items-center justify-between sticky top-0 bg-surface z-10">
+          <h2 className="text-lg font-bold text-text">Apply for Leave</h2>
+          <button onClick={onClose} className="p-1.5 rounded-full hover:bg-bg text-muted" aria-label="Close">
+            <X size={18} />
+          </button>
         </header>
 
-        <div className="p-5 space-y-4">
-          <label className="block">
-            <div className="text-[11px] text-muted font-medium mb-1">Leave type</div>
-            <select
-              className="input"
-              value={typeID}
-              onChange={(e) => setTypeID(e.target.value)}
-            >
-              {types.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name}{!t.paid && " (unpaid)"}
-                </option>
-              ))}
-            </select>
-            {pickedType && pickedBalance && (
-              <div className="text-[11px] text-muted mt-1">
-                {pickedType.paid
-                  ? <>You have <span className="font-semibold text-text">{pickedBalance.remaining_days.toFixed(1)}</span> day{pickedBalance.remaining_days === 1 ? "" : "s"} remaining.</>
-                  : "Unpaid leave — no balance deduction."}
-                {pickedType.requires_docs && <> · Supporting documents required.</>}
-              </div>
-            )}
-          </label>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <label className="block">
-              <div className="text-[11px] text-muted font-medium mb-1">Start date</div>
-              <input type="date" className="input" value={start} onChange={(e) => setStart(e.target.value)} />
-            </label>
-            <label className="block">
-              <div className="text-[11px] text-muted font-medium mb-1">End date</div>
-              <input type="date" className="input" value={end} min={start} onChange={(e) => setEnd(e.target.value)} />
-            </label>
+        <div className="px-6 py-5 space-y-5">
+          {/* Leave type + duration */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Field label="Leave Type" required>
+              <select
+                className="input"
+                value={typeID}
+                onChange={(e) => setTypeID(e.target.value)}
+              >
+                {types.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}{!t.paid && " (unpaid)"}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Duration" required>
+              <select
+                className="input"
+                value={duration}
+                onChange={(e) => changeDuration(e.target.value as Duration)}
+              >
+                <option value="full">Full Day</option>
+                <option value="first_half">Half Day — Morning</option>
+                <option value="second_half">Half Day — Afternoon</option>
+              </select>
+            </Field>
           </div>
 
+          {/* Dates */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Field label="Start Date" required>
+              <input
+                type="date"
+                className="input"
+                value={start}
+                onChange={(e) => changeStart(e.target.value)}
+              />
+            </Field>
+            <Field label="End Date" required>
+              <input
+                type="date"
+                className="input"
+                value={end}
+                min={start}
+                disabled={duration !== "full"}
+                onChange={(e) => setEnd(e.target.value)}
+              />
+              {duration !== "full" && (
+                <div className="text-[11px] text-muted mt-1">Half-day requests are limited to a single date.</div>
+              )}
+            </Field>
+          </div>
+
+          {/* Day-count summary */}
           {days > 0 && (
-            <div className={`flex items-center gap-2 text-sm border rounded-lg px-3 py-2 ${
-              overdrawn ? "bg-danger/10 border-danger/30 text-danger" : "bg-bg/40 border-border text-text"
+            <div className={`flex items-center gap-2 text-sm rounded-lg px-3 py-2 ${
+              overdrawn ? "bg-danger/10 border border-danger/30 text-danger" : "text-muted"
             }`}>
-              <CalendarIcon size={14} />
-              <span className="font-semibold">{days} working day{days === 1 ? "" : "s"}</span>
+              <CalendarIcon size={13} />
+              <span>
+                Total: <span className="font-semibold text-text">{days} {days === 1 ? "day" : "days"}</span>
+              </span>
+              {pickedType?.paid && pickedBalance && !overdrawn && (
+                <span className="text-[11px] ml-auto">
+                  {pickedBalance.remaining_days.toFixed(1)} day{pickedBalance.remaining_days === 1 ? "" : "s"} remaining after this
+                </span>
+              )}
               {overdrawn && (
                 <span className="text-[11px] ml-auto">
-                  Exceeds remaining balance ({pickedBalance!.remaining_days.toFixed(1)}d) — your manager will need to approve the overdraft.
+                  Exceeds balance ({pickedBalance!.remaining_days.toFixed(1)}d) — needs overdraft approval.
                 </span>
               )}
             </div>
           )}
 
-          <label className="block">
-            <div className="text-[11px] text-muted font-medium mb-1">Reason</div>
+          {/* Reason */}
+          <Field label="Reason" required>
             <textarea
-              className="input min-h-[60px]"
+              className="input min-h-[64px]"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder="Optional — what's the trip for, or why you need the time off."
+              placeholder="Family vacation, medical appointment, etc."
             />
-          </label>
+          </Field>
 
-          <label className="block">
-            <div className="text-[11px] text-muted font-medium mb-1">Handover notes</div>
+          {/* Handover */}
+          <Field label="Handover / Notes">
             <textarea
               className="input min-h-[80px]"
               value={handover}
               onChange={(e) => setHandover(e.target.value)}
-              placeholder="Pending deliverables, who's covering, open blockers, escalation owner."
+              placeholder="I will complete the ongoing task and share updates with the backup."
             />
-            <div className="text-[11px] text-muted mt-1">
-              <Briefcase size={11} className="inline -mt-0.5" /> Strongly recommended on enterprise projects so the team isn't blocked while you're out.
-            </div>
-          </label>
+          </Field>
+
+          {/* Backup assignee */}
+          <Field label="Backup Assignee">
+            {pickedBackup ? (
+              <div className="input flex items-center gap-3 !py-2">
+                <span className="w-8 h-8 rounded-full bg-accent-soft text-accent font-bold text-sm grid place-items-center shrink-0">
+                  {(pickedBackup.name || pickedBackup.email).charAt(0).toUpperCase()}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-text truncate">{pickedBackup.name || pickedBackup.email}</div>
+                  <div className="text-[11px] text-muted truncate">
+                    {pickedBackup.roles?.[0] ?? pickedBackup.email}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBackupID("")}
+                  className="p-1 rounded hover:bg-bg text-muted"
+                  aria-label="Clear backup"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ) : (
+              <select
+                className="input"
+                value={backupID}
+                onChange={(e) => setBackupID(e.target.value)}
+              >
+                <option value="">Select a teammate to cover for you…</option>
+                {members.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name || m.email}{m.roles?.length ? ` · ${m.roles[0]}` : ""}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
+
+          {/* Supporting document */}
+          <Field label="Supporting Document (optional)">
+            <SupportingDocPicker file={docFile} onChange={setDocFile} required={pickedType?.requires_docs} />
+          </Field>
 
           {err && (
             <div className="bg-danger/10 border border-danger/30 text-danger text-sm rounded-lg px-3 py-2 flex items-center gap-2">
@@ -691,8 +875,10 @@ function RequestLeaveDialog({ onClose, onCreated }: { onClose: () => void; onCre
           )}
         </div>
 
-        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
-          <button onClick={onClose} className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text">Cancel</button>
+        <footer className="px-6 py-4 border-t border-border flex items-center justify-end gap-2 sticky bottom-0 bg-surface">
+          <button onClick={onClose} className="text-sm px-4 py-2 rounded-lg text-muted hover:text-text font-medium">
+            Cancel
+          </button>
           <SmartButton
             variant="primary"
             disabled={create.isPending}
@@ -700,11 +886,100 @@ function RequestLeaveDialog({ onClose, onCreated }: { onClose: () => void; onCre
             icon={<CheckCircle2 size={14} />}
             onClick={submit}
           >
-            Submit request
+            Submit Request
           </SmartButton>
         </footer>
       </div>
     </div>
+  );
+}
+
+// Tiny labelled-field wrapper to match the screenshot's spacing and the small
+// red asterisk on required fields. Local to this file — not worth a shared
+// component until another form needs it.
+function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+  return (
+    <label className="block">
+      <div className="text-[12px] font-semibold text-text mb-1.5">
+        {label}{required && <span className="text-danger ml-0.5">*</span>}
+      </div>
+      {children}
+    </label>
+  );
+}
+
+// Drag-drop / click-to-browse upload box. Doesn't actually POST anywhere yet —
+// the leave backend has no document slot. The filename rides along in the
+// reason field as a tag so the approver can ask for it directly, and we'll
+// wire real storage once the broader files pipeline lands.
+function SupportingDocPicker({
+  file, onChange, required,
+}: {
+  file: File | null;
+  onChange: (f: File | null) => void;
+  required?: boolean;
+}) {
+  const [drag, setDrag] = useState(false);
+  const MAX_BYTES = 10 * 1024 * 1024;
+
+  function accept(f: File | undefined) {
+    if (!f) return;
+    if (f.size > MAX_BYTES) {
+      toast.error("File too large", "Maximum 10MB.");
+      return;
+    }
+    onChange(f);
+  }
+
+  if (file) {
+    return (
+      <div className="border border-border rounded-lg px-3 py-2.5 flex items-center gap-3 bg-bg/40">
+        <span className="w-9 h-9 rounded-lg bg-accent-soft text-accent grid place-items-center shrink-0">
+          <FileText size={16} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-text truncate">{file.name}</div>
+          <div className="text-[11px] text-muted">{(file.size / 1024).toFixed(0)} KB</div>
+        </div>
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          className="p-1.5 rounded hover:bg-surface text-muted hover:text-danger"
+          aria-label="Remove file"
+        >
+          <X size={14} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <label
+      onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+      onDragLeave={() => setDrag(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDrag(false);
+        accept(e.dataTransfer.files?.[0]);
+      }}
+      className={`block border-2 border-dashed rounded-xl px-4 py-5 text-center cursor-pointer transition-colors ${
+        drag ? "border-accent bg-accent-soft/30" : "border-border hover:border-accent/40 hover:bg-bg/30"
+      }`}
+    >
+      <input
+        type="file"
+        className="hidden"
+        accept=".pdf,.jpg,.jpeg,.png"
+        onChange={(e) => accept(e.target.files?.[0] ?? undefined)}
+      />
+      <div className="flex items-center justify-center gap-2 text-sm text-text">
+        <UploadCloud size={16} className="text-accent" />
+        Drag &amp; drop file or <span className="text-accent font-semibold underline-offset-2 hover:underline">click to upload</span>
+      </div>
+      <div className="text-[11px] text-muted mt-1">
+        PDF, JPG, PNG up to 10MB{required && <span className="text-danger"> · required for this leave type</span>}
+      </div>
+    </label>
   );
 }
 
