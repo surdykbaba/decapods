@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { SmartButton } from "@/components/SmartButton";
 import {
   AlertTriangle, AlertCircle, FileText, Upload, Plus, ShieldCheck, Github,
   GitPullRequest, GitCommit, Rocket, X, Check, Clock, CircleDot, ArrowRight,
@@ -699,13 +700,14 @@ function ArchiveButton({ projectId, projectName }: { projectId: string; projectN
           )}
           <DialogActions>
             <button onClick={() => setOpen(false)} className="btn-outline">Cancel</button>
-            <button
-              onClick={() => archive.mutate()}
-              disabled={archive.isPending}
-              className="btn-primary !bg-danger"
+            <SmartButton
+              variant="danger"
+              loadingLabel="Archiving…"
+              successLabel="Archived"
+              onClick={() => archive.mutateAsync()}
             >
-              {archive.isPending ? "Archiving…" : "Archive project"}
-            </button>
+              Archive project
+            </SmartButton>
           </DialogActions>
         </Dialog>
       )}
@@ -1297,9 +1299,9 @@ function RaiseRiskDialog({
       {err && <div className="text-danger text-sm">{err}</div>}
       <DialogActions>
         <button onClick={onClose} className="btn-outline">Cancel</button>
-        <button onClick={submit} disabled={submitting} className="btn-primary !bg-danger">
-          {submitting ? "Saving…" : "Raise risk"}
-        </button>
+        <SmartButton variant="danger" loading={submitting} loadingLabel="Saving…" onClick={() => submit()}>
+          Raise risk
+        </SmartButton>
       </DialogActions>
     </Dialog>
   );
@@ -1345,9 +1347,9 @@ function AddReportDialog({
       {err && <div className="text-danger text-sm">{err}</div>}
       <DialogActions>
         <button onClick={onClose} className="btn-outline">Cancel</button>
-        <button onClick={submit} disabled={submitting} className="btn-primary">
-          {submitting ? "Saving…" : "Post update"}
-        </button>
+        <SmartButton variant="primary" loading={submitting} loadingLabel="Saving…" successLabel="Posted" onClick={() => submit()}>
+          Post update
+        </SmartButton>
       </DialogActions>
     </Dialog>
   );

@@ -23,9 +23,20 @@ import { WorkflowPage } from "@/modules/settings/WorkflowPage";
 import { TeamRatesPage } from "@/modules/settings/TeamRatesPage";
 import { MyWorkPage } from "@/modules/me/MyWorkPage";
 import { ArchivedProjectsPage } from "@/modules/settings/ArchivedProjectsPage";
+import { VendorsPage } from "@/modules/vendors/VendorsPage";
+import { VendorDetailPage } from "@/modules/vendors/VendorDetailPage";
+import { VendorInvitePage } from "@/modules/vendors/VendorInvitePage";
+import { StakeholdersPage } from "@/modules/stakeholders/StakeholdersPage";
+import { AgentsPage } from "@/modules/agents/AgentsPage";
+import { AgentDetailPage } from "@/modules/agents/AgentDetailPage";
+import { AgentInvitePage } from "@/modules/agents/AgentInvitePage";
 import {
   SettingsLayout, SettingsGeneralPage, SettingsMembersStub, SettingsNotificationsStub,
 } from "@/modules/settings/SettingsLayout";
+import { MembersPage } from "@/modules/members/MembersPage";
+import { MemberInvitePage } from "@/modules/members/MemberInvitePage";
+// Keep the stub import to silence unused-import warnings without requiring a churn.
+void SettingsMembersStub;
 
 export function App() {
   return (
@@ -34,6 +45,10 @@ export function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/mfa" element={<MfaPage />} />
+      {/* Public, token-gated onboarding pages — no JWT required */}
+      <Route path="/vendor-invite/:token" element={<VendorInvitePage />} />
+      <Route path="/agent-invite/:token"  element={<AgentInvitePage />} />
+      <Route path="/member-invite/:token" element={<MemberInvitePage />} />
       <Route element={<RequireAuth><Shell /></RequireAuth>}>
         <Route path="/" element={<Navigate to="/my-work" replace />} />
         <Route path="/overview" element={<Navigate to="/my-work" replace />} />
@@ -53,6 +68,13 @@ export function App() {
         <Route path="/finance" element={<FinancePage />} />
         <Route path="/finance/invoices" element={<InvoicesPage />} />
 
+        <Route path="/vendors"        element={<VendorsPage />} />
+        <Route path="/vendors/:id"    element={<VendorDetailPage />} />
+        <Route path="/members"        element={<MembersPage />} />
+        <Route path="/stakeholders"   element={<StakeholdersPage />} />
+        <Route path="/agents"         element={<AgentsPage />} />
+        <Route path="/agents/:id"     element={<AgentDetailPage />} />
+
         {/* Unified settings */}
         <Route path="/settings" element={<SettingsLayout />}>
           <Route index element={<SettingsGeneralPage />} />
@@ -62,7 +84,7 @@ export function App() {
           <Route path="audit"      element={<AuditPage />} />
           <Route path="archived-projects" element={<ArchivedProjectsPage />} />
           <Route path="integrations/github" element={<GitHubPage />} />
-          <Route path="members"    element={<SettingsMembersStub />} />
+          <Route path="members"    element={<MembersPage />} />
           <Route path="notifications" element={<SettingsNotificationsStub />} />
         </Route>
 

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
+import { SmartButton } from "@/components/SmartButton";
 import { Check, Building2, FileText, Wallet, ShieldAlert, Eye, ArrowLeft, ArrowRight, Sparkles, AlertTriangle, X, Plus, Trash2, Users as UsersIcon, ExternalLink, Search, Wand2 } from "lucide-react";
 
 type LeadType = "government" | "private" | "foreign" | "ngo" | "internal";
@@ -946,13 +947,19 @@ export function OpportunityWizard() {
           <ArrowLeft size={14} /> Back
         </button>
         {stepKey !== "review" ? (
-          <button className="btn-primary" onClick={next} disabled={!!blockingError}>
-            Continue <ArrowRight size={14} />
-          </button>
+          <SmartButton variant="primary" onClick={next} disabled={!!blockingError} iconRight={<ArrowRight size={14} />}>
+            Continue
+          </SmartButton>
         ) : (
-          <button className="btn-primary" onClick={submit} disabled={submitting}>
-            {submitting ? "Creating…" : "Create draft"}
-          </button>
+          <SmartButton
+            variant="primary"
+            loading={submitting}
+            loadingLabel="Creating…"
+            successLabel="Created"
+            onClick={() => submit()}
+          >
+            Create draft
+          </SmartButton>
         )}
       </div>
     </div>

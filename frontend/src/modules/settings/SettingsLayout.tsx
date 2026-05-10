@@ -8,6 +8,7 @@ import {
 import { api } from "@/lib/api";
 import { SUPPORTED_CURRENCIES, FALLBACK_CURRENCY } from "@/lib/currency";
 import { toast } from "@/lib/toast";
+import { SmartButton } from "@/components/SmartButton";
 
 type Section = {
   group: string;
@@ -149,13 +150,15 @@ function CurrencyCard() {
             Tenant-wide preferences. Pick the default currency used for budgets, rates, invoices and KPIs.
           </p>
         </div>
-        <button
-          className="btn-primary"
-          disabled={!dirty || save.isPending}
-          onClick={() => save.mutate(draft)}
+        <SmartButton
+          variant="primary"
+          disabled={!dirty}
+          loadingLabel="Saving…"
+          icon={<Check size={14} />}
+          onClick={() => save.mutateAsync(draft)}
         >
-          {save.isPending ? "Saving…" : (<><Check size={14} /> Save</>)}
-        </button>
+          Save
+        </SmartButton>
       </div>
 
       <label className="block mt-5">

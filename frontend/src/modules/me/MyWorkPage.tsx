@@ -817,22 +817,26 @@ function TaskDialog({ task, onClose }: { task: TaskRow; onClose: () => void }) {
         </div>
 
         <footer className="flex items-center justify-between gap-2 p-4 border-t border-border bg-bg">
-          <button
-            disabled={!note.trim() || addComment.isPending}
-            onClick={() => addComment.mutate()}
-            className="btn-outline"
+          <SmartButton
+            variant="outline"
+            disabled={!note.trim()}
+            loadingLabel="Posting…"
+            successLabel="Added"
+            icon={<MessageSquare size={14} />}
+            onClick={() => addComment.mutateAsync()}
           >
-            <MessageSquare size={14} /> Add comment
-          </button>
+            Add comment
+          </SmartButton>
           <div className="flex gap-2">
             <button onClick={onClose} className="btn-outline">Cancel</button>
-            <button
-              onClick={() => update.mutate()}
-              disabled={update.isPending || status === task.status && !note.trim()}
-              className="btn-primary"
+            <SmartButton
+              variant="primary"
+              disabled={status === task.status && !note.trim()}
+              loadingLabel="Saving…"
+              onClick={() => update.mutateAsync()}
             >
-              {update.isPending ? "Saving…" : "Save status"}
-            </button>
+              Save status
+            </SmartButton>
           </div>
         </footer>
       </div>
@@ -975,13 +979,15 @@ function ComposeUpdateDialog({ onClose, onSaved }: { onClose: () => void; onSave
         </div>
         <footer className="flex justify-end gap-2 p-4 border-t border-border bg-bg">
           <button onClick={onClose} className="btn-outline">Cancel</button>
-          <button
-            onClick={() => submit.mutate()}
-            disabled={!title.trim() || submit.isPending}
-            className="btn-primary"
+          <SmartButton
+            variant="primary"
+            disabled={!title.trim()}
+            loadingLabel="Saving…"
+            successLabel="Submitted"
+            onClick={() => submit.mutateAsync()}
           >
-            {submit.isPending ? "Saving…" : "Submit"}
-          </button>
+            Submit
+          </SmartButton>
         </footer>
       </div>
     </div>

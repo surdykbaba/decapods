@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { SmartButton } from "@/components/SmartButton";
+import { ShieldCheck } from "lucide-react";
 
 export function MfaPage() {
   const [code, setCode] = useState("");
@@ -9,11 +11,10 @@ export function MfaPage() {
   const { setTokens } = useAuth();
   const nav = useNavigate();
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function verify() {
     setErr(null);
+    const ch = sessionStorage.getItem("mfa_challenge");
     try {
-      const ch = sessionStorage.getItem("mfa_challenge");
       const res = await api<any>("/api/v1/auth/mfa/verify", {
         method: "POST",
         body: JSON.stringify({ mfa_challenge: ch, code }),
@@ -23,12 +24,16 @@ export function MfaPage() {
       nav("/dashboard");
     } catch (e: any) {
       setErr(e.message ?? "Verification failed");
+      throw e;
     }
   }
 
   return (
     <div className="min-h-full grid place-items-center p-6">
-      <form onSubmit={submit} className="card p-8 w-full max-w-sm space-y-4">
+      <form
+        onSubmit={(e) => { e.preventDefault(); verify().catch(() => {}); }}
+        className="card p-8 w-full max-w-sm space-y-4"
+      >
         <h1 className="h1">Two-factor</h1>
         <p className="text-sm text-muted">Enter the 6-digit code from your authenticator app.</p>
         <input
@@ -37,7 +42,18 @@ export function MfaPage() {
           inputMode="numeric" maxLength={6}
         />
         {err && <div className="text-danger text-sm">{err}</div>}
-        <button className="btn-primary w-full justify-center">Verify</button>
+        <SmartButton
+          variant="primary"
+          className="w-full"
+          type="submit"
+          disabled={code.length < 6}
+          loadingLabel="Verifying…"
+          successLabel="Verified"
+          icon={<ShieldCheck size={14} />}
+          onClick={() => verify()}
+        >
+          Verify
+        </SmartButton>
       </form>
     </div>
   );

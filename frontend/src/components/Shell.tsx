@@ -3,12 +3,13 @@ import {
  Briefcase, FolderKanban, Users, Banknote,
   Settings, LifeBuoy, Search, UserCheck,
   Sun, Moon, LogOut, ChevronDown,
-  Handshake, UsersRound, Network,
+  Handshake, UsersRound, Network, UserCog,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useTheme, toggleTheme } from "@/lib/theme";
+import { useHeartbeat } from "@/lib/presence";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { CommandPalette } from "@/components/CommandPalette";
 
@@ -23,6 +24,7 @@ const navTop: NavItem[] = [
   { to: "/pipeline",  label: "Pipeline",  icon: Briefcase },
   { to: "/projects",  label: "Projects",  icon: FolderKanban },
   { to: "/workforce",    label: "Workforce",    icon: Users },
+  { to: "/members",      label: "Members",      icon: UserCog },
   { to: "/stakeholders", label: "Stakeholders", icon: UsersRound },
   { to: "/vendors",      label: "Vendors",      icon: Handshake },
   { to: "/agents",       label: "PR & Agents",  icon: Network },
@@ -36,6 +38,11 @@ export function Shell() {
   const theme = useTheme();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
+
+  // Mount the global heartbeat as soon as the user is authenticated. Pings
+  // /me/heartbeat every minute while the tab is visible so directory pages
+  // can show "online / away / offline" with relative time.
+  useHeartbeat();
 
   useEffect(() => {
     if (!user) api<any>("/api/v1/me").then(setUser).catch(() => {});

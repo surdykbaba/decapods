@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"time"
+
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -14,9 +16,13 @@ func NewFinance(db *pgxpool.Pool) *Finance { return &Finance{db: db} }
 func (h *Finance) ListInvoices(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	rows, err := h.db.Query(c, `
-		SELECT id, number, project_id, amount, currency, status, issued_on, due_on
-		FROM invoices WHERE tenant_id=$1 AND deleted_at IS NULL
-		ORDER BY issued_on DESC NULLS LAST LIMIT 200`, tid)
+		SELECT i.id, i.number, i.project_id, i.amount, i.currency, i.status, i.issued_on, i.due_on,
+		       COALESCE(p.name,'') AS project_name, COALESCE(p.code,''),
+		       COALESCE((SELECT SUM(amount) FROM payments pm WHERE pm.invoice_id=i.id), 0) AS paid
+		FROM invoices i
+		LEFT JOIN projects p ON p.id = i.project_id AND p.deleted_at IS NULL
+		WHERE i.tenant_id=$1 AND i.deleted_at IS NULL
+		ORDER BY i.issued_on DESC NULLS LAST, i.created_at DESC LIMIT 500`, tid)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -25,15 +31,18 @@ func (h *Finance) ListInvoices(c *gin.Context) {
 	out := []gin.H{}
 	for rows.Next() {
 		var (
-			id, project          uuid.UUID
-			number, status, cur  string
-			amount               float64
-			issued, due          any
+			id, project                                                 uuid.UUID
+			number, status, cur, projectName, projectCode               string
+			amount, paid                                                float64
+			issued, due                                                 *time.Time
 		)
-		if err := rows.Scan(&id, &number, &project, &amount, &cur, &status, &issued, &due); err == nil {
+		if err := rows.Scan(&id, &number, &project, &amount, &cur, &status, &issued, &due,
+			&projectName, &projectCode, &paid); err == nil {
 			out = append(out, gin.H{
 				"id": id, "number": number, "project_id": project,
-				"amount": amount, "currency": cur, "status": status,
+				"project_name": projectName, "project_code": projectCode,
+				"amount": amount, "paid": paid, "outstanding": amount - paid,
+				"currency": cur, "status": status,
 				"issued_on": issued, "due_on": due,
 			})
 		}
@@ -112,6 +121,187 @@ func (h *Finance) RecordPayment(c *gin.Context) {
 		return
 	}
 	c.JSON(201, gin.H{"id": pid})
+}
+
+// Summary is a single-shot dashboard endpoint. Runs five small queries and
+// returns everything the finance page needs so the frontend doesn't have to
+// fan out four round-trips.
+//
+// Currency strategy: invoices live in their stated currency, never converted
+// here. Totals are returned bucketed by currency + a "primary" pick for the UI
+// to feature (the currency with the largest billed volume).
+func (h *Finance) Summary(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+
+	// 1. Per-currency totals + status counts in one pass over invoices.
+	type row struct {
+		currency  string
+		billed    float64
+		collected float64
+		outstanding float64
+		count     map[string]int
+	}
+	byCcy := map[string]*row{}
+	statusCount := map[string]int{"draft": 0, "issued": 0, "partially_paid": 0, "paid": 0, "void": 0}
+	rows, err := h.db.Query(c, `
+		SELECT i.currency, i.status, i.amount,
+		       COALESCE((SELECT SUM(amount) FROM payments p WHERE p.invoice_id = i.id), 0) AS paid
+		FROM invoices i
+		WHERE i.tenant_id=$1 AND i.deleted_at IS NULL`, tid)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	for rows.Next() {
+		var ccy, st string
+		var amt, paid float64
+		if err := rows.Scan(&ccy, &st, &amt, &paid); err != nil { continue }
+		if ccy == "" { ccy = "NGN" }
+		r := byCcy[ccy]
+		if r == nil {
+			r = &row{currency: ccy, count: map[string]int{}}
+			byCcy[ccy] = r
+		}
+		// Drafts aren't billed yet — only issued / partially_paid / paid count toward billed/collected.
+		if st != "draft" && st != "void" {
+			r.billed += amt
+			r.collected += paid
+			r.outstanding += (amt - paid)
+		}
+		statusCount[st]++
+	}
+	rows.Close()
+
+	// Pick a primary currency — the one with the largest billed total. Default NGN.
+	primary := "NGN"
+	var bestBilled float64
+	for ccy, r := range byCcy {
+		if r.billed > bestBilled {
+			primary = ccy
+			bestBilled = r.billed
+		}
+	}
+	currencyTotals := []gin.H{}
+	for _, r := range byCcy {
+		currencyTotals = append(currencyTotals, gin.H{
+			"currency":    r.currency,
+			"billed":      r.billed,
+			"collected":   r.collected,
+			"outstanding": r.outstanding,
+		})
+	}
+
+	// 2. Aging — same buckets as Receivables.
+	aging := map[string]float64{"current": 0, "0_30": 0, "31_60": 0, "61_90": 0, "90_plus": 0}
+	arows, err := h.db.Query(c, `
+		SELECT
+		  CASE
+		    WHEN due_on IS NULL OR current_date - due_on <= 0 THEN 'current'
+		    WHEN current_date - due_on <= 30 THEN '0_30'
+		    WHEN current_date - due_on <= 60 THEN '31_60'
+		    WHEN current_date - due_on <= 90 THEN '61_90'
+		    ELSE '90_plus'
+		  END AS bucket,
+		  SUM(amount - COALESCE((SELECT SUM(amount) FROM payments p WHERE p.invoice_id = i.id),0)) AS outstanding
+		FROM invoices i
+		WHERE tenant_id=$1 AND status IN ('issued','partially_paid') AND deleted_at IS NULL
+		GROUP BY bucket`, tid)
+	if err == nil {
+		for arows.Next() {
+			var b string; var v float64
+			if err := arows.Scan(&b, &v); err == nil { aging[b] = v }
+		}
+		arows.Close()
+	}
+
+	// 3. Pipeline at risk — opportunities approved-but-not-yet-collected. Counted
+	// as future revenue at the stages where work is committed but cash hasn't landed.
+	var pipelineAtRisk float64
+	_ = h.db.QueryRow(c, `
+		SELECT COALESCE(SUM(estimated_value), 0) FROM opportunities
+		WHERE tenant_id=$1 AND deleted_at IS NULL
+		  AND stage IN ('approved','contracting','planning','in_progress','qa_review','client_acceptance','invoiced')`,
+		tid).Scan(&pipelineAtRisk)
+
+	// 4. Top 5 unpaid invoices by outstanding balance.
+	topUnpaid := []gin.H{}
+	urows, uerr := h.db.Query(c, `
+		SELECT i.id, i.number, i.amount, i.currency, i.status, i.issued_on, i.due_on,
+		       COALESCE(p.name, '') AS project_name, p.id AS project_id,
+		       COALESCE((SELECT SUM(amount) FROM payments pm WHERE pm.invoice_id=i.id),0) AS paid
+		FROM invoices i
+		LEFT JOIN projects p ON p.id = i.project_id AND p.deleted_at IS NULL
+		WHERE i.tenant_id=$1 AND i.deleted_at IS NULL AND i.status IN ('issued','partially_paid')
+		ORDER BY (i.amount - COALESCE((SELECT SUM(amount) FROM payments pm WHERE pm.invoice_id=i.id),0)) DESC
+		LIMIT 5`, tid)
+	if uerr == nil {
+		for urows.Next() {
+			var (
+				id                                    uuid.UUID
+				number, status, currency, projectName string
+				amount, paid                          float64
+				issued, due                           *time.Time
+				projectID                             *uuid.UUID
+			)
+			if err := urows.Scan(&id, &number, &amount, &currency, &status, &issued, &due,
+				&projectName, &projectID, &paid); err == nil {
+				daysOverdue := 0
+				if due != nil && time.Now().After(*due) {
+					daysOverdue = int(time.Since(*due).Hours() / 24)
+				}
+				topUnpaid = append(topUnpaid, gin.H{
+					"id": id, "number": number, "amount": amount, "currency": currency,
+					"status": status, "issued_on": issued, "due_on": due,
+					"project_name": projectName, "project_id": projectID,
+					"outstanding": amount - paid,
+					"days_overdue": daysOverdue,
+				})
+			}
+		}
+		urows.Close()
+	}
+
+	// 5. Recent payments (last 10), with invoice + project context.
+	recentPayments := []gin.H{}
+	prows, perr := h.db.Query(c, `
+		SELECT p.id, p.amount, p.paid_on, COALESCE(p.method,''), COALESCE(p.reference,''),
+		       i.number, i.currency, COALESCE(pr.name,''), pr.id
+		FROM payments p
+		JOIN invoices i ON i.id = p.invoice_id
+		LEFT JOIN projects pr ON pr.id = i.project_id AND pr.deleted_at IS NULL
+		WHERE p.tenant_id=$1
+		ORDER BY p.paid_on DESC, p.created_at DESC LIMIT 10`, tid)
+	if perr == nil {
+		for prows.Next() {
+			var (
+				pid                                                  uuid.UUID
+				amount                                               float64
+				paidOn                                               *time.Time
+				method, ref, invoiceNumber, currency, projectName  string
+				projectID                                            *uuid.UUID
+			)
+			if err := prows.Scan(&pid, &amount, &paidOn, &method, &ref,
+				&invoiceNumber, &currency, &projectName, &projectID); err == nil {
+				recentPayments = append(recentPayments, gin.H{
+					"id": pid, "amount": amount, "paid_on": paidOn,
+					"method": method, "reference": ref,
+					"invoice_number": invoiceNumber, "currency": currency,
+					"project_name": projectName, "project_id": projectID,
+				})
+			}
+		}
+		prows.Close()
+	}
+
+	c.JSON(200, gin.H{
+		"primary_currency": primary,
+		"by_currency":      currencyTotals,
+		"status_counts":    statusCount,
+		"aging":            aging,
+		"pipeline_at_risk": pipelineAtRisk,
+		"top_unpaid":       topUnpaid,
+		"recent_payments":  recentPayments,
+	})
 }
 
 func (h *Finance) Receivables(c *gin.Context) {

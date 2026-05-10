@@ -39,7 +39,8 @@ jobs:
           envs: DB_PASS,DOMAIN
           script_stop: true
           script: |
-            set -euo pipefail
+            set -Eeuo pipefail
+            set -x
             export DEBIAN_FRONTEND=noninteractive
             export NEEDRESTART_SUSPEND=1
             export NEEDRESTART_MODE=a

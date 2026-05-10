@@ -242,14 +242,16 @@ export function OpportunityDetail() {
         </div>
         <div className="flex flex-col items-end gap-1">
           {data.stage === "new_request" && (
-            <button
-              className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={() => submit.mutate()}
-              disabled={!ready || submit.isPending}
+            <SmartButton
+              variant="primary"
+              disabled={!ready}
+              loadingLabel="Submitting…"
+              successLabel="Submitted"
+              iconRight={<ArrowRight size={14} />}
+              onClick={() => submit.mutateAsync()}
             >
-              {submit.isPending ? "Submitting…" : "Submit for review"}
-              <ArrowRight size={14} />
-            </button>
+              Submit for review
+            </SmartButton>
           )}
           {data.stage === "new_request" && !ready && (
             <div className="text-xs text-muted">
@@ -291,18 +293,18 @@ export function OpportunityDetail() {
             )}
             {forward.map((a, i) => {
               const isApprove = a.to === "approved";
-              const tone = isApprove ? "primary" : (i === 0 ? "primary" : "outline");
+              const tone: "primary" | "outline" = isApprove ? "primary" : (i === 0 ? "primary" : "outline");
               return (
-                <button
+                <SmartButton
                   key={`${a.from}-${a.to}`}
-                  disabled={transition.isPending}
-                  onClick={() => transition.mutate({ to: a.to })}
-                  className={tone === "primary" ? "btn-primary" : "btn-outline"}
+                  variant={tone}
+                  icon={isApprove ? <ThumbsUp size={14} /> : undefined}
+                  successLabel="Done"
+                  onClick={() => transition.mutateAsync({ to: a.to })}
                   title={a.roles && a.roles.length ? `Allowed roles: ${a.roles.join(", ")}` : "Open to any reviewer"}
                 >
-                  {isApprove && <ThumbsUp size={14} />}
                   {a.label || `Move to ${prettyStage(a.to)}`}
-                </button>
+                </SmartButton>
               );
             })}
           </div>
@@ -823,13 +825,16 @@ function EditOpportunityDialog({
           <div className="text-xs text-muted">Stage, documents and stakeholders are edited from their own panels.</div>
           <div className="flex gap-2">
             <button onClick={onClose} className="btn-outline">Cancel</button>
-            <button
-              onClick={submit}
-              disabled={submitting || !!titleErr}
-              className="btn-primary"
+            <SmartButton
+              variant="primary"
+              loading={submitting}
+              disabled={!!titleErr}
+              loadingLabel="Saving…"
+              icon={<Save size={14} />}
+              onClick={() => submit()}
             >
-              <Save size={14} /> {submitting ? "Saving…" : "Save changes"}
-            </button>
+              Save changes
+            </SmartButton>
           </div>
         </footer>
       </div>
@@ -926,13 +931,15 @@ function RejectDialog({
 
         <footer className="flex justify-end gap-2 p-4 border-t border-border bg-bg">
           <button onClick={onClose} className="btn-outline">Cancel</button>
-          <button
-            onClick={submit}
-            disabled={submitting}
-            className="btn-primary !bg-danger"
+          <SmartButton
+            variant="danger"
+            loading={submitting}
+            loadingLabel="Sending…"
+            successLabel="Sent"
+            onClick={() => submit()}
           >
-            {submitting ? "Sending…" : "Send back"}
-          </button>
+            Send back
+          </SmartButton>
         </footer>
       </div>
     </div>
@@ -1740,9 +1747,15 @@ function UploadDocumentDialog({
 
         <footer className="flex justify-end gap-2 p-4 border-t border-border bg-bg">
           <button onClick={onClose} className="btn-outline">Cancel</button>
-          <button onClick={attach} disabled={busy} className="btn-primary">
-            {busy ? "Attaching…" : "Attach"}
-          </button>
+          <SmartButton
+            variant="primary"
+            loading={busy}
+            loadingLabel="Attaching…"
+            successLabel="Attached"
+            onClick={() => attach()}
+          >
+            Attach
+          </SmartButton>
         </footer>
       </div>
     </div>
@@ -1892,9 +1905,15 @@ function AddStakeholderDialog({
         </div>
         <footer className="flex justify-end gap-2 p-4 border-t border-border bg-bg">
           <button onClick={onClose} className="btn-outline">Cancel</button>
-          <button onClick={submit} disabled={submitting} className="btn-primary">
-            {submitting ? "Adding…" : "Add stakeholder"}
-          </button>
+          <SmartButton
+            variant="primary"
+            loading={submitting}
+            loadingLabel="Adding…"
+            successLabel="Added"
+            onClick={() => submit()}
+          >
+            Add stakeholder
+          </SmartButton>
         </footer>
       </div>
     </div>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Card, Pill } from "@/components/ui";
+import { SmartButton } from "@/components/SmartButton";
 import { Plus, Trash2, RotateCcw, GitBranch, Save, Check, ArrowRight } from "lucide-react";
 
 type Transition = {
@@ -89,16 +90,18 @@ export function WorkflowPage() {
         </div>
         <div className="flex flex-col items-end gap-2">
           <div className="flex gap-2">
-            <button className="btn-outline" onClick={restoreDefaults} disabled={save.isPending}>
-              <RotateCcw size={14} /> Restore defaults
-            </button>
-            <button
-              className="btn-primary"
-              onClick={() => save.mutate(draft)}
-              disabled={!dirty || save.isPending}
+            <SmartButton variant="outline" onClick={restoreDefaults} disabled={save.isPending} icon={<RotateCcw size={14} />}>
+              Restore defaults
+            </SmartButton>
+            <SmartButton
+              variant="primary"
+              disabled={!dirty}
+              loadingLabel="Saving…"
+              icon={<Save size={14} />}
+              onClick={() => save.mutateAsync(draft)}
             >
-              {save.isPending ? "Saving…" : <><Save size={14} /> Save changes</>}
-            </button>
+              Save changes
+            </SmartButton>
           </div>
           {savedAt && !dirty && (
             <div className="text-xs text-success flex items-center gap-1">

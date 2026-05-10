@@ -551,3 +551,60 @@ func (h *Me) PutProfile(c *gin.Context) {
 /* ---------- helpers ---------- */
 
 func intStr(n int) string { return strconv.Itoa(n) }
+
+/* ---------- Presence (heartbeat) ----------
+ *
+ * Front-end pings this every ~60s while the document is visible. Server
+ * just bumps `last_seen_at`. Members API derives the online/away/offline
+ * state from the timestamp — no extra storage needed.
+ */
+func (h *Me) Heartbeat(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	if _, err := h.db.Exec(c, `UPDATE users SET last_seen_at = now() WHERE id = $1`, uid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "last_seen_at": time.Now().UTC()})
+}
+
+// Presence returns just every member's current online state — light enough to
+// poll on a 30s timer in the UI without invalidating the heavier members list.
+func (h *Me) Presence(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	rows, err := h.db.Query(c, `
+		SELECT id, last_seen_at FROM users
+		WHERE tenant_id = $1 AND deleted_at IS NULL
+		ORDER BY last_seen_at DESC NULLS LAST`, tid)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	out := []gin.H{}
+	for rows.Next() {
+		var (
+			id      uuid.UUID
+			lastSeen *time.Time
+		)
+		if err := rows.Scan(&id, &lastSeen); err == nil {
+			state := "offline"
+			var sinceSec int64 = -1
+			if lastSeen != nil {
+				delta := time.Since(*lastSeen)
+				sinceSec = int64(delta.Seconds())
+				switch {
+				case delta < 90*time.Second:    state = "online"
+				case delta < 5*time.Minute:     state = "away"
+				default:                        state = "offline"
+				}
+			}
+			out = append(out, gin.H{
+				"user_id":         id,
+				"last_seen_at":    lastSeen,
+				"presence":        state,
+				"seconds_since":   sinceSec,
+			})
+		}
+	}
+	c.JSON(200, gin.H{"items": out, "now": time.Now().UTC()})
+}
