@@ -69,6 +69,10 @@ func New(d Deps) http.Handler {
 	authed.GET("/settings/opportunity-workflow", mw.RequirePermission("opportunity:read"), workflows.GetOpportunityWorkflow)
 	authed.PUT("/settings/opportunity-workflow", mw.RequirePermission("governance:write"), workflows.PutOpportunityWorkflow)
 
+	general := handlers.NewGeneralSettings(d.DB)
+	authed.GET("/settings/general", general.Get)
+	authed.PUT("/settings/general", mw.RequirePermission("governance:write"), general.Put)
+
 	teamRates := handlers.NewTeamRates(d.DB)
 	authed.GET("/settings/team-rates", mw.RequirePermission("opportunity:read"), teamRates.List)
 	authed.PUT("/settings/team-rates", mw.RequirePermission("governance:write"), teamRates.Upsert)

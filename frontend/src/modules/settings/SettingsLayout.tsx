@@ -1,8 +1,13 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   GitBranch, Wallet, ShieldCheck, Github, Users, FileSearch, SlidersHorizontal,
-  Building2, Bell, Archive,
+  Building2, Bell, Archive, Check,
 } from "lucide-react";
+import { api } from "@/lib/api";
+import { SUPPORTED_CURRENCIES, FALLBACK_CURRENCY } from "@/lib/currency";
+import { toast } from "@/lib/toast";
 
 type Section = {
   group: string;
@@ -98,20 +103,92 @@ export function SettingsLayout() {
 export function SettingsGeneralPage() {
   return (
     <div className="space-y-4">
-      <div className="bg-surface border border-border rounded-2xl p-6">
-        <h2 className="h2 mb-2">General</h2>
-        <p className="text-sm text-muted">
-          Tenant-wide preferences live here. Branding, default currency and locale will land in this section.
-          For now, head into the dedicated panels on the left to configure approvals, team rates,
-          governance policies, and integrations.
-        </p>
-      </div>
+      <CurrencyCard />
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <ShortcutCard label="Approval workflow" body="Define stages and which roles can approve / reject." to="/settings/workflow" />
         <ShortcutCard label="Team rates" body="Internal and external daily rates used for budgeting." to="/settings/team-rates" />
         <ShortcutCard label="Governance policies" body="Custom rules layered on top of the built-in engine." to="/settings/governance" />
         <ShortcutCard label="GitHub integration" body="Link repositories so deliverables track real code." to="/settings/integrations/github" />
       </div>
+    </div>
+  );
+}
+
+function CurrencyCard() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<{ default_currency: string }>({
+    queryKey: ["settings-general"],
+    queryFn: () => api("/api/v1/settings/general"),
+  });
+  const [draft, setDraft] = useState<string>(FALLBACK_CURRENCY);
+  useEffect(() => {
+    if (data?.default_currency) setDraft(data.default_currency);
+  }, [data?.default_currency]);
+
+  const save = useMutation({
+    mutationFn: (ccy: string) =>
+      api("/api/v1/settings/general", {
+        method: "PUT",
+        body: JSON.stringify({ default_currency: ccy }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["settings-general"] });
+      toast.success("Default currency updated");
+    },
+    onError: (e: any) => toast.error(e?.message ?? "Could not save currency"),
+  });
+
+  const dirty = draft !== (data?.default_currency ?? FALLBACK_CURRENCY);
+
+  return (
+    <div className="bg-surface border border-border rounded-2xl p-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="h2 mb-1">General</h2>
+          <p className="text-sm text-muted">
+            Tenant-wide preferences. Pick the default currency used for budgets, rates, invoices and KPIs.
+          </p>
+        </div>
+        <button
+          className="btn-primary"
+          disabled={!dirty || save.isPending}
+          onClick={() => save.mutate(draft)}
+        >
+          {save.isPending ? "Saving…" : (<><Check size={14} /> Save</>)}
+        </button>
+      </div>
+
+      <label className="block mt-5">
+        <div className="text-xs uppercase tracking-wider text-muted font-semibold mb-1.5">
+          Default currency
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          {SUPPORTED_CURRENCIES.map((c) => {
+            const active = draft === c.code;
+            return (
+              <button
+                key={c.code}
+                type="button"
+                onClick={() => setDraft(c.code)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-colors ${
+                  active
+                    ? "border-accent bg-accent-soft text-accent"
+                    : "border-border hover:bg-bg text-text"
+                }`}
+              >
+                <span className={`w-9 h-9 grid place-items-center rounded-lg font-bold text-base shrink-0 ${
+                  active ? "bg-accent text-white" : "bg-bg text-text"
+                }`}>{c.symbol}</span>
+                <span className="min-w-0">
+                  <div className="text-sm font-semibold leading-tight">{c.code}</div>
+                  <div className="text-[11px] text-muted truncate">{c.label}</div>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        {isLoading && <div className="text-xs text-muted mt-2">Loading current setting…</div>}
+      </label>
     </div>
   );
 }

@@ -1,8 +1,9 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
- Briefcase, FolderKanban, Users, DollarSign,
+ Briefcase, FolderKanban, Users, Banknote,
   Settings, LifeBuoy, Search, UserCheck,
   Sun, Moon, LogOut, ChevronDown,
+  Handshake, UsersRound, Network,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useState } from "react";
@@ -21,9 +22,12 @@ const navTop: NavItem[] = [
   { to: "/my-work",   label: "My Accubin", icon: UserCheck },
   { to: "/pipeline",  label: "Pipeline",  icon: Briefcase },
   { to: "/projects",  label: "Projects",  icon: FolderKanban },
-  { to: "/workforce", label: "Workforce", icon: Users },
-  { to: "/finance",   label: "Finance",   icon: DollarSign },
-  { to: "/settings",  label: "Settings",  icon: Settings },
+  { to: "/workforce",    label: "Workforce",    icon: Users },
+  { to: "/stakeholders", label: "Stakeholders", icon: UsersRound },
+  { to: "/vendors",      label: "Vendors",      icon: Handshake },
+  { to: "/agents",       label: "PR & Agents",  icon: Network },
+  { to: "/finance",      label: "Finance",      icon: Banknote },
+  { to: "/settings",     label: "Settings",     icon: Settings },
 ];
 
 export function Shell() {
