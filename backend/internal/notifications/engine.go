@@ -110,6 +110,15 @@ var Catalog = map[EventKind]EventMeta{
 	"governance.security_review":  {Category: CatGovernance, DefaultTier: TierImmediate,   Severity: "warn",     SubjectTpl: "Security review — {{.Title}}",                HeadlineTpl: "Security review on {{.Title}}",             Description: "A security review is required"},
 	"governance.client_pending":   {Category: CatGovernance, DefaultTier: TierDigestDaily, Severity: "warn",     SubjectTpl: "Client approval pending — {{.Title}}",        HeadlineTpl: "{{.Title}} awaiting client",                Description: "Client approval is outstanding"},
 
+	// Leave — approval flow + decision feedback. The requester gets notified
+	// when their request lands a decision; approvers get notified when a
+	// request reaches their stage.
+	"leave.submitted":         {Category: CatGovernance, DefaultTier: TierImmediate, Severity: "info",     SubjectTpl: "Leave request — {{.Requester}}",                HeadlineTpl: "{{.Requester}} requested {{.Days}}d {{.Type}}", Description: "A team member submitted a leave request", DefaultLink: "/leave"},
+	"leave.approval_needed":   {Category: CatGovernance, DefaultTier: TierImmediate, Severity: "warn",     SubjectTpl: "Action needed — leave for {{.Requester}}",      HeadlineTpl: "Approve leave for {{.Requester}}",              Description: "A leave request is waiting on you", DefaultLink: "/leave"},
+	"leave.approved":          {Category: CatGovernance, DefaultTier: TierImmediate, Severity: "info",     SubjectTpl: "Leave approved — {{.Start}} to {{.End}}",       HeadlineTpl: "Leave approved for {{.Start}} → {{.End}}",     Description: "Your leave request was approved", DefaultLink: "/leave"},
+	"leave.rejected":          {Category: CatGovernance, DefaultTier: TierImmediate, Severity: "warn",     SubjectTpl: "Leave declined — {{.Start}} to {{.End}}",       HeadlineTpl: "Leave declined: {{.Reason}}",                   Description: "Your leave request was rejected", DefaultLink: "/leave"},
+	"leave.cancelled":         {Category: CatGovernance, DefaultTier: TierDigestDaily, Severity: "info",   SubjectTpl: "Leave cancelled — {{.Requester}}",              HeadlineTpl: "{{.Requester}} cancelled their leave",          Description: "A leave request was cancelled", DefaultLink: "/leave"},
+
 	// 6. Risk & Escalation
 	"risk.raised":           {Category: CatRisk, DefaultTier: TierImmediate, Severity: "warn",     SubjectTpl: "New risk — {{.Title}}",                            HeadlineTpl: "Risk raised on {{.Project}}",            Description: "A new risk was raised"},
 	"risk.high_project":     {Category: CatRisk, DefaultTier: TierImmediate, Severity: "critical", SubjectTpl: "High-risk project — {{.Project}}",                 HeadlineTpl: "{{.Project}} graded high risk",          Description: "A project was graded high risk"},

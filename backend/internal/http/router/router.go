@@ -192,10 +192,11 @@ func New(d Deps) http.Handler {
 	authed.GET("/settings/archived-projects", proj.ListArchived)
 	authed.POST("/projects/:id/restore", proj.Restore)
 
-	leave := handlers.NewLeave(d.DB)
+	leave := handlers.NewLeave(d.DB).WithEngine(earlyEngine)
 	authed.GET("/leave/types",                leave.ListTypes)
 	authed.GET("/leave/balances",             leave.Balances)
 	authed.GET("/leave/requests",             leave.ListRequests)
+	authed.GET("/leave/my-pending",           leave.MyPending)
 	authed.POST("/leave/requests",            leave.CreateRequest)
 	authed.POST("/leave/requests/:id/decision", leave.Decide)
 	authed.GET("/leave/decision-authority",   leave.DecisionAuthority)

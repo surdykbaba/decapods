@@ -1,22 +1,36 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
+	"github.com/decapods/pgdp/backend/internal/notifications"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Leave struct{ db *pgxpool.Pool }
+type Leave struct {
+	db     *pgxpool.Pool
+	notify *notifications.Engine
+}
 
 func NewLeave(db *pgxpool.Pool) *Leave { return &Leave{db: db} }
+
+// WithEngine attaches the notification engine so leave handlers can fan out
+// submit/decision events. Optional — without it, leave still works, just
+// silently (the engine pointer is nil-safe inside).
+func (h *Leave) WithEngine(engine *notifications.Engine) *Leave {
+	h.notify = engine
+	return h
+}
 
 // Roles that can act at each approval stage. Manager-stage covers anyone who
 // runs delivery; HR-stage gates the workspace's compliance/people lens.
@@ -290,7 +304,76 @@ func (h *Leave) CreateRequest(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	// Fan out notifications to anyone who can approve at the manager stage.
+	// Doesn't block the response — the engine deals with queueing/email
+	// itself, and we ignore any errors so leave still works without SMTP.
+	go h.notifyManagerStage(context.Background(), tid, id, uid, typeName, req.StartDate, req.EndDate, days)
+
 	c.JSON(http.StatusCreated, gin.H{"id": id, "days": days, "approval_stage": "manager_pending"})
+}
+
+// notifyManagerStage emails / in-app-pings everyone who carries a manager-class
+// role in the tenant. Best-effort: we look up by role membership rather than
+// a hard-coded list, so workspaces with custom role taxonomies still light
+// up the right people.
+func (h *Leave) notifyManagerStage(ctx context.Context, tid, requestID, requesterID uuid.UUID, typeName, start, end string, days float64) {
+	if h.notify == nil {
+		return
+	}
+
+	// Requester display name for the subject line.
+	var requester string
+	_ = h.db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(full_name,''), email::text) FROM users WHERE id=$1`, requesterID,
+	).Scan(&requester)
+
+	// Anyone in the workspace whose role can approve at the manager stage.
+	rows, err := h.db.Query(ctx, `
+		SELECT DISTINCT u.id
+		FROM users u
+		JOIN user_roles ur ON ur.user_id = u.id
+		JOIN roles r       ON r.id      = ur.role_id
+		WHERE u.tenant_id=$1 AND u.deleted_at IS NULL AND u.status='active'
+		  AND r.name IN ('super_admin','ceo','coo','delivery_manager','project_manager','line_manager')`,
+		tid)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	recipients := []notifications.Recipient{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err == nil && id != requesterID {
+			recipients = append(recipients, notifications.Recipient{UserID: &id})
+		}
+	}
+	if len(recipients) == 0 {
+		return
+	}
+
+	h.notify.Notify(ctx, notifications.Event{
+		Kind:       "leave.approval_needed",
+		TenantID:   tid,
+		Recipients: recipients,
+		Payload: map[string]any{
+			"Requester": requester,
+			"Type":      typeName,
+			"Days":      formatDays(days),
+			"Start":     start,
+			"End":       end,
+		},
+		DedupeKey: "leave.approval_needed:" + requestID.String(),
+		Link:      "/leave",
+	})
+}
+
+// formatDays trims a 0.5 to "0.5" and a 3.0 to "3" — purely cosmetic for
+// notification subjects.
+func formatDays(d float64) string {
+	if d == float64(int(d)) {
+		return fmt.Sprintf("%d", int(d))
+	}
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.1f", d), "0"), ".")
 }
 
 // Decide — POST /api/v1/leave/requests/:id/decision  body: {decision, comment?}
@@ -411,7 +494,128 @@ func (h *Leave) Decide(c *gin.Context) {
 	if err := tx.Commit(c); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()}); return
 	}
+
+	// Fan out notifications outside the transaction so a flaky email path
+	// can't roll back a successful decision.
+	go h.notifyDecision(context.Background(), tid, rid, uid, actor, req.Decision, strings.TrimSpace(req.Comment), nextStatus, nextStage, startDate, days)
+
 	c.JSON(http.StatusOK, gin.H{"ok": true, "status": nextStatus, "approval_stage": nextStage})
+}
+
+// notifyDecision dispatches the right events after a decision lands.
+//
+//   • Rejection (any stage)         → ping the requester with the reason
+//   • Final HR approval             → ping the requester with the window
+//   • Manager-approved → hr_pending → ping HR-class folks to take the next step
+//
+// Best-effort; logged-only on failure.
+func (h *Leave) notifyDecision(
+	ctx context.Context,
+	tid, requestID, requesterID, actorID uuid.UUID,
+	decision, comment, nextStatus, nextStage string,
+	startDate time.Time, days float64,
+) {
+	if h.notify == nil {
+		return
+	}
+
+	// Pull the bits we need for templates in one query.
+	var (
+		requesterEmail, requesterName, actorName, typeName string
+		end                                                time.Time
+	)
+	_ = h.db.QueryRow(ctx, `
+		SELECT u.email::text, COALESCE(NULLIF(u.full_name,''), u.email::text),
+		       lt.name, r.end_date,
+		       COALESCE((SELECT NULLIF(full_name,'') FROM users WHERE id=$2), '')
+		FROM leave_requests r
+		JOIN users u  ON u.id = r.user_id
+		JOIN leave_types lt ON lt.id = r.leave_type_id
+		WHERE r.id=$1`,
+		requestID, actorID,
+	).Scan(&requesterEmail, &requesterName, &typeName, &end, &actorName)
+
+	startStr := startDate.Format("2 Jan 2006")
+	endStr := end.Format("2 Jan 2006")
+
+	switch {
+	case decision == "rejected":
+		// Tell the requester with the reason inline.
+		h.notify.Notify(ctx, notifications.Event{
+			Kind:     "leave.rejected",
+			TenantID: tid,
+			Recipients: []notifications.Recipient{{UserID: &requesterID}},
+			Payload: map[string]any{
+				"Start":  startStr,
+				"End":    endStr,
+				"Type":   typeName,
+				"Days":   formatDays(days),
+				"Reason": fallback(comment, "No comment provided."),
+				"Actor":  actorName,
+			},
+			DedupeKey: "leave.rejected:" + requestID.String(),
+			Link:      "/leave",
+		})
+	case nextStatus == "approved":
+		h.notify.Notify(ctx, notifications.Event{
+			Kind:     "leave.approved",
+			TenantID: tid,
+			Recipients: []notifications.Recipient{{UserID: &requesterID}},
+			Payload: map[string]any{
+				"Start": startStr,
+				"End":   endStr,
+				"Type":  typeName,
+				"Days":  formatDays(days),
+				"Actor": actorName,
+			},
+			DedupeKey: "leave.approved:" + requestID.String(),
+			Link:      "/leave",
+		})
+	case nextStage == "hr_pending":
+		// Manager said yes — kick the next stage to HR.
+		rows, err := h.db.Query(ctx, `
+			SELECT DISTINCT u.id
+			FROM users u
+			JOIN user_roles ur ON ur.user_id = u.id
+			JOIN roles r       ON r.id      = ur.role_id
+			WHERE u.tenant_id=$1 AND u.deleted_at IS NULL AND u.status='active'
+			  AND r.name IN ('super_admin','hr')`, tid)
+		if err != nil {
+			return
+		}
+		defer rows.Close()
+		recipients := []notifications.Recipient{}
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err == nil && id != requesterID {
+				recipients = append(recipients, notifications.Recipient{UserID: &id})
+			}
+		}
+		if len(recipients) == 0 {
+			return
+		}
+		h.notify.Notify(ctx, notifications.Event{
+			Kind:       "leave.approval_needed",
+			TenantID:   tid,
+			Recipients: recipients,
+			Payload: map[string]any{
+				"Requester": requesterName,
+				"Type":      typeName,
+				"Days":      formatDays(days),
+				"Start":     startStr,
+				"End":       endStr,
+			},
+			DedupeKey: "leave.approval_needed.hr:" + requestID.String(),
+			Link:      "/leave",
+		})
+	}
+}
+
+func fallback(s, def string) string {
+	if strings.TrimSpace(s) == "" {
+		return def
+	}
+	return s
 }
 
 // Eligibility — GET /api/v1/leave/decision-authority
@@ -424,6 +628,42 @@ func (h *Leave) DecisionAuthority(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"can_approve_manager": canApproveAsManager(roles),
 		"can_approve_hr":      canApproveAsHR(roles),
+	})
+}
+
+// MyPending — GET /api/v1/leave/my-pending
+// Lightweight summary of the caller's most recent non-final leave request,
+// used by the top-bar status menu so we can show "Awaiting line manager" or
+// "Approved · starts in 3 days" next to the Apply-for-Leave action. Returns
+// null when there's nothing live to show.
+func (h *Leave) MyPending(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	var (
+		id                   uuid.UUID
+		status, stage, typeN string
+		start, end           time.Time
+		days                 float64
+	)
+	// Pull the latest pending OR approved-but-not-yet-started request. Anything
+	// rejected / cancelled / past is irrelevant to the live status surface.
+	err := h.db.QueryRow(c, `
+		SELECT r.id, r.status, r.approval_stage, lt.name, r.start_date, r.end_date, r.days::float8
+		FROM leave_requests r
+		JOIN leave_types lt ON lt.id = r.leave_type_id
+		WHERE r.tenant_id=$1 AND r.user_id=$2
+		  AND (r.status='pending' OR (r.status='approved' AND r.end_date >= CURRENT_DATE))
+		ORDER BY r.submitted_at DESC
+		LIMIT 1`, tid, uid).Scan(&id, &status, &stage, &typeN, &start, &end, &days)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"item": nil})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"item": gin.H{
+			"id": id, "status": status, "approval_stage": stage,
+			"type_name": typeN, "start_date": start, "end_date": end, "days": days,
+		},
 	})
 }
 
