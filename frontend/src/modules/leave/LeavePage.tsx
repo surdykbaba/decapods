@@ -95,7 +95,10 @@ function fmtDate(iso: string) {
 
 export function LeavePage() {
   const { user } = useAuth();
-  const canApprove = (user?.roles ?? []).some((r) => ["super_admin", "ceo", "coo", "hr"].includes(r));
+  // Anyone who can act on either stage (line manager OR HR) sees the team tab.
+  const canApprove = (user?.roles ?? []).some((r) =>
+    ["super_admin", "ceo", "coo", "hr", "delivery_manager", "project_manager"].includes(r)
+  );
   const [tab, setTab] = useState<Tab>("dashboard");
   const [requestOpen, setRequestOpen] = useState(false);
 
@@ -225,7 +228,7 @@ function DashboardTab({ canApprove }: { canApprove: boolean }) {
             ) : (
               <ul className="divide-y divide-border">
                 {data.pending_approvals.map((r) => (
-                  <PendingRow key={r.id} req={r} />
+                  <PendingRow key={r.id} req={r} authority={authority} />
                 ))}
               </ul>
             )}
