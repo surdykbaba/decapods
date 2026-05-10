@@ -1,26 +1,172 @@
 name: cd
+
+# Single-host SSH deploy. Builds the Go API + Vite frontend on the runner,
+# then scp's an artefact bundle to the server and runs scripts/remote-install.sh
+# under the configured user.
+#
+# Required secrets (set via ./scripts/setup-secrets.sh):
+#   SSH_HOST, SSH_USER, SSH_PORT, SSH_PASSWORD
+#   DATABASE_URL                 — Postgres URL on the server
+#   REDIS_URL                    — Redis URL on the server
+#   JWT_ACCESS_SECRET, JWT_REFRESH_SECRET
+#   MASTER_KEY                   — Tier-2 application encryption key
+#   BLIND_INDEX_SALT             — optional; derived from MASTER_KEY otherwise
+#   MAILGUN_SMTP_HOST, MAILGUN_SMTP_PORT, MAILGUN_SMTP_USER, MAILGUN_SMTP_PASS,
+#   MAILGUN_FROM
+#   ALLOWED_ORIGINS              — comma-separated, e.g. "https://app.example.com"
+#
+# Optional secrets:
+#   DEPLOY_PATH                  — default /opt/pgdp
+#   SERVICE_NAME                 — default pgdp-api  (systemd unit)
+#   APP_PORT                     — default 8080
+#
+# Server prerequisites (one-time, see docs/SERVER_SETUP.md):
+#   - Linux with sudo, systemd, nginx, postgres reachable.
+#   - User has write access to $DEPLOY_PATH and can `sudo systemctl restart`
+#     the configured service via passwordless sudoers entry.
+
 on:
   push:
     branches: [main]
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      run_migrations:
+        description: "Run DB migrations after deploy"
+        type: boolean
+        default: true
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  deploy-staging:
+  build:
     runs-on: ubuntu-latest
-    environment: staging
+    outputs:
+      sha: ${{ steps.meta.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
-      - name: Configure kubectl
-        run: echo "${{ secrets.KUBECONFIG_STAGING }}" > $HOME/.kube/config
-      - name: Roll out
-        run: |
-          kubectl -n pgdp set image deploy/api api=ghcr.io/${{ github.repository }}/api:${{ github.sha }}
-          kubectl -n pgdp set image deploy/web web=ghcr.io/${{ github.repository }}/web:${{ github.sha }}
-          kubectl -n pgdp rollout status deploy/api --timeout=180s
 
-  deploy-prod:
-    needs: deploy-staging
-    if: startsWith(github.ref, 'refs/tags/v')
+      - id: meta
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # ---------- backend ----------
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.22" }
+      - name: Go mod download
+        working-directory: backend
+        run: go mod download
+      - name: Build api binary (linux/amd64)
+        working-directory: backend
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          mkdir -p ../dist/bin
+          go build -trimpath -ldflags "-s -w -X main.commit=${{ steps.meta.outputs.sha }}" \
+            -o ../dist/bin/pgdp-api ./cmd/api
+          go build -trimpath -ldflags "-s -w" -o ../dist/bin/pgdp-migrate ./cmd/migrate
+          go build -trimpath -ldflags "-s -w" -o ../dist/bin/pgdp-worker  ./cmd/worker
+
+      # ---------- frontend ----------
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: "npm", cache-dependency-path: frontend/package-lock.json }
+      - name: Install + build frontend
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Stage frontend dist
+        run: |
+          mkdir -p dist/web
+          cp -r frontend/dist/. dist/web/
+
+      # ---------- migrations + remote scripts ----------
+      - name: Stage migrations + scripts
+        run: |
+          mkdir -p dist/migrations dist/scripts
+          cp -r backend/migrations/. dist/migrations/
+          cp scripts/remote-install.sh dist/scripts/
+
+      - name: Tarball
+        run: tar -czf release.tgz -C dist .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release.tgz
+          retention-days: 7
+
+  deploy:
+    needs: build
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - run: echo "Production rollout via canary controlled by Argo Rollouts."
+      - uses: actions/download-artifact@v4
+        with: { name: release }
+
+      - name: Resolve deploy paths
+        id: paths
+        run: |
+          echo "deploy_path=${DEPLOY_PATH:-/opt/pgdp}"  >> "$GITHUB_OUTPUT"
+          echo "service=${SERVICE_NAME:-pgdp-api}"      >> "$GITHUB_OUTPUT"
+          echo "app_port=${APP_PORT:-8080}"             >> "$GITHUB_OUTPUT"
+        env:
+          DEPLOY_PATH:  ${{ secrets.DEPLOY_PATH }}
+          SERVICE_NAME: ${{ secrets.SERVICE_NAME }}
+          APP_PORT:     ${{ secrets.APP_PORT }}
+
+      - name: Upload bundle
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port:     ${{ secrets.SSH_PORT }}
+          source:   release.tgz
+          target:   /tmp/
+
+      - name: Remote install
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_PATH:           ${{ steps.paths.outputs.deploy_path }}
+          SERVICE_NAME:          ${{ steps.paths.outputs.service }}
+          APP_PORT:              ${{ steps.paths.outputs.app_port }}
+          SHA:                   ${{ needs.build.outputs.sha }}
+          RUN_MIGRATIONS:        ${{ inputs.run_migrations || 'true' }}
+          DATABASE_URL:          ${{ secrets.DATABASE_URL }}
+          REDIS_URL:             ${{ secrets.REDIS_URL }}
+          JWT_ACCESS_SECRET:     ${{ secrets.JWT_ACCESS_SECRET }}
+          JWT_REFRESH_SECRET:    ${{ secrets.JWT_REFRESH_SECRET }}
+          MASTER_KEY:            ${{ secrets.MASTER_KEY }}
+          BLIND_INDEX_SALT:      ${{ secrets.BLIND_INDEX_SALT }}
+          MAILGUN_SMTP_HOST:     ${{ secrets.MAILGUN_SMTP_HOST }}
+          MAILGUN_SMTP_PORT:     ${{ secrets.MAILGUN_SMTP_PORT }}
+          MAILGUN_SMTP_USER:     ${{ secrets.MAILGUN_SMTP_USER }}
+          MAILGUN_SMTP_PASS:     ${{ secrets.MAILGUN_SMTP_PASS }}
+          MAILGUN_FROM:          ${{ secrets.MAILGUN_FROM }}
+          ALLOWED_ORIGINS:       ${{ secrets.ALLOWED_ORIGINS }}
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port:     ${{ secrets.SSH_PORT }}
+          envs: DEPLOY_PATH,SERVICE_NAME,APP_PORT,SHA,RUN_MIGRATIONS,DATABASE_URL,REDIS_URL,JWT_ACCESS_SECRET,JWT_REFRESH_SECRET,MASTER_KEY,BLIND_INDEX_SALT,MAILGUN_SMTP_HOST,MAILGUN_SMTP_PORT,MAILGUN_SMTP_USER,MAILGUN_SMTP_PASS,MAILGUN_FROM,ALLOWED_ORIGINS
+          script: |
+            set -euo pipefail
+            mkdir -p "$DEPLOY_PATH/releases" "$DEPLOY_PATH/log"
+            REL="$DEPLOY_PATH/releases/$SHA"
+            mkdir -p "$REL"
+            tar -xzf /tmp/release.tgz -C "$REL"
+            chmod +x "$REL/scripts/remote-install.sh" "$REL/bin/"*
+            DEPLOY_PATH="$DEPLOY_PATH" SERVICE_NAME="$SERVICE_NAME" APP_PORT="$APP_PORT" \
+              SHA="$SHA" RUN_MIGRATIONS="$RUN_MIGRATIONS" \
+              DATABASE_URL="$DATABASE_URL" REDIS_URL="$REDIS_URL" \
+              JWT_ACCESS_SECRET="$JWT_ACCESS_SECRET" JWT_REFRESH_SECRET="$JWT_REFRESH_SECRET" \
+              MASTER_KEY="$MASTER_KEY" BLIND_INDEX_SALT="$BLIND_INDEX_SALT" \
+              MAILGUN_SMTP_HOST="$MAILGUN_SMTP_HOST" MAILGUN_SMTP_PORT="$MAILGUN_SMTP_PORT" \
+              MAILGUN_SMTP_USER="$MAILGUN_SMTP_USER" MAILGUN_SMTP_PASS="$MAILGUN_SMTP_PASS" \
+              MAILGUN_FROM="$MAILGUN_FROM" ALLOWED_ORIGINS="$ALLOWED_ORIGINS" \
+              bash "$REL/scripts/remote-install.sh"
+            rm -f /tmp/release.tgz

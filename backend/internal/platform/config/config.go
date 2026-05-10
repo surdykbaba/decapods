@@ -26,6 +26,11 @@ type Config struct {
 	S3AccessKey string
 	S3SecretKey string
 
+	// Application-side encryption (Tier-2). Both values are base64.
+	MasterKey         string            // 32-byte primary key
+	HistoricalKeys    map[int]string    // version -> base64 key, for rotation windows
+	BlindIndexSalt    string            // optional override; defaults to a derivation of MasterKey
+
 	SMTPHost string
 	SMTPPort int
 	SMTPFrom string
@@ -70,6 +75,8 @@ func Load() (*Config, error) {
 		S3Bucket:                v.GetString("S3_BUCKET"),
 		S3AccessKey:             v.GetString("S3_ACCESS_KEY"),
 		S3SecretKey:             v.GetString("S3_SECRET_KEY"),
+		MasterKey:               v.GetString("MASTER_KEY"),
+		BlindIndexSalt:          v.GetString("BLIND_INDEX_SALT"),
 		SMTPHost:                v.GetString("SMTP_HOST"),
 		SMTPPort:                v.GetInt("SMTP_PORT"),
 		SMTPFrom:                v.GetString("SMTP_FROM"),
