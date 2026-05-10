@@ -5,7 +5,7 @@ import { toast } from "@/lib/toast";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
+import { useAuth, type Me } from "@/lib/auth";
 import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
@@ -1337,6 +1337,8 @@ function TimesheetTab() {
 
 function ProfileTab() {
   const qc = useQueryClient();
+  const setUser = useAuth((s) => s.setUser);
+  const currentUser = useAuth((s) => s.user);
   const { data, isLoading } = useQuery<Profile>({
     queryKey: ["me", "profile"], queryFn: () => api("/api/v1/me/profile"),
   });
@@ -1360,14 +1362,20 @@ function ProfileTab() {
   );
 
   const save = useMutation({
-    mutationFn: () => api("/api/v1/me/profile", {
+    mutationFn: () => api<Partial<Me>>("/api/v1/me/profile", {
       method: "PUT",
-      body: JSON.stringify({ name, github_username: github }),
+      body: JSON.stringify({ name: name.trim(), github_username: github.trim() }),
     }),
-    onSuccess: () => {
+    onSuccess: (resp) => {
+      // Push the response back into the auth store so the sidebar identity,
+      // CampfireBell author labels, and member-directory rows pick up the
+      // change without a hard refresh.
+      if (resp && currentUser) {
+        setUser({ ...currentUser, ...resp } as Me);
+      }
       toast.success("Profile updated", "Your changes have been saved.");
       qc.invalidateQueries({ queryKey: ["me", "profile"] });
-      qc.invalidateQueries({ queryKey: ["me"] });
+      qc.invalidateQueries({ queryKey: ["members"] });
     },
     onError: (e: unknown) => {
       const msg = (e as { message?: string })?.message ?? "Could not save your profile.";

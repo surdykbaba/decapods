@@ -4,6 +4,7 @@ import { Camera, X, UploadCloud } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "@/lib/toast";
 import { Avatar } from "@/components/Avatar";
+import { useAuth, type Me } from "@/lib/auth";
 
 const MAX_SIDE = 256;        // px — downscale before encoding
 const MAX_DATA_URI = 350_000; // ~256 KB image after base64
@@ -23,20 +24,29 @@ export function AvatarUploader({
   onSaved?: (next: string | null) => void;
 }) {
   const qc = useQueryClient();
+  const setUser = useAuth((s) => s.setUser);
+  const currentUser = useAuth((s) => s.user);
   const fileRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
 
   const save = useMutation({
     mutationFn: (avatar_url: string | null) =>
-      api("/api/v1/me/profile", {
+      api<Partial<Me>>("/api/v1/me/profile", {
         method: "PUT",
         body: JSON.stringify({ avatar_url: avatar_url ?? "" }),
       }),
-    onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ["me"] });
+    onSuccess: (resp, vars) => {
+      // Push the fresh user back into the Zustand store so the sidebar
+      // avatar, identity dropdown, and every other consumer of useAuth
+      // update immediately. Falls back to a manual merge when the API
+      // (somehow) returned only a partial shape.
+      if (resp && currentUser) {
+        setUser({ ...currentUser, ...resp } as Me);
+      }
       qc.invalidateQueries({ queryKey: ["me", "profile"] });
       qc.invalidateQueries({ queryKey: ["members"] });
+      qc.invalidateQueries({ queryKey: ["campfire", "presence"] });
       toast.success(vars ? "Photo updated" : "Photo removed");
       onSaved?.(vars);
       setPreview(null);

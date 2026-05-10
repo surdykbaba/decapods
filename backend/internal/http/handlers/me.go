@@ -566,9 +566,41 @@ func (h *Me) PutProfile(c *gin.Context) {
 	}
 	if len(sets) == 0 { c.JSON(400, gin.H{"error":"nothing to update"}); return }
 	args = append(args, uid)
-	q := "UPDATE users SET " + strings.Join(sets, ", ") + " WHERE id=$" + strconv.Itoa(len(args))
-	if _, err := h.db.Exec(c, q, args...); err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }
-	c.JSON(200, gin.H{"ok": true})
+	// updated_at + RETURNING in one round trip so callers can push the fresh
+	// user straight into the auth store (the sidebar, comment threads and
+	// presence pages all read from there — invalidating a TanStack key alone
+	// leaves those stale).
+	sets = append(sets, "updated_at=now()")
+	q := "UPDATE users SET " + strings.Join(sets, ", ") +
+		" WHERE id=$" + strconv.Itoa(len(args)) +
+		" RETURNING id, email::text, COALESCE(full_name,''), COALESCE(github_username,''), COALESCE(avatar_url,'')"
+
+	var (
+		retID                                   uuid.UUID
+		retEmail, retName, retGithub, retAvatar string
+	)
+	if err := h.db.QueryRow(c, q, args...).Scan(&retID, &retEmail, &retName, &retGithub, &retAvatar); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Pull roles so the response is a drop-in replacement for what /api/v1/me
+	// returns. Saves the client a second round trip.
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	rs, _ := rolesAny.([]string)
+	if rs == nil {
+		rs = []string{}
+	}
+
+	c.JSON(200, gin.H{
+		"ok":              true,
+		"id":              retID,
+		"email":           retEmail,
+		"name":            retName,
+		"github_username": retGithub,
+		"avatar_url":      retAvatar,
+		"roles":           rs,
+	})
 }
 
 /* ---------- helpers ---------- */
