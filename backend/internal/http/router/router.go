@@ -284,6 +284,8 @@ func New(d Deps) http.Handler {
 	authed.POST("/campfire/rooms/:id/messages", cf.SendMessage)
 
 	authed.GET("/campfire/insights", mw.RequirePermission("governance:write"), cf.Insights)
+	authed.GET("/campfire/unread",     cf.Unread)
+	authed.POST("/campfire/mark-seen", cf.MarkSeen)
 
 	return r
 }

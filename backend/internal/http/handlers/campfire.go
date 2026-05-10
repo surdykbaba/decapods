@@ -909,3 +909,79 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// Unread / last-seen — drives the top-bar bell badge
+// ──────────────────────────────────────────────────────────────────────────
+
+// Unread — GET /api/v1/campfire/unread
+// Returns the count of campfire activity since the caller last opened the
+// feed, plus the most recent few items so the bell can show a peek without
+// a second round-trip. "Activity" = posts the caller didn't author + comments
+// on posts they engaged with.
+func (h *Campfire) Unread(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+
+	var lastSeen time.Time
+	_ = h.db.QueryRow(c, `SELECT campfire_last_seen_at FROM users WHERE id=$1`, uid).Scan(&lastSeen)
+
+	var postCount, commentCount int
+	_ = h.db.QueryRow(c, `
+		SELECT COUNT(*) FROM campfire_posts
+		 WHERE tenant_id=$1 AND author_id <> $2 AND created_at > $3`,
+		tid, uid, lastSeen).Scan(&postCount)
+	_ = h.db.QueryRow(c, `
+		SELECT COUNT(*) FROM campfire_comments cc
+		  JOIN campfire_posts p ON p.id = cc.post_id
+		 WHERE p.tenant_id=$1 AND cc.author_id <> $2 AND cc.created_at > $3`,
+		tid, uid, lastSeen).Scan(&commentCount)
+
+	// Pull up to 5 most-recent unread posts for the bell preview.
+	preview := []gin.H{}
+	if rows, err := h.db.Query(c, `
+		SELECT p.id, p.title, p.body, p.kind, p.created_at,
+		       COALESCE(u.full_name, ''), COALESCE(u.email::text, '')
+		  FROM campfire_posts p
+		  JOIN users u ON u.id = p.author_id
+		 WHERE p.tenant_id=$1 AND p.author_id <> $2 AND p.created_at > $3
+		 ORDER BY p.created_at DESC LIMIT 5`, tid, uid, lastSeen); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				id                            uuid.UUID
+				title, body, kind, name, mail string
+				at                            time.Time
+			)
+			if err := rows.Scan(&id, &title, &body, &kind, &at, &name, &mail); err == nil {
+				snippet := body
+				if len(snippet) > 140 {
+					snippet = snippet[:140] + "…"
+				}
+				preview = append(preview, gin.H{
+					"id": id, "title": title, "snippet": snippet, "kind": kind,
+					"created_at": at, "author_name": name, "author_email": mail,
+				})
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"count":         postCount + commentCount,
+		"post_count":    postCount,
+		"comment_count": commentCount,
+		"preview":       preview,
+		"last_seen_at":  lastSeen,
+	})
+}
+
+// MarkSeen — POST /api/v1/campfire/mark-seen
+// Stamps the caller's campfire_last_seen_at to now(). Called when they open
+// the page (or the bell dropdown) so the badge resets.
+func (h *Campfire) MarkSeen(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	if _, err := h.db.Exec(c, `UPDATE users SET campfire_last_seen_at = now() WHERE id=$1`, uid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}

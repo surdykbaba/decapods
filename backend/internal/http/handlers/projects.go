@@ -87,6 +87,29 @@ func (h *Projects) AddMilestone(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Ping the assignee that they've been handed something. We reuse the
+	// catalog's milestone.created event so it lights up both the in-app bell
+	// and the email pipeline. Best-effort; never blocks the response.
+	if h.notify != nil && req.AssigneeID != uuid.Nil {
+		tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+		var projectName string
+		_ = h.db.QueryRow(c.Request.Context(),
+			`SELECT name FROM projects WHERE id=$1`, id).Scan(&projectName)
+		h.notify.Notify(c.Request.Context(), notifications.Event{
+			Kind:     "milestone.created",
+			TenantID: tid,
+			Recipients: []notifications.Recipient{{UserID: &req.AssigneeID}},
+			Payload: map[string]any{
+				"Project": projectName,
+				"Title":   req.Title,
+				"DueOn":   req.DueOn,
+			},
+			DedupeKey: "milestone.created:" + mid.String(),
+			Link:      "/projects/" + id.String(),
+		})
+	}
+
 	c.JSON(201, gin.H{"id": mid})
 }
 

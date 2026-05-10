@@ -12,6 +12,7 @@ import { api } from "@/lib/api";
 import { useTheme, toggleTheme } from "@/lib/theme";
 import { useHeartbeat } from "@/lib/presence";
 import { NotificationsBell } from "@/components/NotificationsBell";
+import { CampfireBell } from "@/components/CampfireBell";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CommandPalette } from "@/components/CommandPalette";
 
@@ -220,6 +221,7 @@ export function Shell() {
               {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
             </button>
 
+            <CampfireBell />
             <NotificationsBell />
           </header>
 

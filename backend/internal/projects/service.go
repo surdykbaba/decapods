@@ -31,9 +31,11 @@ type CreateInput struct {
 }
 
 type MilestoneInput struct {
-	Title  string `json:"title" binding:"required"`
-	DueOn  string `json:"due_on"`
-	Status string `json:"status"`
+	Title       string    `json:"title" binding:"required"`
+	Description string    `json:"description"`
+	DueOn       string    `json:"due_on"`
+	Status      string    `json:"status"`
+	AssigneeID  uuid.UUID `json:"assignee_id"`
 }
 
 type TaskInput struct {
@@ -174,24 +176,38 @@ func (s *Service) Get(ctx context.Context, id uuid.UUID) (map[string]any, error)
 	if links == nil {
 		links = []any{}
 	}
-	// Milestones
+	// Milestones — include the assignee so the UI can render an avatar + name
+	// without a second roundtrip. Description is optional task-style detail.
 	milestones := []map[string]any{}
 	if rows, err := s.db.Query(ctx, `
-		SELECT id, title, due_on, status, created_at
-		FROM milestones WHERE project_id=$1
-		ORDER BY due_on NULLS LAST, created_at`, p.ID); err == nil {
+		SELECT m.id, m.title, COALESCE(m.description,''), m.due_on, m.status, m.created_at,
+		       m.assignee_id, COALESCE(u.full_name,''), COALESCE(u.email::text,'')
+		FROM milestones m
+		LEFT JOIN users u ON u.id = m.assignee_id
+		WHERE m.project_id=$1
+		ORDER BY m.due_on NULLS LAST, m.created_at`, p.ID); err == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var (
-				mid    uuid.UUID
-				title  string
-				due    *time.Time
-				status string
-				ca     time.Time
+				mid                            uuid.UUID
+				title, description, status     string
+				due                            *time.Time
+				ca                             time.Time
+				assignee                       *uuid.UUID
+				assigneeName, assigneeEmail    string
 			)
-			if err := rows.Scan(&mid, &title, &due, &status, &ca); err == nil {
+			if err := rows.Scan(&mid, &title, &description, &due, &status, &ca,
+				&assignee, &assigneeName, &assigneeEmail); err == nil {
 				milestones = append(milestones, map[string]any{
-					"id": mid, "title": title, "due_on": due, "status": status, "created_at": ca,
+					"id":             mid,
+					"title":          title,
+					"description":    description,
+					"due_on":         due,
+					"status":         status,
+					"created_at":     ca,
+					"assignee_id":    assignee,
+					"assignee_name":  assigneeName,
+					"assignee_email": assigneeEmail,
 				})
 			}
 		}
@@ -420,9 +436,12 @@ func (s *Service) Board(ctx context.Context, id uuid.UUID) (map[string]any, erro
 func (s *Service) AddMilestone(ctx context.Context, projectID uuid.UUID, in MilestoneInput) (uuid.UUID, error) {
 	id := uuid.New()
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO milestones (id, project_id, title, due_on, status)
-		VALUES ($1,$2,$3, NULLIF($4,'')::date, COALESCE(NULLIF($5,''),'pending'))`,
-		id, projectID, in.Title, in.DueOn, in.Status)
+		INSERT INTO milestones (id, project_id, title, description, due_on, status, assignee_id)
+		VALUES ($1, $2, $3, NULLIF($4,''),
+		        NULLIF($5,'')::date,
+		        COALESCE(NULLIF($6,''),'pending'),
+		        NULLIF($7,'00000000-0000-0000-0000-000000000000')::uuid)`,
+		id, projectID, in.Title, in.Description, in.DueOn, in.Status, in.AssigneeID)
 	return id, err
 }
 

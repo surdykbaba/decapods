@@ -9,6 +9,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toast } from "@/lib/toast";
+import { linkify } from "@/lib/linkify";
 import { SmartButton } from "@/components/SmartButton";
 import {
   Flame, Megaphone, Trophy, PartyPopper, UserPlus, Cake, Sparkles,
@@ -185,6 +186,17 @@ export function CampfirePage() {
   const { user } = useAuth();
   const isAdmin = !!user?.roles?.some((r) => r === "super_admin" || r === "ceo" || r === "coo" || r === "hr");
   const [tab, setTab] = useState<Tab>("feed");
+  const qc = useQueryClient();
+
+  // Mark the feed as seen the moment the page mounts. The bell's badge resets
+  // on its own next refetch (30s), but we also invalidate the query so it
+  // updates within the next tick.
+  useEffect(() => {
+    api("/api/v1/campfire/mark-seen", { method: "POST" })
+      .then(() => qc.invalidateQueries({ queryKey: ["campfire-unread"] }))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; admin?: boolean }[] = [
     { key: "feed",   label: "Pulse feed",  icon: Newspaper },
@@ -483,7 +495,7 @@ function PostCard({
               <span className="text-[11px] text-muted">{relativeTime(post.created_at)}</span>
             </div>
             {post.title && <div className="text-base font-bold text-text mt-1">{post.title}</div>}
-            <div className="text-sm text-text mt-1 whitespace-pre-wrap">{post.body}</div>
+            <div className="text-sm text-text mt-1 whitespace-pre-wrap break-words">{linkify(post.body)}</div>
           </div>
           <div className="flex items-center gap-1 shrink-0">
             {isAdmin && (
@@ -549,7 +561,7 @@ function CommentsThread({ postId }: { postId: string }) {
               <span className="text-[12px] font-bold text-text">{c.author_name || c.author_email}</span>
               <span className="text-[10.5px] text-muted">{relativeTime(c.created_at)}</span>
             </div>
-            <div className="text-[13px] text-text whitespace-pre-wrap">{c.body}</div>
+            <div className="text-[13px] text-text whitespace-pre-wrap break-words">{linkify(c.body)}</div>
             <ReactionStrip
               targetType="comment"
               targetId={c.id}
@@ -1004,7 +1016,7 @@ function HelpWall({ currentUserId }: { currentUserId: string }) {
                     <span className="text-[11px] text-muted">{relativeTime(h.created_at)} ago · {h.requester.name || h.requester.email}</span>
                   </div>
                   <div className="text-sm font-bold text-text mt-1">{h.title}</div>
-                  {h.body && <div className="text-[13px] text-muted mt-0.5 whitespace-pre-wrap">{h.body}</div>}
+                  {h.body && <div className="text-[13px] text-muted mt-0.5 whitespace-pre-wrap break-words">{linkify(h.body)}</div>}
                   {h.resolver.id && (
                     <div className="text-[11px] text-accent mt-1.5">
                       Picked up by <span className="font-semibold">{h.resolver.name}</span>
@@ -1211,7 +1223,7 @@ function RoomView({ room }: { room: Room }) {
                 <span className="text-[13px] font-bold text-text">{m.author_name || m.author_email}</span>
                 <span className="text-[10.5px] text-muted">{relativeTime(m.created_at)}</span>
               </div>
-              <div className="text-[13.5px] text-text whitespace-pre-wrap">{m.body}</div>
+              <div className="text-[13.5px] text-text whitespace-pre-wrap break-words">{linkify(m.body)}</div>
               <ReactionStrip
                 targetType="message"
                 targetId={m.id}

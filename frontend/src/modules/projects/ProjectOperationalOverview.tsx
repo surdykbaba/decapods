@@ -15,7 +15,17 @@ import {
 
 type ProjectLink = { label: string; url: string; kind?: string };
 type Stakeholder = { id: string; name: string; role: string; kind: "internal" | "external"; email?: string; fee_amount?: number; fee_currency?: string };
-type Milestone = { id: string; title: string; due_on: string | null; status: string; created_at: string };
+type Milestone = {
+  id: string;
+  title: string;
+  description?: string;
+  due_on: string | null;
+  status: string;
+  created_at: string;
+  assignee_id?: string | null;
+  assignee_name?: string;
+  assignee_email?: string;
+};
 type Invoice = { id: string; number: string; amount: number; currency: string; status: string; issued_on: string | null };
 type Repo = { id: string; owner: string; name: string };
 type Risk = { id: string; title: string; severity: "low" | "medium" | "high"; owner: string; due_on?: string; mitigation?: string; status: "active" | "mitigating" | "resolved"; at: string };
@@ -173,7 +183,7 @@ export function ProjectOperationalOverview({
     onSuccess: () => qc.invalidateQueries({ queryKey: ["project", id] }),
   });
   const addMilestone = useMutation({
-    mutationFn: (m: { title: string; due_on?: string }) =>
+    mutationFn: (m: { title: string; description?: string; due_on?: string; assignee_id?: string }) =>
       api(`/api/v1/projects/${id}/milestones`, { method: "POST", body: JSON.stringify(m) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["project", id] }),
   });
@@ -181,6 +191,7 @@ export function ProjectOperationalOverview({
   /* Dialog state */
   const [riskOpen, setRiskOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
+  const [milestoneOpen, setMilestoneOpen] = useState(false);
 
   /* Derived data */
   const ccy = project.currency || "NGN";
@@ -293,12 +304,7 @@ export function ProjectOperationalOverview({
               onRaiseRisk={() => setRiskOpen(true)}
               onUploadDocument={() => project.opportunity_id ? (window.location.href = `/pipeline/${project.opportunity_id}`) : null}
               hasOpportunity={!!project.opportunity_id}
-              onCreateMilestone={() => {
-                const title = prompt("Milestone title?");
-                if (!title) return;
-                const due = prompt("Due date (YYYY-MM-DD, optional)") ?? "";
-                addMilestone.mutate({ title, due_on: due || undefined });
-              }}
+              onCreateMilestone={() => setMilestoneOpen(true)}
               archiveButton={<ArchiveButton projectId={project.id} projectName={project.name} />}
             />
           </div>
@@ -471,6 +477,14 @@ export function ProjectOperationalOverview({
           submitting={appendLog.isPending}
           onClose={() => setReportOpen(false)}
           onAdd={(r) => appendLog.mutate({ kind: "reports", body: r }, { onSuccess: () => setReportOpen(false) })}
+        />
+      )}
+      {milestoneOpen && (
+        <CreateMilestoneDialog
+          projectId={project.id}
+          submitting={addMilestone.isPending}
+          onClose={() => setMilestoneOpen(false)}
+          onAdd={(m) => addMilestone.mutate(m, { onSuccess: () => setMilestoneOpen(false) })}
         />
       )}
     </div>
@@ -1115,6 +1129,8 @@ function MilestonesPanel({
       {milestones.map((m) => {
         const overdue = m.due_on && new Date(m.due_on).getTime() < Date.now() && m.status !== "done";
         const tone = m.status === "done" ? "good" : overdue ? "bad" : "info";
+        const assigneeLabel = m.assignee_name || m.assignee_email || "";
+        const initial = (assigneeLabel || "·").charAt(0).toUpperCase();
         return (
           <li key={m.id} className="relative">
             <span className={`absolute -left-5 top-1.5 w-3 h-3 rounded-full border-2 border-surface ${
@@ -1123,14 +1139,32 @@ function MilestonesPanel({
             <div className="flex items-start gap-3">
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium text-text">{m.title}</div>
-                <div className="text-xs text-muted flex items-center gap-2 mt-0.5">
-                  <CalendarClock size={11} /> {fmtDate(m.due_on)}
+                {m.description && (
+                  <div className="text-xs text-muted/90 mt-0.5 line-clamp-2">{m.description}</div>
+                )}
+                <div className="text-xs text-muted flex items-center gap-2 mt-0.5 flex-wrap">
+                  <span className="inline-flex items-center gap-1">
+                    <CalendarClock size={11} /> {fmtDate(m.due_on)}
+                  </span>
                   <span className="capitalize">· {m.status}</span>
                   {overdue && <Chip tone="bad">overdue</Chip>}
+                  {assigneeLabel ? (
+                    <span
+                      className="inline-flex items-center gap-1 ml-1"
+                      title={`Assigned to ${assigneeLabel}`}
+                    >
+                      <span className="w-4 h-4 rounded-full bg-accent-soft text-accent text-[9px] font-bold grid place-items-center">
+                        {initial}
+                      </span>
+                      <span className="text-text/80">{assigneeLabel.split(" ")[0]}</span>
+                    </span>
+                  ) : (
+                    <span className="text-muted/70 italic">Unassigned</span>
+                  )}
                 </div>
               </div>
               {m.status !== "done" && (
-                <button onClick={() => onMark(m.id, "done")} className="text-xs text-success hover:underline">
+                <button onClick={() => onMark(m.id, "done")} className="text-xs text-success hover:underline whitespace-nowrap">
                   Mark done
                 </button>
               )}
@@ -1839,6 +1873,98 @@ function RaiseRiskDialog({
         <button onClick={onClose} className="btn-outline">Cancel</button>
         <SmartButton variant="danger" loading={submitting} loadingLabel="Saving…" onClick={() => submit()}>
           Raise risk
+        </SmartButton>
+      </DialogActions>
+    </Dialog>
+  );
+}
+
+// CreateMilestoneDialog — used by the project header's "+ Create milestone"
+// action. We treat a milestone like a top-level task: title, optional notes,
+// due date, and an assignee picked from the project's existing members.
+// The assignee gets the milestone.created notification on save (via the
+// backend handler) so they know they've been handed something.
+function CreateMilestoneDialog({
+  projectId, submitting, onClose, onAdd,
+}: {
+  projectId: string;
+  submitting: boolean;
+  onClose: () => void;
+  onAdd: (m: { title: string; description?: string; due_on?: string; assignee_id?: string }) => void;
+}) {
+  type Assignable = { id: string; name: string; email: string; role?: string };
+  const { data: assignableData } = useQuery<{ items: Assignable[] }>({
+    queryKey: ["project", projectId, "assignable"],
+    queryFn: () => api(`/api/v1/projects/${projectId}/members/assignable`),
+  });
+  const members = assignableData?.items ?? [];
+
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [due, setDue] = useState("");
+  const [assignee, setAssignee] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  function submit() {
+    if (!title.trim()) { setErr("Title is required."); return; }
+    onAdd({
+      title: title.trim(),
+      description: description.trim() || undefined,
+      due_on: due || undefined,
+      assignee_id: assignee || undefined,
+    });
+  }
+
+  return (
+    <Dialog title="Create milestone" onClose={onClose} icon={<Flag className="text-accent" size={20} />}>
+      <label className="block">
+        <div className="label">Title <span className="text-danger">*</span></div>
+        <input
+          className="input"
+          autoFocus
+          value={title}
+          placeholder="e.g. UAT sign-off"
+          onChange={(e) => setTitle(e.target.value)}
+        />
+      </label>
+      <label className="block">
+        <div className="label">Description</div>
+        <textarea
+          className="input min-h-[80px]"
+          value={description}
+          placeholder="What does done look like? Acceptance criteria, key deliverables…"
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </label>
+      <div className="grid grid-cols-2 gap-3">
+        <label className="block">
+          <div className="label">Due date</div>
+          <input className="input" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+        </label>
+        <label className="block">
+          <div className="label">Assignee</div>
+          <select
+            className="input"
+            value={assignee}
+            onChange={(e) => setAssignee(e.target.value)}
+          >
+            <option value="">Unassigned</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name || m.email}{m.role ? ` · ${m.role}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="text-[11px] text-muted">
+        The assignee will get an in-app + email notification with a link back to this project.
+      </div>
+      {err && <div className="text-danger text-sm">{err}</div>}
+      <DialogActions>
+        <button onClick={onClose} className="btn-outline">Cancel</button>
+        <SmartButton variant="primary" loading={submitting} loadingLabel="Creating…" onClick={() => submit()}>
+          Create milestone
         </SmartButton>
       </DialogActions>
     </Dialog>
