@@ -156,7 +156,18 @@ export function VendorDetailPage() {
       toast.success("Invitation created", "Copy the link or open your email client to send it.");
       qc.invalidateQueries({ queryKey: ["vendor-invites", id] });
     },
-    onError: (e: Error) => toast.error("Could not create invite", e.message),
+    onError: (e: unknown) => {
+      const body = (e instanceof ApiError ? (e.body as any) : null) ?? {};
+      if (body.code === "invite_exists") {
+        toast.error(
+          "Invitation already pending",
+          "Use Resend on the existing invitation — sending another would split the inbox in two.",
+        );
+        qc.invalidateQueries({ queryKey: ["vendor-invites", id] });
+        return;
+      }
+      toast.error("Could not create invite", body.error ?? (e as Error)?.message);
+    },
   });
 
   const revokeInvite = useMutation({

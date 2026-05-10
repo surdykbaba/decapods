@@ -365,11 +365,24 @@ func (h *Members) CreateInvite(c *gin.Context) {
 		return
 	}
 
-	// Auto-revoke any earlier pending invite for this email.
-	_, _ = h.db.Exec(c, `
-		UPDATE member_invitations SET revoked_at=now()
-		WHERE tenant_id=$1 AND lower(email::text)=$2 AND accepted_at IS NULL AND revoked_at IS NULL`,
-		tid, req.Email)
+	// Refuse to mint a second invite if one is already pending — caller should
+	// use "Resend" on the existing invitation instead. This avoids the inbox
+	// seeing two different links for the same person and accidental token
+	// fan-out. Expired/revoked/accepted invites are ignored (a new one is fine).
+	var pendingID uuid.UUID
+	if err := h.db.QueryRow(c, `
+		SELECT id FROM member_invitations
+		 WHERE tenant_id=$1 AND lower(email::text)=$2
+		   AND accepted_at IS NULL AND revoked_at IS NULL
+		   AND expires_at > now()
+		 LIMIT 1`, tid, req.Email).Scan(&pendingID); err == nil {
+		c.JSON(409, gin.H{
+			"error":     "An invitation has already been sent to that address. Use Resend to email it again.",
+			"code":      "invite_exists",
+			"invite_id": pendingID,
+		})
+		return
+	}
 
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }

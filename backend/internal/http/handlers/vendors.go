@@ -488,10 +488,22 @@ func (h *Vendors) CreateInvite(c *gin.Context) {
 	}
 	token := base64.RawURLEncoding.EncodeToString(buf)
 
-	// Optional: revoke any earlier pending invites for this vendor — only one live link at a time.
-	_, _ = h.db.Exec(c,
-		`UPDATE vendor_invitations SET revoked_at=now()
-		 WHERE vendor_id=$1 AND accepted_at IS NULL AND revoked_at IS NULL`, id)
+	// Reject if a live invite already exists for this vendor — caller should
+	// resend the existing one rather than mint a parallel link.
+	var pendingID uuid.UUID
+	if err := h.db.QueryRow(c, `
+		SELECT id FROM vendor_invitations
+		 WHERE vendor_id=$1
+		   AND accepted_at IS NULL AND revoked_at IS NULL
+		   AND expires_at > now()
+		 LIMIT 1`, id).Scan(&pendingID); err == nil {
+		c.JSON(409, gin.H{
+			"error":     "An invitation has already been sent for this vendor. Use Resend to email it again.",
+			"code":      "invite_exists",
+			"invite_id": pendingID,
+		})
+		return
+	}
 
 	expires := time.Now().Add(inviteTTL)
 	if _, err := h.db.Exec(c, `

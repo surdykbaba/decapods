@@ -392,9 +392,20 @@ func (h *Agents) CreateInvite(c *gin.Context) {
 	if _, err := rand.Read(buf); err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }
 	token := base64.RawURLEncoding.EncodeToString(buf)
 
-	_, _ = h.db.Exec(c,
-		`UPDATE agent_invitations SET revoked_at=now()
-		 WHERE agent_id=$1 AND accepted_at IS NULL AND revoked_at IS NULL`, id)
+	var pendingID uuid.UUID
+	if err := h.db.QueryRow(c, `
+		SELECT id FROM agent_invitations
+		 WHERE agent_id=$1
+		   AND accepted_at IS NULL AND revoked_at IS NULL
+		   AND expires_at > now()
+		 LIMIT 1`, id).Scan(&pendingID); err == nil {
+		c.JSON(409, gin.H{
+			"error":     "An invitation has already been sent for this agent. Use Resend to email it again.",
+			"code":      "invite_exists",
+			"invite_id": pendingID,
+		})
+		return
+	}
 	expires := time.Now().Add(agentInviteTTL)
 	if _, err := h.db.Exec(c, `
 		INSERT INTO agent_invitations (tenant_id, agent_id, token, email, message, expires_at, created_by)

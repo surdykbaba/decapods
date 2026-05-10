@@ -176,8 +176,16 @@ export function AgentDetailPage() {
       qc.invalidateQueries({ queryKey: ["agent-invites", id] });
     },
     onError: (e: unknown) => {
-      const msg = e instanceof ApiError ? (e.body as any)?.error ?? e.message : (e as Error)?.message;
-      toast.error("Could not create invite", msg);
+      const body = (e instanceof ApiError ? (e.body as any) : null) ?? {};
+      if (body.code === "invite_exists") {
+        toast.error(
+          "Invitation already pending",
+          "Use Resend on the existing invitation — sending another would split the inbox in two.",
+        );
+        qc.invalidateQueries({ queryKey: ["agent-invites", id] });
+        return;
+      }
+      toast.error("Could not create invite", body.error ?? (e as Error)?.message);
     },
   });
 

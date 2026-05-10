@@ -127,7 +127,21 @@ export function MembersPage() {
       ),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["members", "invitations"] }); },
     onError: (e: unknown) => {
-      const msg = e instanceof ApiError ? ((e.body as any)?.error ?? e.message) : (e as Error)?.message;
+      const body = (e instanceof ApiError ? (e.body as any) : null) ?? {};
+      const msg = body.error ?? (e as Error)?.message;
+      if (body.code === "invite_exists") {
+        toast.error(
+          "Invitation already pending",
+          "Use the Resend button on the existing invitation below — minting a second link would split the inbox in two.",
+        );
+        // Make sure the panel is fresh so they can see / act on the existing row.
+        qc.invalidateQueries({ queryKey: ["members", "invitations"] });
+        return;
+      }
+      if (body.code === "email_taken") {
+        toast.error("Email already in use", "That address already belongs to a member in this workspace.");
+        return;
+      }
       toast.error("Could not create invite", msg);
     },
   });
