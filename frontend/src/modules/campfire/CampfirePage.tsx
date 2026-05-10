@@ -9,13 +9,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toast } from "@/lib/toast";
-import { linkify } from "@/lib/linkify";
 import { SmartButton } from "@/components/SmartButton";
+import { SmartBody } from "@/modules/campfire/smartBody";
+import { MentionInput } from "@/modules/campfire/MentionInput";
 import {
   Flame, Megaphone, Trophy, PartyPopper, UserPlus, Cake, Sparkles,
   StickyNote, Newspaper, MessageCircle, Pin, X, Send, Heart, ThumbsUp,
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
-  Wrench, Briefcase, Hash, Activity, Plus, Loader2,
+  Wrench, Briefcase, Hash, Activity, Plus, Loader2, CalendarDays, TrendingUp, Plane,
 } from "lucide-react";
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -334,8 +335,14 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["campfire", "posts"] }),
   });
 
+  // Group posts by day for the "Today / Yesterday / Mon 13 May" headers. Pinned
+  // posts still float to the top in their own bucket so they always read first.
+  const grouped = useMemo(() => groupByDay(posts), [posts]);
+
   return (
     <div className="space-y-4">
+      <SpotlightCard />
+
       <button
         onClick={() => setComposerOpen(true)}
         className="w-full bg-surface border border-border rounded-2xl px-5 py-3.5 flex items-center gap-3 hover:border-accent/40 transition-colors text-left"
@@ -366,15 +373,169 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
         </div>
       )}
 
-      {posts.map((p) => (
-        <PostCard
-          key={p.id}
-          post={p}
-          currentUserId={user?.id ?? ""}
-          isAdmin={isAdmin}
-          onPin={(pinned) => togglePin.mutate({ id: p.id, pinned })}
-          onDelete={() => remove.mutate(p.id)}
-        />
+      {grouped.map(({ label, posts: chunk }) => (
+        <section key={label} className="space-y-3">
+          <div className="flex items-center gap-3 px-1">
+            <CalendarDays size={12} className="text-muted" />
+            <span className="text-[11px] uppercase tracking-wider font-bold text-muted">{label}</span>
+            <span className="flex-1 h-px bg-border" />
+          </div>
+          {chunk.map((p) => (
+            <PostCard
+              key={p.id}
+              post={p}
+              currentUserId={user?.id ?? ""}
+              isAdmin={isAdmin}
+              onPin={(pinned) => togglePin.mutate({ id: p.id, pinned })}
+              onDelete={() => remove.mutate(p.id)}
+            />
+          ))}
+        </section>
+      ))}
+    </div>
+  );
+}
+
+// Bucket posts into "Pinned" + day labels. Today / Yesterday / explicit dates
+// for older entries. Pinned always sits at the top regardless of date so an
+// announcement doesn't get buried as the week goes on.
+function groupByDay(posts: Post[]): { label: string; posts: Post[] }[] {
+  if (posts.length === 0) return [];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
+  const out: Record<string, Post[]> = {};
+  const order: string[] = [];
+
+  const push = (label: string, p: Post) => {
+    if (!out[label]) { out[label] = []; order.push(label); }
+    out[label].push(p);
+  };
+
+  for (const p of posts) {
+    if (p.pinned) { push("Pinned", p); continue; }
+    const d = new Date(p.created_at); d.setHours(0, 0, 0, 0);
+    let label: string;
+    if (d.getTime() === today.getTime()) label = "Today";
+    else if (d.getTime() === yesterday.getTime()) label = "Yesterday";
+    else label = d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+    push(label, p);
+  }
+  return order.map((label) => ({ label, posts: out[label] }));
+}
+
+// SpotlightCard — sits above the composer and surfaces who joined, who's out,
+// and what the team has rallied behind this week. Hidden entirely when the
+// backend returns nothing worth showing, so it never feels like dead weight.
+function SpotlightCard() {
+  type Spotlight = {
+    new_joiners: { id: string; name: string; email: string; joined_at: string }[];
+    on_leave:    { id: string; name: string; email: string; back_on: string }[];
+    trending?:   { id: string; author_name: string; author_email: string; kind: string; title: string; body: string; reactions: number };
+  };
+  const { data } = useQuery<Spotlight>({
+    queryKey: ["campfire", "spotlight"],
+    queryFn: () => api("/api/v1/campfire/spotlight"),
+    refetchInterval: 5 * 60_000,
+  });
+  if (!data) return null;
+  const joiners = data.new_joiners ?? [];
+  const onLeave = data.on_leave ?? [];
+  const trend = data.trending;
+  if (joiners.length === 0 && onLeave.length === 0 && !trend) return null;
+
+  return (
+    <div className="bg-gradient-to-br from-accent-soft/60 via-surface to-warn/10 border border-accent/20 rounded-2xl p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+      <SpotlightCol
+        icon={<UserPlus size={14} className="text-accent" />}
+        title={joiners.length ? `Welcome ${joiners.length === 1 ? "our newest" : "our newest"} ${joiners.length === 1 ? "joiner" : "joiners"}` : "No new joiners yet"}
+      >
+        {joiners.length === 0
+          ? <span className="text-[12px] text-muted">Invite someone from Members.</span>
+          : (
+            <div className="flex flex-wrap items-center gap-2 mt-1">
+              {joiners.slice(0, 4).map((j) => (
+                <span key={j.id} className="inline-flex items-center gap-2 text-[12px]" title={j.email}>
+                  <Avatar name={j.name} email={j.email} size={22} />
+                  <span className="font-semibold text-text">{(j.name || j.email).split(" ")[0]}</span>
+                </span>
+              ))}
+              {joiners.length > 4 && <span className="text-[11px] text-muted">+{joiners.length - 4}</span>}
+            </div>
+          )}
+      </SpotlightCol>
+
+      <SpotlightCol
+        icon={<Plane size={14} className="text-accent" />}
+        title={onLeave.length ? `${onLeave.length} on leave today` : "Everyone's in today"}
+      >
+        {onLeave.length === 0
+          ? <span className="text-[12px] text-muted">Full attendance.</span>
+          : (
+            <div className="flex flex-wrap items-center gap-2 mt-1">
+              {onLeave.slice(0, 4).map((p) => (
+                <span key={p.id} className="inline-flex items-center gap-2 text-[12px]" title={`Back ${new Date(p.back_on).toLocaleDateString()}`}>
+                  <Avatar name={p.name} email={p.email} size={22} />
+                  <span className="font-semibold text-text">{(p.name || p.email).split(" ")[0]}</span>
+                </span>
+              ))}
+              {onLeave.length > 4 && <span className="text-[11px] text-muted">+{onLeave.length - 4}</span>}
+            </div>
+          )}
+      </SpotlightCol>
+
+      <SpotlightCol
+        icon={<TrendingUp size={14} className="text-accent" />}
+        title={trend ? "Trending this week" : "Nothing trending yet"}
+      >
+        {trend ? (
+          <div className="mt-1">
+            <div className="text-[12px] text-text font-semibold line-clamp-2">{trend.title || trend.body}</div>
+            <div className="text-[11px] text-muted mt-0.5">
+              {trend.author_name || trend.author_email} · {trend.reactions} reaction{trend.reactions === 1 ? "" : "s"}
+            </div>
+          </div>
+        ) : (
+          <span className="text-[12px] text-muted">React to posts to surface what the team loves.</span>
+        )}
+      </SpotlightCol>
+    </div>
+  );
+}
+
+function SpotlightCol({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider font-bold text-muted">
+        {icon} {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// ComposerHints — three tap-and-paste prompts under the post composer to defeat
+// the blank-page problem. Each one prefills the body with a sentence-starter
+// the author can edit; they don't lock you into a specific post kind.
+const COMPOSER_PROMPTS: { label: string; seed: string }[] = [
+  { label: "Share a win",       seed: "🎉 Just shipped: " },
+  { label: "Welcome someone",   seed: "👋 Big welcome to @" },
+  { label: "Say thanks",        seed: "🙌 Massive thanks to @" },
+  { label: "Ask for input",     seed: "Quick poll — what do we think about " },
+];
+
+function ComposerHints({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  if (value.trim().length > 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {COMPOSER_PROMPTS.map((p) => (
+        <button
+          key={p.label}
+          type="button"
+          onClick={() => onChange(p.seed)}
+          className="text-[11px] px-2.5 py-1 rounded-full border border-border bg-bg/30 hover:bg-accent-soft hover:text-accent hover:border-accent/30 text-muted transition-colors"
+        >
+          {p.label}
+        </button>
       ))}
     </div>
   );
@@ -434,12 +595,14 @@ function PostComposer({ onClose, onCreated, allowPin }: { onClose: () => void; o
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
-          <textarea
+          <MentionInput
             className="input min-h-[120px]"
-            placeholder="What's the story?"
+            placeholder="What's the story? Paste a link, drop an @mention…"
             value={body}
-            onChange={(e) => setBody(e.target.value)}
+            onChange={setBody}
+            minRows={5}
           />
+          <ComposerHints onChange={setBody} value={body} />
           {allowPin && (
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
@@ -495,7 +658,7 @@ function PostCard({
               <span className="text-[11px] text-muted">{relativeTime(post.created_at)}</span>
             </div>
             {post.title && <div className="text-base font-bold text-text mt-1">{post.title}</div>}
-            <div className="text-sm text-text mt-1 whitespace-pre-wrap break-words">{linkify(post.body)}</div>
+            <SmartBody className="text-sm text-text mt-1" text={post.body} />
           </div>
           <div className="flex items-center gap-1 shrink-0">
             {isAdmin && (
@@ -561,7 +724,7 @@ function CommentsThread({ postId }: { postId: string }) {
               <span className="text-[12px] font-bold text-text">{c.author_name || c.author_email}</span>
               <span className="text-[10.5px] text-muted">{relativeTime(c.created_at)}</span>
             </div>
-            <div className="text-[13px] text-text whitespace-pre-wrap break-words">{linkify(c.body)}</div>
+            <SmartBody className="text-[13px] text-text" text={c.body} />
             <ReactionStrip
               targetType="comment"
               targetId={c.id}
@@ -572,18 +735,21 @@ function CommentsThread({ postId }: { postId: string }) {
           </div>
         </div>
       ))}
-      <div className="flex items-center gap-2">
-        <input
-          className="input flex-1 !py-2 text-[13px]"
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && body.trim()) add.mutate(); }}
-          placeholder="Write a comment… (Enter to send)"
-        />
+      <div className="flex items-end gap-2">
+        <div className="flex-1 min-w-0">
+          <MentionInput
+            className="input !py-2 text-[13px] min-h-[36px]"
+            value={body}
+            onChange={setBody}
+            placeholder="Write a comment… (@ to mention, Enter to send)"
+            minRows={1}
+            onSubmit={() => body.trim() && add.mutate()}
+          />
+        </div>
         <button
           onClick={() => body.trim() && add.mutate()}
           disabled={!body.trim() || add.isPending}
-          className="p-2 rounded-lg bg-accent text-white disabled:opacity-40"
+          className="p-2 rounded-lg bg-accent text-white disabled:opacity-40 shrink-0"
           title="Send"
         >
           <Send size={13} />
@@ -1016,7 +1182,7 @@ function HelpWall({ currentUserId }: { currentUserId: string }) {
                     <span className="text-[11px] text-muted">{relativeTime(h.created_at)} ago · {h.requester.name || h.requester.email}</span>
                   </div>
                   <div className="text-sm font-bold text-text mt-1">{h.title}</div>
-                  {h.body && <div className="text-[13px] text-muted mt-0.5 whitespace-pre-wrap break-words">{linkify(h.body)}</div>}
+                  {h.body && <SmartBody className="text-[13px] text-muted mt-0.5" text={h.body} />}
                   {h.resolver.id && (
                     <div className="text-[11px] text-accent mt-1.5">
                       Picked up by <span className="font-semibold">{h.resolver.name}</span>
@@ -1223,7 +1389,7 @@ function RoomView({ room }: { room: Room }) {
                 <span className="text-[13px] font-bold text-text">{m.author_name || m.author_email}</span>
                 <span className="text-[10.5px] text-muted">{relativeTime(m.created_at)}</span>
               </div>
-              <div className="text-[13.5px] text-text whitespace-pre-wrap break-words">{linkify(m.body)}</div>
+              <SmartBody className="text-[13.5px] text-text" text={m.body} />
               <ReactionStrip
                 targetType="message"
                 targetId={m.id}
@@ -1236,15 +1402,18 @@ function RoomView({ room }: { room: Room }) {
         ))}
       </div>
 
-      <footer className="border-t border-border p-3 flex items-center gap-2">
+      <footer className="border-t border-border p-3 flex items-end gap-2">
         <Avatar name={user?.name ?? ""} email={user?.email ?? ""} size={30} />
-        <input
-          className="input flex-1"
-          placeholder={`Message #${room.slug}`}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && body.trim()) send.mutate(); }}
-        />
+        <div className="flex-1 min-w-0">
+          <MentionInput
+            className="input min-h-[40px]"
+            placeholder={`Message #${room.slug} · @ to mention, Enter to send`}
+            value={body}
+            onChange={setBody}
+            minRows={1}
+            onSubmit={() => body.trim() && send.mutate()}
+          />
+        </div>
         <button
           onClick={() => body.trim() && send.mutate()}
           disabled={!body.trim() || send.isPending}

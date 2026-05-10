@@ -8,20 +8,53 @@ package handlers
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
+	"github.com/decapods/pgdp/backend/internal/notifications"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Campfire struct{ db *pgxpool.Pool }
+type Campfire struct {
+	db     *pgxpool.Pool
+	notify *notifications.Engine
 
-func NewCampfire(db *pgxpool.Pool) *Campfire { return &Campfire{db: db} }
+	previewMu    sync.RWMutex
+	previewCache map[string]cachedPreview
+}
+
+type cachedPreview struct {
+	at   time.Time
+	data linkPreview
+}
+
+type linkPreview struct {
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Image       string `json:"image"`
+	SiteName    string `json:"site_name"`
+}
+
+func NewCampfire(db *pgxpool.Pool) *Campfire {
+	return &Campfire{db: db, previewCache: map[string]cachedPreview{}}
+}
+
+// WithEngine attaches the notifications engine so posts/comments/messages can
+// dispatch @mention pings. Optional — Campfire still works without it.
+func (h *Campfire) WithEngine(engine *notifications.Engine) *Campfire {
+	h.notify = engine
+	return h
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Realtime presence bar — derived from users.last_seen_at + manual_status.
@@ -218,6 +251,10 @@ func (h *Campfire) CreatePost(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Fan out @mention pings — author's body is the source of truth.
+	go h.dispatchMentions(context.Background(), tid, uid, req.Body, "Campfire post", "/campfire")
+
 	c.JSON(201, gin.H{"id": id})
 }
 
@@ -326,6 +363,7 @@ func (h *Campfire) AddComment(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	go h.dispatchMentions(context.Background(), tid, uid, req.Body, "Campfire comment", "/campfire")
 	c.JSON(201, gin.H{"id": id})
 }
 
@@ -825,6 +863,7 @@ func (h *Campfire) SendMessage(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	go h.dispatchMentions(context.Background(), tid, uid, req.Body, "Campfire room message", "/campfire")
 	c.JSON(201, gin.H{"id": id})
 }
 
@@ -984,4 +1023,301 @@ func (h *Campfire) MarkSeen(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Link preview — server-side OG metadata fetch
+//
+// The frontend calls /campfire/link-preview?url=… whenever it sees a URL in a
+// post / comment / message. We fetch the page server-side (avoids CORS), pull
+// open-graph + basic <title>/<meta description>, and cache for 30 minutes per
+// URL so popular links don't hammer outside hosts.
+// ──────────────────────────────────────────────────────────────────────────
+
+var (
+	previewTTL = 30 * time.Minute
+	httpClient = &http.Client{Timeout: 5 * time.Second}
+
+	reMetaProp  = regexp.MustCompile(`(?is)<meta[^>]+property=["']og:(title|description|image|site_name)["'][^>]*content=["']([^"']+)["']`)
+	reMetaProp2 = regexp.MustCompile(`(?is)<meta[^>]+content=["']([^"']+)["'][^>]*property=["']og:(title|description|image|site_name)["']`)
+	reMetaName  = regexp.MustCompile(`(?is)<meta[^>]+name=["']description["'][^>]*content=["']([^"']+)["']`)
+	reTitle     = regexp.MustCompile(`(?is)<title[^>]*>([^<]+)</title>`)
+)
+
+func (h *Campfire) LinkPreview(c *gin.Context) {
+	raw := strings.TrimSpace(c.Query("url"))
+	if raw == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "url required"})
+		return
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "url must be http(s)"})
+		return
+	}
+
+	// In-memory cache lookup. The cache lives for the lifetime of the process —
+	// a restart wipes it, which is fine since fetches are cheap.
+	h.previewMu.RLock()
+	if cp, ok := h.previewCache[raw]; ok && time.Since(cp.at) < previewTTL {
+		h.previewMu.RUnlock()
+		c.JSON(http.StatusOK, cp.data)
+		return
+	}
+	h.previewMu.RUnlock()
+
+	preview := fetchPreview(c.Request.Context(), raw)
+	h.previewMu.Lock()
+	h.previewCache[raw] = cachedPreview{at: time.Now(), data: preview}
+	h.previewMu.Unlock()
+
+	c.JSON(http.StatusOK, preview)
+}
+
+func fetchPreview(ctx context.Context, raw string) linkPreview {
+	out := linkPreview{URL: raw}
+	req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
+	if err != nil {
+		return out
+	}
+	// Pretend to be a friendly browser — Cloudflare and friends serve bot
+	// pages otherwise, which have no OG tags.
+	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; D'AccubinBot/1.0; +https://myaccubin.com)")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return out
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return out
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024)) // 512KB cap
+	if err != nil {
+		return out
+	}
+	html := string(body)
+
+	for _, m := range reMetaProp.FindAllStringSubmatch(html, -1) {
+		assignPreview(&out, m[1], m[2])
+	}
+	for _, m := range reMetaProp2.FindAllStringSubmatch(html, -1) {
+		assignPreview(&out, m[2], m[1])
+	}
+	if out.Description == "" {
+		if m := reMetaName.FindStringSubmatch(html); len(m) > 1 {
+			out.Description = strings.TrimSpace(decodeHTML(m[1]))
+		}
+	}
+	if out.Title == "" {
+		if m := reTitle.FindStringSubmatch(html); len(m) > 1 {
+			out.Title = strings.TrimSpace(decodeHTML(m[1]))
+		}
+	}
+	if out.SiteName == "" {
+		if u, err := url.Parse(raw); err == nil {
+			out.SiteName = strings.TrimPrefix(u.Hostname(), "www.")
+		}
+	}
+	return out
+}
+
+func assignPreview(out *linkPreview, key, val string) {
+	val = decodeHTML(strings.TrimSpace(val))
+	switch key {
+	case "title":
+		out.Title = val
+	case "description":
+		out.Description = val
+	case "image":
+		out.Image = val
+	case "site_name":
+		out.SiteName = val
+	}
+}
+
+func decodeHTML(s string) string {
+	r := strings.NewReplacer(
+		"&amp;", "&", "&lt;", "<", "&gt;", ">",
+		"&quot;", `"`, "&#39;", "'", "&apos;", "'",
+		"&nbsp;", " ",
+	)
+	return r.Replace(s)
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Today's spotlight — the smart card at the top of the feed.
+//
+// Surfaces moments worth noticing: people who joined this week, who's on
+// leave today, recent celebrations, and the day's top reaction-getter.
+// One small payload powers the whole hero card.
+// ──────────────────────────────────────────────────────────────────────────
+
+func (h *Campfire) Spotlight(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	ctx := c.Request.Context()
+
+	// People who joined in the last 14 days. Uses users.created_at as a proxy
+	// for hire date — fine until we add a dedicated column.
+	joiners := []gin.H{}
+	if rows, err := h.db.Query(ctx, `
+		SELECT id, COALESCE(full_name,''), email::text, created_at
+		FROM users
+		WHERE tenant_id=$1 AND deleted_at IS NULL
+		  AND created_at > now() - interval '14 days'
+		ORDER BY created_at DESC LIMIT 5`, tid); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			var name, email string
+			var created time.Time
+			if err := rows.Scan(&id, &name, &email, &created); err == nil {
+				joiners = append(joiners, gin.H{
+					"id": id, "name": name, "email": email, "joined_at": created,
+				})
+			}
+		}
+	}
+
+	// On-leave today — derived from approved leave_requests overlapping today.
+	onLeave := []gin.H{}
+	if rows, err := h.db.Query(ctx, `
+		SELECT u.id, COALESCE(u.full_name,''), u.email::text, lr.end_date
+		FROM leave_requests lr
+		JOIN users u ON u.id = lr.user_id
+		WHERE lr.tenant_id=$1 AND lr.status='approved'
+		  AND CURRENT_DATE BETWEEN lr.start_date AND lr.end_date
+		ORDER BY u.full_name`, tid); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			var name, email string
+			var back time.Time
+			if err := rows.Scan(&id, &name, &email, &back); err == nil {
+				onLeave = append(onLeave, gin.H{
+					"id": id, "name": name, "email": email, "back_on": back,
+				})
+			}
+		}
+	}
+
+	// Top post from the last 7 days by reaction count — surfaces what the team
+	// is rallying around without a manual "pin".
+	var trending gin.H
+	{
+		var (
+			pid                                uuid.UUID
+			authorName, authorEmail, kind, title, body string
+			created                            time.Time
+			reactionCount                      int
+		)
+		err := h.db.QueryRow(ctx, `
+			SELECT p.id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
+			       p.kind, COALESCE(p.title,''), p.body, p.created_at,
+			       (SELECT COUNT(*) FROM campfire_reactions r WHERE r.target_type='post' AND r.target_id=p.id)::int
+			FROM campfire_posts p
+			LEFT JOIN users u ON u.id = p.author_id
+			WHERE p.tenant_id=$1 AND p.created_at > now() - interval '7 days'
+			ORDER BY (SELECT COUNT(*) FROM campfire_reactions r WHERE r.target_type='post' AND r.target_id=p.id) DESC,
+			         p.created_at DESC
+			LIMIT 1`, tid).Scan(&pid, &authorName, &authorEmail, &kind, &title, &body, &created, &reactionCount)
+		if err == nil && reactionCount > 0 {
+			trending = gin.H{
+				"id":           pid,
+				"author_name":  authorName,
+				"author_email": authorEmail,
+				"kind":         kind,
+				"title":        title,
+				"body":         body,
+				"created_at":   created,
+				"reactions":    reactionCount,
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"new_joiners": joiners,
+		"on_leave":    onLeave,
+		"trending":    trending,
+	})
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @mention dispatch — call this after writing any user-authored content with
+// a body. Best-effort, non-blocking. Looks up mentioned emails/names against
+// the tenant directory; missing handles are silently ignored.
+// ──────────────────────────────────────────────────────────────────────────
+
+var reMention = regexp.MustCompile(`@([a-zA-Z0-9_.+-]+)`)
+
+func (h *Campfire) dispatchMentions(ctx context.Context, tid, authorID uuid.UUID, body, where, link string) {
+	if h.notify == nil || h.db == nil {
+		return
+	}
+	matches := reMention.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		return
+	}
+	handles := []string{}
+	seen := map[string]bool{}
+	for _, m := range matches {
+		h := strings.ToLower(m[1])
+		if !seen[h] {
+			seen[h] = true
+			handles = append(handles, h)
+		}
+	}
+	// Match against the local part of the email OR the full name (lowercased
+	// & spaces stripped). Picks up @sadiq, @sadiq.arogundade, @sadiqa, etc.
+	rows, err := h.db.Query(ctx, `
+		SELECT id, COALESCE(full_name,''), email::text
+		FROM users
+		WHERE tenant_id=$1 AND deleted_at IS NULL AND status='active'
+		  AND (
+		    lower(split_part(email::text,'@',1)) = ANY($2)
+		    OR lower(regexp_replace(full_name, '\s+', '', 'g')) = ANY($2)
+		    OR lower(split_part(full_name,' ',1)) = ANY($2)
+		  )`, tid, handles)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	recipients := []notifications.Recipient{}
+	for rows.Next() {
+		var id uuid.UUID
+		var name, email string
+		if err := rows.Scan(&id, &name, &email); err == nil && id != authorID {
+			recipients = append(recipients, notifications.Recipient{UserID: &id})
+		}
+	}
+	if len(recipients) == 0 {
+		return
+	}
+
+	var authorName string
+	_ = h.db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(full_name,''), email::text) FROM users WHERE id=$1`, authorID,
+	).Scan(&authorName)
+
+	h.notify.Notify(ctx, notifications.Event{
+		Kind:       "task.comment_mention", // reuse — the catalog string fits
+		TenantID:   tid,
+		Recipients: recipients,
+		Payload: map[string]any{
+			"Author": authorName,
+			"Title":  "in " + where,
+			"Where":  where,
+			"Body":   truncate(body, 240),
+		},
+		DedupeKey: "campfire.mention:" + where + ":" + truncate(body, 24),
+		Link:      link,
+	})
+}
+
+func truncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

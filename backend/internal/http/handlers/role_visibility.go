@@ -57,12 +57,11 @@ var DefaultRoleVisibility = map[string][]string{
 	"files":        {"*"}, // everyone — same default as my_work
 	"leave":        {"*"}, // everyone can request leave; visibility of others' is gated by handlers
 	"campfire":     {"*"}, // everyone — Campfire is the workspace social layer
-	// Settings menu is visible to everyone by default. The page *contents*
-	// (workflow edits, team rates, governance, integrations) are still gated
-	// by `governance:write` at the API level — non-admins see a read-only view.
-	// Workspaces that need to lock the menu down entirely can override this
-	// in Settings → Role visibility.
-	"settings":     {"*"},
+	// Settings is admin-class by default — most settings panels write
+	// tenant-wide config and we don't want a project_manager to land on a
+	// "forbidden" page they can't action. Workspaces that need broader read
+	// access can widen this via Settings → Role visibility.
+	"settings":     {"super_admin", "ceo", "coo", "hr", "hr_manager", "compliance_officer"},
 }
 
 type roleVisibilityResponse struct {
@@ -153,7 +152,10 @@ func (h *RoleVisibility) MeVisibility(c *gin.Context) {
 	visible := []string{}
 	for _, s := range NavSections {
 		allowed := matrix[s.Key]
-		if s.Key == "my_work" || s.Key == "settings" || roleListAllows(allowed, userRoles) {
+		// my_work is always visible (every member needs their own dashboard).
+		// settings is gated by the matrix — non-admins shouldn't land on
+		// panels they can't write.
+		if s.Key == "my_work" || roleListAllows(allowed, userRoles) {
 			visible = append(visible, s.Key)
 		}
 	}

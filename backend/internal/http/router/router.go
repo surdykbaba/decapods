@@ -255,8 +255,10 @@ func New(d Deps) http.Handler {
 	// reads are open to all members, writes too (anyone can post, kudo, ask
 	// for help). Admin-only routes (insights, pin, delete-any, room create)
 	// require governance:write.
-	cf := handlers.NewCampfire(d.DB)
+	cf := handlers.NewCampfire(d.DB).WithEngine(earlyEngine)
 	authed.GET("/campfire/presence", cf.Presence)
+	authed.GET("/campfire/spotlight", cf.Spotlight)
+	authed.GET("/campfire/link-preview", cf.LinkPreview)
 
 	authed.GET("/campfire/posts",         cf.ListPosts)
 	authed.POST("/campfire/posts",        cf.CreatePost)
