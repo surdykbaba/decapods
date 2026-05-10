@@ -104,7 +104,7 @@ export function ProjectOverview() {
     .slice(0, 5);
 
   const addTask = useMutation({
-    mutationFn: (b: { title: string; description?: string; priority: number; due_on?: string }) =>
+    mutationFn: (b: { title: string; description?: string; priority: number; due_on?: string; assignee_id?: string }) =>
       api(`/api/v1/projects/${id}/tasks`, { method: "POST", body: JSON.stringify(b) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["project-board", id] });
@@ -275,25 +275,17 @@ export function ProjectOverview() {
       </div>
 
       {/* Dialogs */}
-      {taskOpen && (
+      {taskOpen && id && (
         <AddTaskDialog
+          projectId={id}
           submitting={addTask.isPending}
           onClose={() => setTaskOpen(false)}
           onAdd={(b) => addTask.mutate(b)}
         />
       )}
-      {inviteOpen && (
-        <InfoDialog
-          icon={<Rocket size={16} className="text-accent" />}
-          title="Invite to the project"
-          body={
-            <>
-              The full staffing dialog lives on the legacy operational view — click{" "}
-              <Link to={`/members`} className="text-accent underline">Members</Link>{" "}
-              to add a workspace member, then assign them to this project from the
-              team panel.
-            </>
-          }
+      {inviteOpen && id && (
+        <InviteToProjectDialog
+          projectId={id}
           onClose={() => setInviteOpen(false)}
         />
       )}
@@ -449,17 +441,29 @@ function humanAction(action: string): string {
 
 /* ---------- dialogs ---------- */
 
+// AddTaskDialog — title / description / priority / due date / assignee.
+// Assignee picker is sourced from the project's team (project_members). If the
+// person you want isn't on the team, the InviteToProjectDialog adds them first.
 function AddTaskDialog({
-  submitting, onClose, onAdd,
+  projectId, submitting, onClose, onAdd,
 }: {
+  projectId: string;
   submitting: boolean;
   onClose: () => void;
-  onAdd: (b: { title: string; description?: string; priority: number; due_on?: string }) => void;
+  onAdd: (b: { title: string; description?: string; priority: number; due_on?: string; assignee_id?: string }) => void;
 }) {
+  type Member = { user_id: string; name: string; email: string; role: string };
+  const { data } = useQuery<{ items: Member[] }>({
+    queryKey: ["project-members", projectId],
+    queryFn: () => api(`/api/v1/projects/${projectId}/members`),
+  });
+  const members = data?.items ?? [];
+
   const [title, setTitle]       = useState("");
   const [description, setDesc]  = useState("");
   const [priority, setPriority] = useState(3);
   const [dueOn, setDueOn]       = useState("");
+  const [assignee, setAssignee] = useState("");
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
@@ -476,6 +480,22 @@ function AddTaskDialog({
           <label className="block">
             <div className="text-[11px] text-muted font-medium mb-1">Description</div>
             <textarea className="input min-h-[80px]" value={description} onChange={(e) => setDesc(e.target.value)} />
+          </label>
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Assignee</div>
+            <select className="input" value={assignee} onChange={(e) => setAssignee(e.target.value)}>
+              <option value="">Unassigned</option>
+              {members.map((m) => (
+                <option key={m.user_id} value={m.user_id}>
+                  {m.name || m.email}{m.role ? ` · ${m.role}` : ""}
+                </option>
+              ))}
+            </select>
+            {members.length === 0 && (
+              <div className="text-[11px] text-muted mt-1">
+                No one on the team yet — close this and use <span className="font-semibold">Invite to project</span> first.
+              </div>
+            )}
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
@@ -502,13 +522,210 @@ function AddTaskDialog({
             loadingLabel="Creating…"
             icon={<Plus size={14} />}
             onClick={() => onAdd({
-              title: title.trim(), description: description.trim() || undefined, priority,
+              title: title.trim(),
+              description: description.trim() || undefined,
+              priority,
               due_on: dueOn || undefined,
+              assignee_id: assignee || undefined,
             })}
           >
             Create task
           </SmartButton>
         </footer>
+      </div>
+    </div>
+  );
+}
+
+// InviteToProjectDialog — the real staffing dialog. Lists the current team
+// (with role + remove) and lets you bring a workspace member onto the project
+// with a chosen role. Workspace members already on the team are filtered from
+// the picker so we don't duplicate; the backend's add handler tolerates the
+// re-activation case but the UX is cleaner this way.
+function InviteToProjectDialog({
+  projectId, onClose,
+}: {
+  projectId: string;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  type Member = {
+    id: string; user_id: string; name: string; email: string; role: string;
+    allocation: number;
+  };
+  type Assignable = { id: string; name: string; email: string; role?: string };
+
+  const { data: teamData } = useQuery<{ items: Member[] }>({
+    queryKey: ["project-members", projectId],
+    queryFn: () => api(`/api/v1/projects/${projectId}/members`),
+  });
+  const { data: assignableData } = useQuery<{ items: Assignable[] }>({
+    queryKey: ["project-members-assignable", projectId],
+    queryFn: () => api(`/api/v1/projects/${projectId}/members/assignable`),
+  });
+  const team = teamData?.items ?? [];
+  const teamIds = new Set(team.map((m) => m.user_id));
+  const available = (assignableData?.items ?? []).filter((m) => !teamIds.has(m.id));
+
+  const [pickUser, setPickUser] = useState("");
+  const [role, setRole] = useState("contributor");
+  const [allocation, setAllocation] = useState<number | "">("");
+
+  const add = useMutation({
+    mutationFn: () =>
+      api(`/api/v1/projects/${projectId}/members`, {
+        method: "POST",
+        body: JSON.stringify({
+          user_id: pickUser,
+          role: role.trim() || "contributor",
+          allocation: typeof allocation === "number" ? allocation : 0,
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-members", projectId] });
+      qc.invalidateQueries({ queryKey: ["project-members-assignable", projectId] });
+      setPickUser("");
+      setRole("contributor");
+      setAllocation("");
+      toast.success("Added to project");
+    },
+    onError: (e: any) => toast.error("Could not add member", e?.message),
+  });
+
+  const remove = useMutation({
+    mutationFn: (memberId: string) =>
+      api(`/api/v1/projects/${projectId}/members/${memberId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-members", projectId] });
+      qc.invalidateQueries({ queryKey: ["project-members-assignable", projectId] });
+      toast.success("Removed from project");
+    },
+    onError: (e: any) => toast.error("Could not remove", e?.message),
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between sticky top-0 bg-surface z-10">
+          <h2 className="text-lg font-bold text-text inline-flex items-center gap-2">
+            <Rocket size={18} className="text-accent" /> Invite to the project
+          </h2>
+          <button onClick={onClose} className="text-muted hover:text-text p-1.5 rounded hover:bg-bg">
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="p-5 space-y-5">
+          {/* Current team */}
+          <section>
+            <div className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2">
+              On the team · {team.length}
+            </div>
+            {team.length === 0 ? (
+              <div className="text-sm text-muted italic">No one assigned yet.</div>
+            ) : (
+              <ul className="divide-y divide-border border border-border rounded-xl overflow-hidden">
+                {team.map((m) => (
+                  <li key={m.id} className="flex items-center gap-3 px-3 py-2">
+                    <Avatar name={m.name} email={m.email} size={32} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-semibold text-text truncate">{m.name || m.email}</div>
+                      <div className="text-[11px] text-muted truncate">
+                        {m.role}{m.allocation > 0 ? ` · ${m.allocation}%` : ""}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => remove.mutate(m.id)}
+                      disabled={remove.isPending}
+                      className="p-1.5 rounded text-muted hover:text-danger hover:bg-bg disabled:opacity-50"
+                      title="Remove from project"
+                    >
+                      <X size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          {/* Add someone */}
+          <section className="border-t border-border pt-5">
+            <div className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2">
+              Add a workspace member
+            </div>
+            {available.length === 0 ? (
+              <div className="text-sm text-muted">
+                Everyone in the workspace is already on this project.{" "}
+                <Link to="/members" onClick={onClose} className="text-accent underline">
+                  Invite a new member
+                </Link>
+                {" "}first if you need fresh hands.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <label className="block">
+                  <div className="text-[11px] text-muted font-medium mb-1">Member</div>
+                  <select
+                    className="input"
+                    value={pickUser}
+                    onChange={(e) => setPickUser(e.target.value)}
+                  >
+                    <option value="">Pick someone…</option>
+                    {available.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name || m.email}{m.role ? ` · ${m.role}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <div className="text-[11px] text-muted font-medium mb-1">Project role</div>
+                    <input
+                      className="input"
+                      value={role}
+                      onChange={(e) => setRole(e.target.value)}
+                      placeholder="e.g. engineer, designer"
+                    />
+                  </label>
+                  <label className="block">
+                    <div className="text-[11px] text-muted font-medium mb-1">Allocation %</div>
+                    <input
+                      className="input"
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={allocation}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setAllocation(v === "" ? "" : Math.max(0, Math.min(100, Number(v))));
+                      }}
+                      placeholder="0 – 100"
+                    />
+                  </label>
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <Link
+                    to="/members"
+                    onClick={onClose}
+                    className="text-xs text-muted hover:text-text mr-auto"
+                  >
+                    Need someone new? Invite to workspace →
+                  </Link>
+                  <SmartButton
+                    variant="primary"
+                    disabled={!pickUser || add.isPending}
+                    loadingLabel="Adding…"
+                    icon={<Plus size={14} />}
+                    onClick={() => add.mutate()}
+                  >
+                    Add to project
+                  </SmartButton>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     </div>
   );

@@ -210,14 +210,6 @@ export function Shell() {
 
             <StatusBadge />
 
-            <button
-              onClick={toggleTheme}
-              className="p-2.5 hover:bg-bg rounded-full text-text"
-              title={theme === "dark" ? "Switch to light" : "Switch to dark"}
-            >
-              {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
-            </button>
-
             <CampfireBell />
             <NotificationsBell />
           </header>
