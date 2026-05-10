@@ -4,8 +4,8 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 export function LoginPage() {
-  const [email, setEmail] = useState("admin@pgdp.local");
-  const [password, setPassword] = useState("Admin@12345");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const { setTokens } = useAuth();

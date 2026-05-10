@@ -24,7 +24,7 @@ INSERT INTO users (id, tenant_id, email, full_name, password_hash, mfa_enabled)
 VALUES (
   '22222222-0000-0000-0000-000000000001',
   '00000000-0000-0000-0000-000000000001',
-  'admin@pgdp.local',
+  'sadiq@theaccubin.com',
   'Acme Admin',
   '$argon2id$v=19$m=65536,t=3,p=2$REPLACE_ME_WITH_GENERATED_HASH$REPLACE_ME',
   false

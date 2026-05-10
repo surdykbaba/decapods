@@ -155,7 +155,7 @@ The first run will take ~3 minutes (Go build + npm install on a cold runner).
 curl -s https://pgdp.example.com/healthz                    # {"ok":true}
 curl -s -X POST https://pgdp.example.com/api/v1/auth/login \
   -H 'content-type: application/json' \
-  -d '{"email":"admin@pgdp.local","password":"Admin@12345"}' | jq .
+  -d '{"email":"sadiq@theaccubin.com","password":"Admin@12345"}' | jq .
 ```
 
 If `/healthz` is failing, ssh in and:

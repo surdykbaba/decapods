@@ -41,7 +41,7 @@ go run ./cmd/migrate -dir ./migrations -cmd up
 
 # Seed an admin user with a real password hash
 go run ./cmd/seed
-# → prints: admin@pgdp.local / Admin@12345
+# → prints: sadiq@theaccubin.com / Admin@12345
 
 # Start the API on :8080
 go run ./cmd/api
@@ -63,7 +63,7 @@ npm install
 npm run dev          # http://localhost:5173
 ```
 
-Sign in with `admin@pgdp.local / Admin@12345`.
+Sign in with `sadiq@theaccubin.com / Admin@12345`.
 
 ## 5. Production-style boot (one command)
 

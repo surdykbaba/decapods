@@ -17,7 +17,7 @@ const (
 	tenantID = "00000000-0000-0000-0000-000000000001"
 	userID   = "22222222-0000-0000-0000-000000000001"
 	roleID   = "11111111-0000-0000-0000-000000000001"
-	email    = "admin@pgdp.local"
+	email    = "sadiq@theaccubin.com"
 	password = "Admin@12345"
 )
 

@@ -33,7 +33,7 @@ pnpm install
 pnpm dev
 ```
 
-Open http://localhost:5173 — default seed user `admin@pgdp.local / Admin@12345`.
+Open http://localhost:5173 — default seed user `sadiq@theaccubin.com / Admin@12345`.
 
 ## Repo layout
 

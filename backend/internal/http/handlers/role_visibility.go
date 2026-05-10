@@ -51,7 +51,12 @@ var DefaultRoleVisibility = map[string][]string{
 	"vendors":      {"super_admin", "ceo", "coo", "delivery_manager", "finance", "compliance_officer"},
 	"agents":       {"super_admin", "ceo", "coo", "business_dev", "compliance_officer"},
 	"finance":      {"super_admin", "ceo", "coo", "finance", "auditor"},
-	"settings":     {"super_admin"},
+	// Settings menu is visible to everyone by default. The page *contents*
+	// (workflow edits, team rates, governance, integrations) are still gated
+	// by `governance:write` at the API level — non-admins see a read-only view.
+	// Workspaces that need to lock the menu down entirely can override this
+	// in Settings → Role visibility.
+	"settings":     {"*"},
 }
 
 type roleVisibilityResponse struct {
