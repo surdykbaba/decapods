@@ -72,7 +72,7 @@ jobs:
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: ghcr.io/${{ github.repository }}/web:${{ github.sha }}
       - name: trivy
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@master
         with:
           image-ref: ghcr.io/${{ github.repository }}/api:${{ github.sha }}
           format: table
