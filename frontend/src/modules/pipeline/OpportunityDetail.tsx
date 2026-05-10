@@ -59,6 +59,8 @@ type Stakeholder = {
   email?: string;
   phone?: string;
   notes?: string;
+  fee_amount?: number;
+  fee_currency?: string;
 };
 
 type StageHistoryEntry = {
@@ -435,9 +437,14 @@ export function OpportunityDetail() {
                   {(sh.name || "?")[0].toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-text truncate">{sh.name}</span>
                     {sh.kind === "external" && <span className="pill bg-warn/15 text-warn">external</span>}
+                    {sh.fee_amount != null && sh.fee_amount > 0 && (
+                      <span className="pill bg-accent-soft text-accent" title="Counts as an expense against project budget">
+                        {sh.fee_currency || "NGN"} {sh.fee_amount.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                      </span>
+                    )}
                   </div>
                   <div className="text-xs text-muted truncate">
                     {sh.role}{sh.email ? ` · ${sh.email}` : ""}{sh.phone ? ` · ${sh.phone}` : ""}
@@ -506,6 +513,7 @@ export function OpportunityDetail() {
       {addStakeholderOpen && (
         <AddStakeholderDialog
           submitting={addStakeholder.isPending}
+          defaultCurrency={data?.currency || "NGN"}
           onClose={() => setAddStakeholderOpen(false)}
           onAdd={(sh) => {
             addStakeholder.mutate(sh, {
@@ -2012,11 +2020,16 @@ function FileDrop({
 }
 
 function AddStakeholderDialog({
-  submitting, onClose, onAdd,
+  submitting, defaultCurrency = "NGN", onClose, onAdd,
 }: {
   submitting: boolean;
+  defaultCurrency?: string;
   onClose: () => void;
-  onAdd: (sh: { name: string; role: string; kind: "internal" | "external"; email?: string; phone?: string; notes?: string }) => void;
+  onAdd: (sh: {
+    name: string; role: string; kind: "internal" | "external";
+    email?: string; phone?: string; notes?: string;
+    fee_amount?: number; fee_currency?: string;
+  }) => void;
 }) {
   const [name, setName] = useState("");
   const [role, setRole] = useState("");
@@ -2024,16 +2037,21 @@ function AddStakeholderDialog({
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [notes, setNotes] = useState("");
+  const [feeAmount,   setFeeAmount]   = useState<number>(0);
+  const [feeCurrency, setFeeCurrency] = useState<string>(defaultCurrency);
   const [err, setErr] = useState<string | null>(null);
 
   function submit() {
     if (!name.trim()) { setErr("Name is required."); return; }
     if (!role.trim()) { setErr("Role / title is required."); return; }
+    if (feeAmount < 0) { setErr("Fee can't be negative."); return; }
     onAdd({
       name: name.trim(), role: role.trim(), kind,
       email: email.trim() || undefined,
       phone: phone.trim() || undefined,
       notes: notes.trim() || undefined,
+      fee_amount:   feeAmount > 0 ? feeAmount : 0,
+      fee_currency: feeAmount > 0 ? feeCurrency : undefined,
     });
   }
 
@@ -2096,6 +2114,30 @@ function AddStakeholderDialog({
               <div className="label">Phone</div>
               <input className="input" value={phone} placeholder="optional" onChange={(e) => setPhone(e.target.value)} />
             </label>
+          </div>
+          <div>
+            <div className="label">Fee / honorarium <span className="text-muted normal-case">(optional, deducted from project budget)</span></div>
+            <div className="grid grid-cols-[1fr_120px] gap-2">
+              <input
+                type="number" min={0} step="0.01"
+                className="input"
+                value={feeAmount === 0 ? "" : feeAmount}
+                placeholder="0.00"
+                onChange={(e) => setFeeAmount(e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))}
+              />
+              <select
+                className="input"
+                value={feeCurrency}
+                onChange={(e) => setFeeCurrency(e.target.value)}
+              >
+                {["NGN", "USD", "EUR", "GBP", "ZAR", "KES", "GHS", "XAF"].map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </div>
+            <div className="text-[11px] text-muted mt-1">
+              Leave at 0 for unpaid stakeholders. Paid stakeholders count as an expense in the project's commercial summary.
+            </div>
           </div>
           <label className="block">
             <div className="label">Notes</div>

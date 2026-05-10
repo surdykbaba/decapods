@@ -14,7 +14,7 @@ import {
 /* ---------- Types ---------- */
 
 type ProjectLink = { label: string; url: string; kind?: string };
-type Stakeholder = { id: string; name: string; role: string; kind: "internal" | "external"; email?: string };
+type Stakeholder = { id: string; name: string; role: string; kind: "internal" | "external"; email?: string; fee_amount?: number; fee_currency?: string };
 type Milestone = { id: string; title: string; due_on: string | null; status: string; created_at: string };
 type Invoice = { id: string; number: string; amount: number; currency: string; status: string; issued_on: string | null };
 type Repo = { id: string; owner: string; name: string };
@@ -732,6 +732,40 @@ function TeamPanel({
           </ul>
         )}
       </div>
+
+      {(() => {
+        // Stakeholder fee subtotal — surfaces fees attached to people on this
+        // project as an expense deduction against the budget.
+        const feeCcy = stakeholders.find((s) => (s.fee_amount ?? 0) > 0)?.fee_currency ?? project.currency ?? "NGN";
+        const feeTotal = stakeholders.reduce((s, sh) => s + (sh.fee_amount ?? 0), 0);
+        if (feeTotal <= 0) return null;
+        const budget = project.budget || 0;
+        const netBudget = budget - feeTotal;
+        return (
+          <div className="border-t border-border pt-3">
+            <div className="text-[11px] uppercase tracking-wide text-muted font-semibold mb-1.5">Stakeholder fees</div>
+            <div className="bg-warn/5 border border-warn/20 rounded-lg px-3 py-2 text-sm flex items-center justify-between gap-3">
+              <div>
+                <div className="text-text font-semibold">
+                  −{feeCcy} {feeTotal.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                </div>
+                <div className="text-[11px] text-muted">
+                  Deducted from project budget · {stakeholders.filter((s) => (s.fee_amount ?? 0) > 0).length} paid stakeholder
+                  {stakeholders.filter((s) => (s.fee_amount ?? 0) > 0).length === 1 ? "" : "s"}
+                </div>
+              </div>
+              {budget > 0 && (
+                <div className="text-right">
+                  <div className="text-[10.5px] text-muted">Net budget after fees</div>
+                  <div className={`text-sm font-bold ${netBudget < 0 ? "text-danger" : "text-text"}`}>
+                    {feeCcy} {netBudget.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="grid grid-cols-3 gap-3 pt-2 border-t border-border">
         <Stat label="Active tasks" value={tasks.filter(t => t.status !== "done").length} />

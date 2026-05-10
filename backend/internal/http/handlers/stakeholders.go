@@ -28,7 +28,9 @@ func (h *Stakeholders) list(c *gin.Context, entityType string) {
 		return
 	}
 	rows, err := h.db.Query(c, `
-		SELECT id, name, role, kind, COALESCE(email,''), COALESCE(phone,''), COALESCE(notes,''), created_at
+		SELECT id, name, role, kind, COALESCE(email,''), COALESCE(phone,''), COALESCE(notes,''),
+		       COALESCE(fee_amount, 0)::float8, COALESCE(fee_currency, 'NGN'),
+		       created_at
 		FROM stakeholders
 		WHERE tenant_id=$1 AND entity_type=$2 AND entity_id=$3
 		ORDER BY kind, name`, tid, entityType, entityID)
@@ -38,29 +40,45 @@ func (h *Stakeholders) list(c *gin.Context, entityType string) {
 	}
 	defer rows.Close()
 	out := []gin.H{}
+	var totalFee float64
+	currency := "NGN"
 	for rows.Next() {
 		var (
 			id                                  uuid.UUID
 			name, role, kind, email, phone, notes string
-			created                             any
+			fee                                  float64
+			feeCcy                               string
+			created                              any
 		)
-		if err := rows.Scan(&id, &name, &role, &kind, &email, &phone, &notes, &created); err == nil {
+		if err := rows.Scan(&id, &name, &role, &kind, &email, &phone, &notes, &fee, &feeCcy, &created); err == nil {
+			totalFee += fee
+			if fee > 0 { currency = feeCcy }
 			out = append(out, gin.H{
 				"id": id, "name": name, "role": role, "kind": kind,
-				"email": email, "phone": phone, "notes": notes, "created_at": created,
+				"email": email, "phone": phone, "notes": notes,
+				"fee_amount": fee, "fee_currency": feeCcy,
+				"created_at": created,
 			})
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, gin.H{
+		"items": out,
+		"totals": gin.H{
+			"fee_amount":   totalFee,
+			"fee_currency": currency,
+		},
+	})
 }
 
 type stakeholderReq struct {
-	Name  string `json:"name"  binding:"required"`
-	Role  string `json:"role"  binding:"required"`
-	Kind  string `json:"kind"  binding:"required,oneof=internal external"`
-	Email string `json:"email"`
-	Phone string `json:"phone"`
-	Notes string `json:"notes"`
+	Name        string  `json:"name"  binding:"required"`
+	Role        string  `json:"role"  binding:"required"`
+	Kind        string  `json:"kind"  binding:"required,oneof=internal external"`
+	Email       string  `json:"email"`
+	Phone       string  `json:"phone"`
+	Notes       string  `json:"notes"`
+	FeeAmount   float64 `json:"fee_amount"`
+	FeeCurrency string  `json:"fee_currency"`
 }
 
 func (h *Stakeholders) add(c *gin.Context, entityType string) {
@@ -76,11 +94,20 @@ func (h *Stakeholders) add(c *gin.Context, entityType string) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+	if req.FeeAmount < 0 {
+		c.JSON(400, gin.H{"error": "fee_amount cannot be negative"})
+		return
+	}
+	if req.FeeCurrency == "" {
+		req.FeeCurrency = "NGN"
+	}
 	id := uuid.New()
 	_, err = h.db.Exec(c, `
-		INSERT INTO stakeholders (id, tenant_id, entity_type, entity_id, name, role, kind, email, phone, notes, created_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),NULLIF($9,''),NULLIF($10,''),$11)`,
-		id, tid, entityType, entityID, req.Name, req.Role, req.Kind, req.Email, req.Phone, req.Notes, uid)
+		INSERT INTO stakeholders (id, tenant_id, entity_type, entity_id, name, role, kind, email, phone, notes,
+		                          fee_amount, fee_currency, created_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,NULLIF($8,''),NULLIF($9,''),NULLIF($10,''),$11,$12,$13)`,
+		id, tid, entityType, entityID, req.Name, req.Role, req.Kind, req.Email, req.Phone, req.Notes,
+		req.FeeAmount, req.FeeCurrency, uid)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -161,12 +188,14 @@ func (h *Stakeholders) Update(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Name  *string `json:"name"`
-		Role  *string `json:"role"`
-		Kind  *string `json:"kind"`
-		Email *string `json:"email"`
-		Phone *string `json:"phone"`
-		Notes *string `json:"notes"`
+		Name        *string  `json:"name"`
+		Role        *string  `json:"role"`
+		Kind        *string  `json:"kind"`
+		Email       *string  `json:"email"`
+		Phone       *string  `json:"phone"`
+		Notes       *string  `json:"notes"`
+		FeeAmount   *float64 `json:"fee_amount"`
+		FeeCurrency *string  `json:"fee_currency"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -187,6 +216,14 @@ func (h *Stakeholders) Update(c *gin.Context) {
 	if req.Email != nil { add("email", *req.Email) }
 	if req.Phone != nil { add("phone", *req.Phone) }
 	if req.Notes != nil { add("notes", *req.Notes) }
+	if req.FeeAmount != nil {
+		if *req.FeeAmount < 0 {
+			c.JSON(400, gin.H{"error": "fee_amount cannot be negative"})
+			return
+		}
+		add("fee_amount", *req.FeeAmount)
+	}
+	if req.FeeCurrency != nil { add("fee_currency", *req.FeeCurrency) }
 	if len(args) == 0 {
 		c.JSON(400, gin.H{"error": "no changes"})
 		return
