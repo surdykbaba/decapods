@@ -1,4 +1,4 @@
-name: bootstrap-server
+name: server-init
 on:
   workflow_dispatch:
     inputs:
