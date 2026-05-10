@@ -1,0 +1,53 @@
+name: bootstrap-server
+on:
+  workflow_dispatch:
+    inputs:
+      db_password:
+        description: "Postgres password to set for the pgdp role"
+        required: true
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install postgres + redis on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port:     ${{ secrets.SSH_PORT }}
+          command_timeout: 10m
+          envs: DB_PASS
+          script_stop: true
+          script: |
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+
+            echo "==> Installing postgres + redis"
+            sudo -n apt-get update -y
+            sudo -n apt-get install -y postgresql postgresql-contrib redis-server
+
+            echo "==> Enabling services"
+            sudo -n systemctl enable --now postgresql redis-server
+
+            echo "==> Creating role + database (idempotent)"
+            sudo -n -u postgres psql -v ON_ERROR_STOP=1 <<SQL
+            DO \$\$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='pgdp') THEN
+                CREATE ROLE pgdp LOGIN PASSWORD '${DB_PASS}';
+              ELSE
+                ALTER ROLE pgdp WITH PASSWORD '${DB_PASS}';
+              END IF;
+            END
+            \$\$;
+            SQL
+            sudo -n -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='pgdp'" \
+              | grep -q 1 || sudo -n -u postgres createdb -O pgdp pgdp
+
+            echo "==> Verifying"
+            sudo -n -u postgres psql -c '\du pgdp'
+            redis-cli ping
+        env:
+          DB_PASS: ${{ github.event.inputs.db_password }}
