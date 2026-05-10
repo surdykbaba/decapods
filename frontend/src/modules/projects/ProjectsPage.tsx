@@ -317,31 +317,71 @@ function fmtDateLong(iso?: string | null): string {
   return d.toLocaleDateString("en-US", { day: "numeric", month: "long", year: "numeric" });
 }
 
-function priorityFromHealth(p: Project): { label: string; tone: "danger" | "warn" | "ok" | "muted" } {
-  // Use risk_score + health as a proxy until projects have a dedicated priority field.
-  if (p.health === "red")     return { label: "High",   tone: "danger" };
-  if (p.health === "amber")   return { label: "Medium", tone: "warn" };
-  if (p.risk_score >= 60)     return { label: "High",   tone: "danger" };
-  if (p.risk_score >= 30)     return { label: "Medium", tone: "warn" };
-  return { label: "Low", tone: "ok" };
-}
+type SortKey = "smart" | "deadline" | "progress" | "activity" | "name";
+
+const STAGE_ORDER = ["planning", "in_progress", "qa_review", "client_acceptance", "invoiced", "paid", "closed"];
 
 function ProjectTable({ items }: { items: Project[] }) {
+  const [sort, setSort] = useState<SortKey>("smart");
+
+  const sorted = useMemo(() => {
+    const xs = [...items];
+    const urgency = (p: Project) => {
+      // Lower number = more urgent. Composite score so the row that needs
+      // attention floats to the top in "smart" mode.
+      let s = 0;
+      if (p.health === "red")   s -= 100;
+      if (p.health === "amber") s -= 50;
+      if (p.blockers > 0)       s -= 20 * p.blockers;
+      const d = daysUntil(p.end_date);
+      if (d !== null) {
+        if (d < 0) s -= 80;
+        else if (d <= 3) s -= 40;
+        else if (d <= 14) s -= 10;
+      }
+      if (FINISHED_STATUSES.includes(p.status)) s += 200; // push finished to the bottom
+      return s;
+    };
+    const lastAct = (p: Project) => new Date(p.updated_at).getTime();
+    const progress = (p: Project) => (p.tasks === 0 ? 0 : p.tasks_done / p.tasks);
+    switch (sort) {
+      case "smart":     xs.sort((a, b) => urgency(a) - urgency(b)); break;
+      case "deadline":  xs.sort((a, b) => (daysUntil(a.end_date) ?? Infinity) - (daysUntil(b.end_date) ?? Infinity)); break;
+      case "progress":  xs.sort((a, b) => progress(b) - progress(a)); break;
+      case "activity":  xs.sort((a, b) => lastAct(b) - lastAct(a)); break;
+      case "name":      xs.sort((a, b) => a.name.localeCompare(b.name)); break;
+    }
+    return xs;
+  }, [items, sort]);
+
+  const head = (key: SortKey, label: string, icon: React.ReactNode) => (
+    <button
+      type="button"
+      onClick={() => setSort(key)}
+      className={`inline-flex items-center gap-1.5 transition-colors ${
+        sort === key ? "text-accent" : "text-muted hover:text-text"
+      }`}
+    >
+      {icon} {label}
+      {sort === key && <span className="text-[10px]">▾</span>}
+    </button>
+  );
+
   return (
     <div className="border border-border rounded-2xl bg-surface overflow-hidden">
-      {/* Header row */}
-      <div className="grid grid-cols-[24px_minmax(0,2fr)_140px_120px_180px_minmax(0,1fr)_36px] items-center gap-3 px-5 py-3.5 border-b border-border bg-bg/40 text-[11px] font-bold uppercase tracking-[0.06em] text-muted">
+      <div className="grid grid-cols-[10px_minmax(0,2fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_36px] items-center gap-3 px-5 py-3 border-b border-border bg-bg/40 text-[11px] font-bold uppercase tracking-[0.06em]">
         <span />
-        <span className="flex items-center gap-2"><Loader size={13} className="text-accent" /> Project name</span>
-        <span className="flex items-center gap-2"><Loader size={13} className="text-accent" /> Status</span>
-        <span className="flex items-center gap-2"><Flag size={12} className="text-accent" /> Priority</span>
-        <span className="flex items-center gap-2"><Clock size={12} className="text-accent" /> Deadline</span>
-        <span className="flex items-center gap-2"><Users size={12} className="text-accent" /> Owner</span>
+        {head("name",     "Project",       <Loader size={12} />)}
+        <span className="inline-flex items-center gap-1.5 text-muted"><Flag size={12} /> Stage</span>
+        {head("progress", "Progress",      <CheckCircle2 size={12} />)}
+        {head("deadline", "Deadline",      <Clock size={12} />)}
+        <span className="inline-flex items-center gap-1.5 text-muted"><AlertCircle size={12} /> Signals</span>
+        {head("activity", "Last activity", <Users size={12} />)}
         <span />
       </div>
 
       <ul>
-        {items.map((p) => <ProjectRow key={p.id} project={p} />)}
+        {sorted.map((p) => <ProjectRow key={p.id} project={p} />)}
       </ul>
     </div>
   );
@@ -349,86 +389,130 @@ function ProjectTable({ items }: { items: Project[] }) {
 
 function ProjectRow({ project: p }: { project: Project }) {
   const status = STATUS_META[p.status] ?? { label: p.status, color: "#6b7280", phase: 0 };
-  const priority = priorityFromHealth(p);
   const completion = p.tasks === 0 ? 0 : Math.round((p.tasks_done / p.tasks) * 100);
   const days = daysUntil(p.end_date);
   const overdue = days !== null && days < 0 && !FINISHED_STATUSES.includes(p.status);
   const finished = FINISHED_STATUSES.includes(p.status);
-  const ownerInitial = (p.client_name || p.lead_type || "?").trim()[0]?.toUpperCase() || "?";
+  const stageIdx = STAGE_ORDER.indexOf(p.status);
 
-  // Status icon — matches Workflow inspiration:
-  //   In progress → spinning amber
-  //   Completed   → solid violet/teal check
-  //   Not started → empty circle
-  const statusIcon = finished ? (
-    <span className="w-3.5 h-3.5 rounded-full bg-accent grid place-items-center text-white">
-      <CheckCircle2 size={10} />
-    </span>
-  ) : p.status === "planning" ? (
-    <span className="w-3.5 h-3.5 rounded-full border-2 border-muted/60" />
-  ) : (
-    <span className="w-3.5 h-3.5 rounded-full" style={{ background: status.color }} />
-  );
+  // Health is the at-a-glance triage signal — green / amber / red dot at the
+  // very left edge, with risk-score on hover.
+  const healthBar = {
+    green: "bg-success",
+    amber: "bg-warn",
+    red:   "bg-danger",
+  }[p.health] ?? "bg-muted";
 
-  const priorityCls = {
-    danger: "text-danger",
-    warn:   "text-warn",
-    ok:     "text-success",
-    muted:  "text-muted",
-  }[priority.tone];
+  // Deadline countdown. Color shifts as the date approaches.
+  const deadlineMeta = (() => {
+    if (!p.end_date) return { label: "No deadline", tone: "text-muted", sub: "" };
+    if (finished)    return { label: fmtDateLong(p.end_date), tone: "text-muted", sub: "completed" };
+    if (days === null) return { label: "—", tone: "text-muted", sub: "" };
+    if (days < 0)    return { label: fmtDateLong(p.end_date), tone: "text-danger", sub: `${Math.abs(days)}d overdue` };
+    if (days === 0)  return { label: fmtDateLong(p.end_date), tone: "text-danger", sub: "due today" };
+    if (days <= 7)   return { label: fmtDateLong(p.end_date), tone: "text-warn",   sub: `in ${days}d` };
+    return            { label: fmtDateLong(p.end_date), tone: "text-text",   sub: `in ${days}d` };
+  })();
 
   return (
-    <li className="border-b border-border last:border-0 group">
+    <li className="border-b border-border last:border-0 relative group" title={`Health: ${p.health} · risk ${p.risk_score}`}>
+      {/* Health rail */}
+      <span className={`absolute left-0 top-2 bottom-2 w-[3px] rounded-r ${healthBar}`} aria-hidden />
+
       <Link
         to={`/projects/${p.id}`}
-        className="grid grid-cols-[24px_minmax(0,2fr)_140px_120px_180px_minmax(0,1fr)_36px] items-center gap-3 px-5 py-4 hover:bg-bg transition-colors"
+        className="grid grid-cols-[10px_minmax(0,2fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_36px] items-center gap-3 px-5 py-3.5 hover:bg-bg transition-colors"
       >
-        {/* Checkbox (visual only for now) */}
-        <span
-          className="w-4 h-4 rounded border-2 border-border group-hover:border-accent/50 transition-colors"
-          aria-hidden
-        />
+        <span aria-hidden />
 
-        {/* Name + client */}
+        {/* Project: code + name + client + lead-type tag + over-budget flag */}
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-[11px] font-mono font-semibold text-muted">{p.code}</span>
             <span className="text-[15px] font-bold text-text truncate">{p.name}</span>
-            {p.blockers > 0 && (
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-danger/10 text-danger px-1.5 py-0.5 rounded shrink-0">
-                <AlertCircle size={10} /> {p.blockers}
-              </span>
+            {overdue && (
+              <span className="pill bg-danger/15 text-danger text-[10px] uppercase tracking-wide shrink-0">Overdue</span>
             )}
           </div>
-          <div className="text-[12.5px] text-muted truncate mt-0.5">
-            {p.client_name || "—"}
-            {p.lead_type && p.client_name && <span className="text-muted/70"> · {p.lead_type}</span>}
+          <div className="text-[12px] text-muted truncate mt-0.5 inline-flex items-center gap-1.5">
+            <span className="truncate">{p.client_name || "Unassigned"}</span>
+            {p.lead_type && <span className="pill bg-bg text-muted normal-case text-[10px]">{p.lead_type}</span>}
+            {p.budget > 0 && <span className="text-muted/70">· {fmtMoney(p.budget, p.currency)}</span>}
           </div>
         </div>
 
-        {/* Status */}
-        <div className="flex items-center gap-2 text-[14px] text-text">
-          {statusIcon}
-          <span>{status.label}</span>
+        {/* Stage — segmented bar so phase 1/7 vs 4/7 is instantly readable */}
+        <div className="min-w-0">
+          <div className="text-[13px] text-text font-semibold truncate">{status.label}</div>
+          <div className="flex gap-0.5 mt-1.5" aria-label={`Phase ${status.phase} of 7`}>
+            {STAGE_ORDER.map((_, i) => (
+              <span
+                key={i}
+                className={`h-1 flex-1 rounded-sm ${
+                  i <= stageIdx ? (finished ? "bg-success" : "bg-accent") : "bg-bg"
+                }`}
+              />
+            ))}
+          </div>
         </div>
 
-        {/* Priority */}
-        <div className={`text-[14px] font-semibold ${priorityCls}`}>
-          {priority.label}
+        {/* Progress — % + tasks done over total + bar */}
+        <div className="min-w-0">
+          {p.tasks === 0 ? (
+            <div className="text-[12px] text-muted italic">No tasks yet</div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between text-[12.5px]">
+                <span className="font-bold text-text">{completion}%</span>
+                <span className="text-[11px] text-muted">{p.tasks_done}/{p.tasks}</span>
+              </div>
+              <div className="h-1.5 bg-bg rounded-full overflow-hidden mt-1">
+                <div
+                  className={`h-full ${completion === 100 ? "bg-success" : completion >= 50 ? "bg-accent" : "bg-warn"}`}
+                  style={{ width: `${completion}%` }}
+                />
+              </div>
+            </>
+          )}
         </div>
 
         {/* Deadline */}
-        <div className="text-[14px] text-text whitespace-nowrap">
-          {p.end_date ? fmtDateLong(p.end_date) : <span className="text-muted">—</span>}
-          {overdue && <span className="ml-2 text-[10px] font-bold uppercase tracking-wide text-danger">overdue</span>}
+        <div className="text-[13px] whitespace-nowrap min-w-0">
+          <div className={`font-semibold truncate ${deadlineMeta.tone}`}>{deadlineMeta.label}</div>
+          {deadlineMeta.sub && (
+            <div className={`text-[11px] mt-0.5 ${deadlineMeta.tone}`}>{deadlineMeta.sub}</div>
+          )}
         </div>
 
-        {/* Owner avatar + name */}
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="w-7 h-7 rounded-full bg-accent-soft text-accent text-[12px] font-bold grid place-items-center shrink-0">
-            {ownerInitial}
-          </span>
-          <span className="text-[14px] text-text truncate">{p.client_name || "Unassigned"}</span>
+        {/* Signals — chips for blockers, milestones, stakeholders */}
+        <div className="flex flex-wrap gap-1 items-center">
+          {p.blockers > 0 && (
+            <span className="pill bg-danger/15 text-danger inline-flex items-center gap-0.5"
+              title={`${p.blockers} blocker${p.blockers === 1 ? "" : "s"}`}>
+              <AlertCircle size={10} /> {p.blockers}
+            </span>
+          )}
+          {p.milestones > 0 && (
+            <span className="pill bg-accent-soft text-accent inline-flex items-center gap-0.5"
+              title={`${p.milestones} milestone${p.milestones === 1 ? "" : "s"}`}>
+              <Flag size={10} /> {p.milestones}
+            </span>
+          )}
+          {p.stakeholders > 0 && (
+            <span className="pill bg-bg text-muted inline-flex items-center gap-0.5"
+              title={`${p.stakeholders} stakeholder${p.stakeholders === 1 ? "" : "s"}`}>
+              <Users size={10} /> {p.stakeholders}
+            </span>
+          )}
+          {p.blockers === 0 && p.milestones === 0 && p.stakeholders === 0 && (
+            <span className="text-[11px] text-muted italic">—</span>
+          )}
+        </div>
+
+        {/* Last activity */}
+        <div className="text-[12.5px] text-text min-w-0">
+          <div className="font-semibold truncate">{relTime(p.updated_at)}</div>
+          <div className="text-[11px] text-muted truncate">last update</div>
         </div>
 
         {/* Trailing menu */}
@@ -440,20 +524,6 @@ function ProjectRow({ project: p }: { project: Project }) {
           <MoreHorizontal size={16} />
         </button>
       </Link>
-
-      {/* Optional sub-row: tasks completion bar */}
-      {p.tasks > 0 && (
-        <div className="px-5 pb-3 -mt-1 grid grid-cols-[24px_minmax(0,2fr)_minmax(0,3fr)] gap-3 items-center">
-          <span />
-          <span className="text-[11px] text-muted">{p.tasks_done}/{p.tasks} tasks · {completion}%</span>
-          <div className="h-1 bg-bg rounded-full overflow-hidden">
-            <div
-              className={`h-full ${completion === 100 ? "bg-success" : completion >= 50 ? "bg-accent" : "bg-warn"}`}
-              style={{ width: `${completion}%` }}
-            />
-          </div>
-        </div>
-      )}
     </li>
   );
 }
