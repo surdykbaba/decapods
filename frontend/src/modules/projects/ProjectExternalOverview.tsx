@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import {
-  Target, Plus, MoreHorizontal, ChevronDown, CheckCircle2, ArrowRight, ExternalLink,
+  Target, Plus, ChevronDown, CheckCircle2, ArrowRight, ExternalLink,
 } from "lucide-react";
 
 type ProjectLink = { label: string; url: string; kind?: string };
@@ -103,8 +103,8 @@ export function ProjectExternalOverview({
   board: Board | undefined;
   stakeholders: Stakeholder[];
 }) {
-  const { id } = useParams();
-  const qc = useQueryClient();
+  useParams();
+  useQueryClient();
 
   const { data: opp } = useQuery<OppData>({
     queryKey: ["opp-for-project", project.opportunity_id],
@@ -113,7 +113,6 @@ export function ProjectExternalOverview({
   });
 
   const ccy = project.currency || "USD";
-  const onTrack = project.health === "green";
 
   const stageMatch = STAGES_PIPELINE.find((s) => s.key === project.status) ?? STAGES_PIPELINE[0];
   const stageIdx = STAGES_PIPELINE.findIndex((s) => s.key === project.status);

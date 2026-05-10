@@ -48,6 +48,7 @@ type Opportunity = {
   next_stages: NextStage[];
   metadata?: { stage_history?: StageHistoryEntry[] };
   project_id?: string | null;
+  currency?: string;
 };
 
 type Stakeholder = {
@@ -952,7 +953,6 @@ function PreviewDocumentDialog({
     const m = lower.match(/\.([a-z0-9]{2,5})(\?|$)/);
     return m ? m[1] : "";
   })();
-  const isPdf = ext === "pdf";
   const isImage = ["png","jpg","jpeg","gif","webp","svg"].includes(ext);
 
   return (
@@ -1034,7 +1034,7 @@ type InsightTone = "good" | "warn" | "danger" | "info";
 
 type Insight = {
   tone: InsightTone;
-  icon: React.ComponentType<{ size?: number }>;
+  icon: React.ComponentType<any>;
   title: string;
   body: string;
   cta?: { label: string; onClick: () => void };

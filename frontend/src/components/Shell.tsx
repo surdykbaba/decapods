@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
-  LayoutDashboard, Briefcase, FolderKanban, Users, DollarSign,
+ Briefcase, FolderKanban, Users, DollarSign,
   Settings, LifeBuoy, Search, UserCheck,
   Sun, Moon, LogOut, ChevronDown,
 } from "lucide-react";
@@ -14,7 +14,7 @@ import { CommandPalette } from "@/components/CommandPalette";
 type NavItem = {
   to: string;
   label: string;
-  icon: React.ComponentType<{ size?: number }>;
+  icon: React.ComponentType<any>;
 };
 
 const navTop: NavItem[] = [

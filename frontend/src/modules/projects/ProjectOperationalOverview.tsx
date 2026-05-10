@@ -6,7 +6,7 @@ import {
   AlertTriangle, AlertCircle, FileText, Upload, Plus, ShieldCheck, Github,
   GitPullRequest, GitCommit, Rocket, X, Check, Clock, CircleDot, ArrowRight,
   ListChecks, Bug, FileBarChart2, Wallet, Users as UsersIcon, History,
-  Flag, CalendarClock, Mail, Calendar, Target, ChevronLeft, Archive,
+  Flag, CalendarClock, Mail, Target, Archive,
   MoreHorizontal,
 } from "lucide-react";
 
@@ -493,7 +493,7 @@ function KPI({
 /* ---------- Team panel ---------- */
 
 function TeamPanel({
-  project, stakeholders, tasks, opp,
+  stakeholders, tasks, opp,
 }: {
   project: Project; stakeholders: Stakeholder[]; tasks: Task[]; opp?: OppData;
 }) {

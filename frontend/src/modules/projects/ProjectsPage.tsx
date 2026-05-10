@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { Empty, Skeleton } from "@/components/ui";
 import {
   Search, X, LayoutGrid, List as ListIcon, ChevronRight, Users, AlertCircle,
-  Flag, Wallet, Clock, CheckCircle2, AlertTriangle, Activity, ArrowUpRight,
+  Flag, Wallet, Clock, CheckCircle2, AlertTriangle, Activity,
   MoreHorizontal, Loader,
 } from "lucide-react";
 

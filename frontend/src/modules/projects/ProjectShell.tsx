@@ -1,7 +1,7 @@
 import { Outlet, useParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { ArrowLeft, MoreHorizontal, Info } from "lucide-react";
+import { ArrowLeft, MoreHorizontal } from "lucide-react";
 
 type Project = {
   id: string;

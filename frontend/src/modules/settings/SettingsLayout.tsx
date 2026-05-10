@@ -6,7 +6,7 @@ import {
 
 type Section = {
   group: string;
-  items: { to: string; label: string; icon: React.ComponentType<{ size?: number }>; description?: string }[];
+  items: { to: string; label: string; icon: React.ComponentType<any>; description?: string }[];
 };
 
 const SECTIONS: Section[] = [

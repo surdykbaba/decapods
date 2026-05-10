@@ -60,9 +60,10 @@ export function WorkflowPage() {
     setDraft((d) => d.filter((_, i) => i !== idx));
   }
   function add() {
-    setDraft((d) => [...d, { from: data.stages[0] ?? "new_request", to: data.stages[1] ?? "approved", label: "", roles: [] }]);
+    setDraft((d) => [...d, { from: data?.stages[0] ?? "new_request", to: data?.stages[1] ?? "approved", label: "", roles: [] }]);
   }
   function restoreDefaults() {
+    if (!data) return;
     setDraft(data.default.transitions.map((t) => ({ ...t, roles: t.roles ?? [] })));
   }
   function toggleRole(idx: number, role: string) {

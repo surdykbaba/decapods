@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import {
-  Bell, AlertTriangle, FileText, ListChecks, Clock,
+  Bell, FileText, ListChecks, Clock,
   ThumbsUp, MessageSquare, Activity, ShieldAlert, CheckCircle2,
 } from "lucide-react";
 

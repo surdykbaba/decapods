@@ -4,8 +4,6 @@ import { Toaster } from "@/components/Toaster";
 import { RequireAuth } from "@/app/RequireAuth";
 import { LoginPage } from "@/modules/auth/LoginPage";
 import { MfaPage } from "@/modules/auth/MfaPage";
-import { DashboardPage } from "@/modules/dashboard/DashboardPage";
-import { OverviewPage } from "@/modules/overview/OverviewPage";
 import { PipelinePage } from "@/modules/pipeline/PipelinePage";
 import { OpportunityWizard } from "@/modules/pipeline/OpportunityWizard";
 import { OpportunityDetail } from "@/modules/pipeline/OpportunityDetail";

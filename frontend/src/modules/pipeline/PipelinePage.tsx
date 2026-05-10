@@ -11,7 +11,7 @@ import {
 import {
   Plus, Search, MoreHorizontal, Wallet, Calendar, Sparkles,
   Filter, ChevronDown, X, FileText, AlertTriangle, CheckCircle2,
-  ArrowRight, Bell, Briefcase, Users, Trophy, UserPlus, GripVertical, List, LayoutGrid, ExternalLink,
+  ArrowRight, Bell, GripVertical, List, LayoutGrid, ExternalLink,
 } from "lucide-react";
 
 type Transition = { from: string; to: string; label?: string; roles?: string[] };
@@ -168,8 +168,6 @@ export function PipelinePage() {
     return true;
   }), [items, query, leadType, needsAttention]);
 
-  const totalValue = items.reduce((s, o) => s + (o.estimated_value || 0), 0);
-  const wonValue = items.filter((o) => o.stage === "paid" || o.stage === "closed").reduce((s, o) => s + (o.estimated_value || 0), 0);
   const attentionCount = items.filter((o) => {
     const s = signalOf(o).status;
     return s !== "on_track" && s !== "ready";
@@ -769,22 +767,6 @@ function Dropdown({ label, children }: { label: string; children: React.ReactNod
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-function BigStat({ icon, label, value, delta, deltaTone, sub }: { icon: React.ReactNode; label: string; value: string; delta: string; deltaTone: "up" | "down" | "warn"; sub: string }) {
-  const deltaCls = { up: "bg-success/15 text-success", down: "bg-danger/15 text-danger", warn: "bg-warn/15 text-warn" }[deltaTone];
-  return (
-    <div className="bg-surface border border-border rounded-lg px-5 py-4">
-      <div className="flex items-center gap-2 text-muted text-sm">
-        <span className="w-7 h-7 rounded-full bg-bg grid place-items-center">{icon}</span>{label}
-      </div>
-      <div className="flex items-end gap-2 mt-3">
-        <div className="text-[28px] font-semibold leading-none text-text tracking-tight">{value}</div>
-        <span className={`text-[11px] font-semibold px-1.5 py-0.5 rounded ${deltaCls}`}>{delta}</span>
-      </div>
-      <div className="text-xs text-muted mt-2">{sub}</div>
     </div>
   );
 }

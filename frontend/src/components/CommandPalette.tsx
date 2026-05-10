@@ -16,7 +16,7 @@ type Result = {
   group: "Quick actions" | "Opportunities" | "Projects" | "Navigate";
   label: string;
   hint?: string;
-  icon: React.ComponentType<{ size?: number }>;
+  icon: React.ComponentType<any>;
   to?: string;
   onRun?: () => void;
 };

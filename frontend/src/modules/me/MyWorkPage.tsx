@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
-  PauseCircle, MessageSquare, ArrowRight, Plus, Loader, Calendar, Activity, Zap, X,
+  PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
   Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, FileType2, Briefcase, LayoutGrid, Rows3,
 } from "lucide-react";
 
@@ -91,7 +91,7 @@ export function MyWorkPage() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const { user } = useAuth();
 
-  const tabs: { key: Tab; label: string; icon: React.ComponentType<{ size?: number }> }[] = [
+  const tabs: { key: Tab; label: string; icon: React.ComponentType<any> }[] = [
     { key: "dashboard", label: "Today",     icon: Zap },
     { key: "tasks",     label: "My tasks",  icon: ListChecks },
     { key: "updates",   label: "Updates",   icon: MessageSquare },
@@ -311,14 +311,18 @@ function FileLibraryCard() {
   const PROJECT_PREVIEW = 3;
 
   // Layout classes shared by every file list inside a section.
-  // - scroll: horizontal strip; card widths are 25% (4 fit) but never narrower than 240px → scrolls when overflow.
-  // - grid:   2-col on small, 3 on lg, 4 on xl; wraps as needed.
+  // - scroll: horizontal strip; cards have a min width so 3-4 fit before overflow.
+  // - grid:   auto-fill with a min card width — always packs the maximum number of
+  //           columns that fit the *container*, so it works correctly even when the
+  //           list is nested inside a narrower project card. (Viewport breakpoints
+  //           like `lg:grid-cols-3` don't help here — the grid lives inside a
+  //           padded parent, so the container width is what matters, not the viewport.)
   const listCls = layout === "scroll"
     ? "flex gap-2 overflow-x-auto snap-x snap-mandatory pb-1 -mx-1 px-1 [scrollbar-width:thin]"
-    : "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2";
+    : "grid gap-2 grid-cols-[repeat(auto-fill,minmax(240px,1fr))]";
   const itemCls = layout === "scroll"
-    ? "snap-start shrink-0 min-w-[240px] w-[calc(25%-6px)]"
-    : "";
+    ? "snap-start shrink-0 w-[260px]"
+    : "min-w-0";
 
   const items = data?.items ?? [];
 

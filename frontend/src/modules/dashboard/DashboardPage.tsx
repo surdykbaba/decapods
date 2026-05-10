@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { Card, Pill, Skeleton } from "@/components/ui";
+import { Card, Skeleton } from "@/components/ui";
 import {
   TrendingUp, TrendingDown, AlertTriangle, FileText, CheckCircle2,
   Briefcase, Clock, ArrowRight, Trophy, Gauge,

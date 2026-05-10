@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import {
   Bell, Plus, X, Sparkles, MapPin, Clock, Send, Folder, Share2, ChevronLeft, ChevronRight,
-  Copy, Calendar as CalendarIcon, Settings, Briefcase, Trophy, Gauge, AlertTriangle,
+  Copy, Briefcase, Trophy, Gauge, AlertTriangle,
 } from "lucide-react";
 
 type WorkResp = {

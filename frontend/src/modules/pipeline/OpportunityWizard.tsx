@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Pill } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
 import { Check, Building2, FileText, Wallet, ShieldAlert, Eye, ArrowLeft, ArrowRight, Sparkles, AlertTriangle, X, Plus, Trash2, Users as UsersIcon, ExternalLink, Search, Wand2 } from "lucide-react";
 
@@ -226,7 +225,7 @@ const FIELD_META: Record<string, { label: string; step: StepKey }> = {
   dependencies: { label: "Dependencies", step: "risk" },
 };
 
-function humanizeRule(field: string, rule: string, label: string): string {
+function humanizeRule(_field: string, rule: string, label: string): string {
   switch (rule) {
     case "required": return `${label} is required.`;
     case "email": return `${label} must be a valid email.`;
@@ -342,11 +341,6 @@ function suggestRisk(value: number, lead: LeadType): Risk {
   if (lead === "government" || lead === "foreign") return value >= 250_000 ? "high" : "medium";
   if (value >= 100_000) return "medium";
   return "low";
-}
-
-function fmtCurrency(n: number): string {
-  if (!n) return "—";
-  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
 }
 
 export function OpportunityWizard() {
@@ -1430,32 +1424,6 @@ function ComplianceTagPicker({
           Add
         </button>
       </div>
-    </div>
-  );
-}
-
-function CustomTagInput({ onAdd }: { onAdd: (t: string) => void }) {
-  const [draft, setDraft] = useState("");
-  function commit() {
-    if (draft.trim()) {
-      onAdd(draft);
-      setDraft("");
-    }
-  }
-  return (
-    <div className="flex items-center gap-2 pt-1 border-t border-border">
-      <input
-        className="input flex-1"
-        value={draft}
-        placeholder="Add a custom tag (e.g. NITDA registration)…"
-        onChange={(e) => setDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") { e.preventDefault(); commit(); }
-        }}
-      />
-      <button type="button" className="btn-outline" onClick={commit} disabled={!draft.trim()}>
-        <Plus size={14} /> Add tag
-      </button>
     </div>
   );
 }
