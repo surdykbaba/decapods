@@ -72,6 +72,12 @@ fi
 
 # ---- 3. Symlink swap ----
 echo "==> Swapping symlink to $SHA"
+# If `current` is a real directory from initial provisioning, blow it away so we
+# can replace it with a symlink. Subsequent deploys hit the symlink-to-symlink
+# fast path via mv -T.
+if [ -d "$DEPLOY_PATH/current" ] && [ ! -L "$DEPLOY_PATH/current" ]; then
+  rm -rf "$DEPLOY_PATH/current"
+fi
 ln -sfn "$REL" "$DEPLOY_PATH/current.new"
 mv -Tf  "$DEPLOY_PATH/current.new" "$DEPLOY_PATH/current"
 
