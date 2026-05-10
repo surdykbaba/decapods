@@ -71,6 +71,14 @@ type StageHistoryEntry = {
 
 type Violation = { code: string; message: string; field?: string };
 
+type TeamLine = {
+  name: string;
+  kind: "internal" | "external";
+  daily_rate: number;
+  count: number;
+  days: number;
+};
+
 const DOC_LABELS: Record<string, { label: string; help: string }> = {
   NDA:                  { label: "Non-disclosure agreement",   help: "Signed NDA covering this engagement." },
   TechnicalProposal:    { label: "Technical proposal",         help: "Solution approach, architecture, deliverables." },
@@ -631,7 +639,25 @@ function EditOpportunityDialog({
   onClose: () => void;
   onSave: (patch: Record<string, unknown>) => void;
 }) {
-  const [form, setForm] = useState({
+  type FormState = {
+    title: string;
+    lead_type: string;
+    source: string;
+    proposal_summary: string;
+    technical_scope: string;
+    estimated_value: number;
+    budget: number;
+    priority: number;
+    risk_level: string;
+    delivery_deadline: string;
+    expected_manpower: number;
+    currency: string;
+    team_composition: TeamLine[];
+    compliance_tags: string[];
+    dependencies: string[];
+    reason: string;
+  };
+  const [form, setForm] = useState<FormState>({
     title: data.title ?? "",
     lead_type: data.lead_type ?? "private",
     source: data.source ?? "",
@@ -644,11 +670,49 @@ function EditOpportunityDialog({
     delivery_deadline: (data.delivery_deadline ?? "").slice(0, 10),
     expected_manpower: Number(data.expected_manpower ?? 0),
     currency: data.currency ?? "NGN",
+    team_composition: (Array.isArray(data.team_composition) ? data.team_composition : []).map(
+      (t: any): TeamLine => ({
+        name: String(t?.name ?? ""),
+        kind: t?.kind === "external" ? "external" : "internal",
+        daily_rate: Number(t?.daily_rate ?? 0),
+        count: Math.max(1, Number(t?.count ?? 1)),
+        days: Math.max(0, Number(t?.days ?? 0)),
+      }),
+    ),
+    compliance_tags: (Array.isArray(data.compliance_tags) ? data.compliance_tags : []) as string[],
+    dependencies:    (Array.isArray(data.dependencies)    ? data.dependencies    : []) as string[],
     reason: "",
   });
 
   function set<K extends keyof typeof form>(k: K, v: typeof form[K]) {
     setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  // Derived commercial totals — recomputed live as the user edits team rows.
+  const internalCost = form.team_composition
+    .filter((t) => t.kind === "internal")
+    .reduce((s, t) => s + (t.daily_rate || 0) * (t.count || 0) * (t.days || 0), 0);
+  const externalCost = form.team_composition
+    .filter((t) => t.kind === "external")
+    .reduce((s, t) => s + (t.daily_rate || 0) * (t.count || 0) * (t.days || 0), 0);
+  const teamCost = internalCost + externalCost;
+  const margin   = (form.estimated_value || 0) - (form.budget || 0);
+  const totalHeadcount = form.team_composition.reduce((s, t) => s + (t.count || 0), 0);
+
+  function addTeamLine() {
+    setForm((f) => ({
+      ...f,
+      team_composition: [...f.team_composition, { name: "", kind: "internal", daily_rate: 0, count: 1, days: 0 }],
+    }));
+  }
+  function updateTeamLine(i: number, patch: Partial<TeamLine>) {
+    setForm((f) => ({
+      ...f,
+      team_composition: f.team_composition.map((t, idx) => idx === i ? { ...t, ...patch } : t),
+    }));
+  }
+  function removeTeamLine(i: number) {
+    setForm((f) => ({ ...f, team_composition: f.team_composition.filter((_, idx) => idx !== i) }));
   }
 
   function submit() {
@@ -666,6 +730,9 @@ function EditOpportunityDialog({
       delivery_deadline: form.delivery_deadline,
       expected_manpower: form.expected_manpower,
       currency: form.currency,
+      team_composition: form.team_composition.filter((t) => t.name.trim() !== ""),
+      compliance_tags: form.compliance_tags,
+      dependencies: form.dependencies,
       reason: form.reason.trim(),
     });
   }
@@ -803,7 +870,140 @@ function EditOpportunityDialog({
             />
           </label>
 
-          <label className="block">
+          {/* ---------- Team composition (commercials cost basis) ---------- */}
+          <div className="border-t border-border pt-5">
+            <div className="flex items-end justify-between mb-2">
+              <div>
+                <div className="text-[11px] uppercase tracking-wider font-semibold text-muted">Team composition</div>
+                <div className="text-xs text-muted">Drives the internal-budget cost basis. Internal rows are paid from your team; external rows are sub-contracted spend.</div>
+              </div>
+              <button type="button" onClick={addTeamLine} className="text-xs font-semibold text-accent hover:underline">
+                + Add role
+              </button>
+            </div>
+            {form.team_composition.length === 0 ? (
+              <p className="text-sm text-muted italic">No planned roles yet. Add one to build up the budget.</p>
+            ) : (
+              <div className="overflow-x-auto border border-border rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
+                    <tr>
+                      <th className="text-left px-3 py-2">Role</th>
+                      <th className="text-left px-3 py-2 w-[110px]">Kind</th>
+                      <th className="text-right px-3 py-2 w-[80px]">Count</th>
+                      <th className="text-right px-3 py-2 w-[90px]">Days</th>
+                      <th className="text-right px-3 py-2 w-[120px]">Daily rate</th>
+                      <th className="text-right px-3 py-2 w-[110px]">Line cost</th>
+                      <th className="w-[40px]"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {form.team_composition.map((t, i) => {
+                      const lineCost = (t.daily_rate || 0) * (t.count || 0) * (t.days || 0);
+                      return (
+                        <tr key={i} className="border-t border-border">
+                          <td className="px-2 py-1.5">
+                            <input className="input" value={t.name}
+                              onChange={(e) => updateTeamLine(i, { name: e.target.value })}
+                              placeholder="e.g. Senior engineer" />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <select className="input" value={t.kind}
+                              onChange={(e) => updateTeamLine(i, { kind: e.target.value as "internal" | "external" })}>
+                              <option value="internal">Internal</option>
+                              <option value="external">External</option>
+                            </select>
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" min={1} className="input text-right" value={t.count}
+                              onChange={(e) => updateTeamLine(i, { count: Math.max(1, Number(e.target.value) || 1) })} />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" min={0} className="input text-right" value={t.days}
+                              onChange={(e) => updateTeamLine(i, { days: Math.max(0, Number(e.target.value) || 0) })} />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" min={0} step="0.01" className="input text-right" value={t.daily_rate}
+                              onChange={(e) => updateTeamLine(i, { daily_rate: Math.max(0, Number(e.target.value) || 0) })} />
+                          </td>
+                          <td className="px-2 py-1.5 text-right text-text font-semibold whitespace-nowrap">
+                            {form.currency} {lineCost.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                          </td>
+                          <td className="px-2 py-1.5 text-right">
+                            <button type="button" onClick={() => removeTeamLine(i)}
+                              className="text-muted hover:text-danger p-1" title="Remove">
+                              <X size={14} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot className="bg-bg/30 text-[12px]">
+                    <tr className="border-t border-border">
+                      <td colSpan={2} className="px-3 py-2 font-semibold text-muted">Totals</td>
+                      <td className="px-3 py-2 text-right text-muted">{totalHeadcount}</td>
+                      <td colSpan={2} className="px-3 py-2 text-right text-muted">
+                        Internal {form.currency} {internalCost.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                        {externalCost > 0 && <> · External {form.currency} {externalCost.toLocaleString("en-US", { maximumFractionDigits: 0 })}</>}
+                      </td>
+                      <td className="px-3 py-2 text-right font-bold text-text whitespace-nowrap">
+                        {form.currency} {teamCost.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                      </td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
+
+            {/* Commercial summary — estimated value, internal budget, margin (derived) */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+              <div className="bg-bg/30 border border-border rounded-lg px-3 py-2">
+                <div className="text-[10.5px] uppercase tracking-wider text-muted font-bold">Estimated value</div>
+                <div className="text-sm font-bold text-text">{form.currency} {(form.estimated_value || 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}</div>
+              </div>
+              <div className="bg-bg/30 border border-border rounded-lg px-3 py-2">
+                <div className="text-[10.5px] uppercase tracking-wider text-muted font-bold">Internal budget</div>
+                <div className="text-sm font-bold text-text">{form.currency} {(form.budget || 0).toLocaleString("en-US", { maximumFractionDigits: 0 })}</div>
+                {Math.abs(form.budget - internalCost) > 1 && (
+                  <button type="button" onClick={() => set("budget", Math.round(internalCost))}
+                    className="text-[11px] text-accent hover:underline mt-0.5">
+                    Sync to internal team cost ({form.currency} {Math.round(internalCost).toLocaleString("en-US")})
+                  </button>
+                )}
+              </div>
+              <div className={`border rounded-lg px-3 py-2 ${margin < 0 ? "bg-danger/10 border-danger/30" : "bg-success/10 border-success/30"}`}>
+                <div className="text-[10.5px] uppercase tracking-wider text-muted font-bold">Margin</div>
+                <div className={`text-sm font-bold ${margin < 0 ? "text-danger" : "text-success"}`}>
+                  {form.currency} {margin.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+                  {form.estimated_value > 0 && (
+                    <span className="text-[11px] font-normal ml-1">
+                      ({Math.round((margin / form.estimated_value) * 100)}%)
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* ---------- Compliance + Dependencies ---------- */}
+          <div className="border-t border-border pt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <ChipField
+              label="Compliance tags"
+              hint="e.g. NDPR, CBN-FX, NITDA, ISO27001"
+              values={form.compliance_tags}
+              onChange={(v) => set("compliance_tags", v)}
+            />
+            <ChipField
+              label="Dependencies"
+              hint="External constraints — vendor approvals, integration partners, sign-offs"
+              values={form.dependencies}
+              onChange={(v) => set("dependencies", v)}
+            />
+          </div>
+
+          <label className="block border-t border-border pt-5">
             <div className="label">Why are you making this change? <span className="text-muted normal-case">(optional but recommended)</span></div>
             <textarea
               className="input min-h-[72px]"
@@ -1917,5 +2117,52 @@ function AddStakeholderDialog({
         </footer>
       </div>
     </div>
+  );
+}
+
+function ChipField({
+  label, hint, values, onChange,
+}: {
+  label: string;
+  hint?: string;
+  values: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+  function commit() {
+    const v = draft.trim();
+    if (!v) return;
+    if (!values.includes(v)) onChange([...values, v]);
+    setDraft("");
+  }
+  return (
+    <label className="block">
+      <div className="label">{label}</div>
+      <div className="flex flex-wrap items-center gap-1.5 border border-border rounded-lg px-2 py-1.5 bg-surface focus-within:border-accent">
+        {values.map((v, i) => (
+          <span key={i} className="inline-flex items-center gap-1 pill bg-accent-soft text-accent">
+            {v}
+            <button type="button" onClick={() => onChange(values.filter((_, idx) => idx !== i))}
+              className="hover:text-danger" aria-label={`Remove ${v}`}>
+              <X size={11} />
+            </button>
+          </span>
+        ))}
+        <input
+          className="flex-1 min-w-[140px] bg-transparent text-sm focus:outline-none px-1 py-0.5"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === ",") { e.preventDefault(); commit(); }
+            if (e.key === "Backspace" && draft === "" && values.length > 0) {
+              onChange(values.slice(0, -1));
+            }
+          }}
+          onBlur={commit}
+          placeholder={values.length === 0 ? "Type and press Enter…" : ""}
+        />
+      </div>
+      {hint && <div className="text-[11px] text-muted mt-1">{hint}</div>}
+    </label>
   );
 }
