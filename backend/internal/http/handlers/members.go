@@ -12,6 +12,7 @@ import (
 	"time"
 
 	authpkg "github.com/decapods/pgdp/backend/internal/auth"
+	"github.com/decapods/pgdp/backend/internal/audit"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
 	"github.com/decapods/pgdp/backend/internal/notifications"
 	"github.com/decapods/pgdp/backend/internal/platform/config"
@@ -50,6 +51,7 @@ func (h *Members) List(c *gin.Context) {
 	q := `
 		SELECT u.id, u.email, COALESCE(u.full_name,''), u.status, u.mfa_enabled,
 		       u.last_login_at, u.created_at, u.last_seen_at,
+		       u.manual_status, u.manual_status_until,
 		       COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
 		FROM users u
 		LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -83,21 +85,18 @@ func (h *Members) List(c *gin.Context) {
 			email, name, status         string
 			mfa                         bool
 			lastLogin, lastSeen         *time.Time
+			manual                      *string
+			manualUntil                 *time.Time
 			created                     time.Time
 			roles                       []string
 		)
-		if err := rows.Scan(&id, &email, &name, &status, &mfa, &lastLogin, &created, &lastSeen, &roles); err == nil {
-			// Derive presence inline — keeps the UI from doing it 100 times per render.
-			presence := "offline"
+		if err := rows.Scan(&id, &email, &name, &status, &mfa, &lastLogin, &created, &lastSeen,
+			&manual, &manualUntil, &roles); err == nil {
+			// Single source of truth for presence — see derivePresence in me.go.
+			presence := derivePresence(manual, manualUntil, lastSeen)
 			var sinceSec int64 = -1
 			if lastSeen != nil {
-				delta := time.Since(*lastSeen)
-				sinceSec = int64(delta.Seconds())
-				switch {
-				case delta < 90*time.Second: presence = "online"
-				case delta < 5*time.Minute:  presence = "away"
-				default:                     presence = "offline"
-				}
+				sinceSec = int64(time.Since(*lastSeen).Seconds())
 			}
 			out = append(out, gin.H{
 				"id": id, "email": email, "name": name, "status": status,
@@ -144,6 +143,7 @@ func (h *Members) ListRoles(c *gin.Context) {
 // "invited" so they show up distinctly until the first login.
 func (h *Members) Create(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	actor := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	var req struct {
 		Email string   `json:"email" binding:"required,email"`
 		Name  string   `json:"name"  binding:"required,min=2"`
@@ -199,6 +199,10 @@ func (h *Members) Create(c *gin.Context) {
 	}
 	if err := tx.Commit(c); err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }
 
+	audit.Write(c.Request.Context(), h.db, tid, &actor, "member.created", "user", uid, gin.H{
+		"email": req.Email, "name": req.Name, "roles": req.Roles,
+	})
+
 	c.JSON(201, gin.H{
 		"id":             uid,
 		"email":          req.Email,
@@ -211,6 +215,7 @@ func (h *Members) Create(c *gin.Context) {
 // provided so the UI can drive a checkbox set without thinking about diffs.
 func (h *Members) Update(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	actor := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
 	var req struct {
@@ -278,6 +283,9 @@ func (h *Members) Update(c *gin.Context) {
 		}
 	}
 	if err := tx.Commit(c); err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }
+	audit.Write(c.Request.Context(), h.db, tid, &actor, "member.updated", "user", id, gin.H{
+		"name": req.Name, "status": req.Status, "roles": req.Roles,
+	})
 	c.JSON(200, gin.H{"ok": true})
 }
 
@@ -286,6 +294,7 @@ func (h *Members) Update(c *gin.Context) {
 // loses their credentials before email delivery is wired up.
 func (h *Members) ResetPassword(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	actor := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
 	pwBytes := make([]byte, 12)
@@ -302,6 +311,7 @@ func (h *Members) ResetPassword(c *gin.Context) {
 		c.JSON(404, gin.H{"error": "member not found"})
 		return
 	}
+	audit.Write(c.Request.Context(), h.db, tid, &actor, "member.password_reset", "user", id, nil)
 	c.JSON(200, gin.H{
 		"temp_password": tempPassword,
 		"warning":       "This temporary password is shown ONCE. Send it through a secure channel.",
@@ -325,6 +335,7 @@ func (h *Members) Delete(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	audit.Write(c.Request.Context(), h.db, tid, &uid, "member.deleted", "user", id, nil)
 	c.JSON(200, gin.H{"ok": true})
 }
 
@@ -400,6 +411,12 @@ func (h *Members) CreateInvite(c *gin.Context) {
 	// Fire-and-forget invite email. The "copy link" flow on the frontend keeps
 	// working regardless of mailer state.
 	h.dispatchMemberInviteEmail(c.Request.Context(), tid, req.Email, req.Name, token, req.Message)
+
+	// Audit row keys on the invitation token (deterministic) instead of a UUID
+	// we don't have — store metadata in the diff for the page to render.
+	audit.Write(c.Request.Context(), h.db, tid, &uid, "member.invited", "invitation", uuid.Nil, gin.H{
+		"email": req.Email, "name": req.Name, "roles": req.Roles,
+	})
 
 	c.JSON(201, gin.H{
 		"token":      token,
@@ -540,6 +557,7 @@ func (h *Members) ListInvites(c *gin.Context) {
 // invite is already accepted or revoked.
 func (h *Members) ResendInvite(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	actor := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	invID, err := uuid.Parse(c.Param("inviteId"))
 	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
 
@@ -577,6 +595,10 @@ func (h *Members) ResendInvite(c *gin.Context) {
 	// Dispatch the email again. Same token, fresh window.
 	h.dispatchMemberInviteEmail(c.Request.Context(), tid, email, name, token, msg)
 
+	audit.Write(c.Request.Context(), h.db, tid, &actor, "member.invite_resent", "invitation", invID, gin.H{
+		"email": email,
+	})
+
 	c.JSON(200, gin.H{
 		"ok":         true,
 		"email":      email,
@@ -587,6 +609,7 @@ func (h *Members) ResendInvite(c *gin.Context) {
 
 func (h *Members) RevokeInvite(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	actor := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	invID, err := uuid.Parse(c.Param("inviteId"))
 	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
 	if _, err := h.db.Exec(c,
@@ -596,6 +619,49 @@ func (h *Members) RevokeInvite(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	audit.Write(c.Request.Context(), h.db, tid, &actor, "member.invite_revoked", "invitation", invID, nil)
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// DeleteInvite hard-deletes an invitation row. Only allowed when the invite is
+// no longer live — i.e. revoked, accepted (rare, usually we keep history), or
+// expired. The UI surfaces a confirm modal because this is destructive and
+// can't be undone (the token is gone forever). Live/pending invites must be
+// revoked first; we refuse with 409 so the caller can show a clear message.
+func (h *Members) DeleteInvite(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	actor := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	invID, err := uuid.Parse(c.Param("inviteId"))
+	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
+
+	var (
+		email             string
+		expires           time.Time
+		accepted, revoked *time.Time
+	)
+	if err := h.db.QueryRow(c, `
+		SELECT email::text, expires_at, accepted_at, revoked_at
+		FROM member_invitations WHERE id=$1 AND tenant_id=$2`,
+		invID, tid).Scan(&email, &expires, &accepted, &revoked); err != nil {
+		c.JSON(404, gin.H{"error": "invitation not found"})
+		return
+	}
+	live := revoked == nil && accepted == nil && time.Now().Before(expires)
+	if live {
+		c.JSON(409, gin.H{
+			"error": "Revoke the invitation before deleting — it's still active.",
+			"code":  "invite_live",
+		})
+		return
+	}
+	if _, err := h.db.Exec(c,
+		`DELETE FROM member_invitations WHERE id=$1 AND tenant_id=$2`, invID, tid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	audit.Write(c.Request.Context(), h.db, tid, &actor, "member.invite_deleted", "invitation", invID, gin.H{
+		"email": email,
+	})
 	c.JSON(200, gin.H{"ok": true})
 }
 
@@ -735,6 +801,11 @@ func (h *Members) PublicAcceptInvite(c *gin.Context) {
 		return
 	}
 	if err := tx.Commit(c); err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }
+
+	// Public action — actor is the new user themselves.
+	audit.Write(c.Request.Context(), h.db, tid, &newUserID, "member.invite_accepted", "user", newUserID, gin.H{
+		"email": email,
+	})
 
 	c.JSON(200, gin.H{"ok": true, "email": email})
 }

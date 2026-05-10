@@ -34,6 +34,8 @@ var NavSections = []struct {
 	{"vendors",       "Vendors"},
 	{"agents",        "PR & Agents"},
 	{"finance",       "Finance"},
+	{"files",         "Files & media"},
+	{"leave",         "Leave"},
 	{"settings",      "Settings"},
 }
 
@@ -51,6 +53,8 @@ var DefaultRoleVisibility = map[string][]string{
 	"vendors":      {"super_admin", "ceo", "coo", "delivery_manager", "finance", "compliance_officer"},
 	"agents":       {"super_admin", "ceo", "coo", "business_dev", "compliance_officer"},
 	"finance":      {"super_admin", "ceo", "coo", "finance", "auditor"},
+	"files":        {"*"}, // everyone — same default as my_work
+	"leave":        {"*"}, // everyone can request leave; visibility of others' is gated by handlers
 	// Settings menu is visible to everyone by default. The page *contents*
 	// (workflow edits, team rates, governance, integrations) are still gated
 	// by `governance:write` at the API level — non-admins see a read-only view.
@@ -89,7 +93,10 @@ func (h *RoleVisibility) Get(c *gin.Context) {
 	for _, s := range NavSections {
 		sections = append(sections, sectionMeta{
 			Key: s.Key, Label: s.Label,
-			Fixed: s.Key == "my_work" || s.Key == "settings",
+			// Only "my_work" is permanently fixed — every member needs their own
+			// dashboard. Settings used to be fixed-to-everyone too, but the
+			// workspace owner should be able to lock it down to admins.
+			Fixed: s.Key == "my_work",
 		})
 	}
 	c.JSON(http.StatusOK, roleVisibilityResponse{

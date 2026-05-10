@@ -26,6 +26,8 @@ import { WorkflowPage } from "@/modules/settings/WorkflowPage";
 import { TeamRatesPage } from "@/modules/settings/TeamRatesPage";
 import { RolesPermissionsPage } from "@/modules/settings/RolesPermissionsPage";
 import { MyWorkPage } from "@/modules/me/MyWorkPage";
+import { FilesPage } from "@/modules/files/FilesPage";
+import { LeavePage } from "@/modules/leave/LeavePage";
 import { ArchivedProjectsPage } from "@/modules/settings/ArchivedProjectsPage";
 import { VendorsPage } from "@/modules/vendors/VendorsPage";
 import { VendorDetailPage } from "@/modules/vendors/VendorDetailPage";
@@ -61,6 +63,8 @@ export function App() {
         <Route path="/overview" element={<Navigate to="/my-work" replace />} />
         <Route path="/dashboard" element={<Navigate to="/my-work" replace />} />
         <Route path="/my-work" element={<MyWorkPage />} />
+        <Route path="/files"   element={<FilesPage />} />
+        <Route path="/leave"   element={<LeavePage />} />
         <Route path="/pipeline" element={<PipelinePage />} />
         <Route path="/pipeline/new" element={<OpportunityWizard />} />
         <Route path="/pipeline/:id" element={<OpportunityDetail />} />

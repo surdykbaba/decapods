@@ -3,7 +3,7 @@ import {
  Briefcase, FolderKanban, Users, Banknote,
   Settings, LifeBuoy, Search, UserCheck,
   Sun, Moon, LogOut, ChevronDown,
-  Handshake, UsersRound, Network, UserCog,
+  Handshake, UsersRound, Network, UserCog, Folder, Plane,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useMemo, useState } from "react";
@@ -32,6 +32,8 @@ const navTop: NavItem[] = [
   { section: "vendors",      to: "/vendors",      label: "Vendors",      icon: Handshake },
   { section: "agents",       to: "/agents",       label: "PR & Agents",  icon: Network },
   { section: "finance",      to: "/finance",      label: "Finance",      icon: Banknote },
+  { section: "files",        to: "/files",        label: "Files & media", icon: Folder },
+  { section: "leave",        to: "/leave",        label: "Leave",        icon: Plane },
   { section: "settings",     to: "/settings",     label: "Settings",     icon: Settings },
 ];
 

@@ -448,6 +448,11 @@ export function ProjectOperationalOverview({
         <FinancePanel project={project} ccy={ccy} />
       </Section>
 
+      {/* ========== 9b. Expenses ========== */}
+      <Section id="expenses" title="Expenses" subtitle="Direct project spend by category — separate from team cost.">
+        <ExpensesPanel projectId={project.id} defaultCurrency={ccy} />
+      </Section>
+
       {/* ========== 10. Audit ========== */}
       <Section id="audit" title="Audit timeline" subtitle="Operational activity in chronological order.">
         <AuditPanel entries={audit} />
@@ -1910,4 +1915,242 @@ function Dialog({
 }
 function DialogActions({ children }: { children: React.ReactNode }) {
   return <div className="flex justify-end gap-2 pt-2 border-t border-border -mx-5 -mb-5 px-5 py-4 bg-bg">{children}</div>;
+}
+
+/* ---------- Expenses panel ---------- */
+
+type ExpenseRow = {
+  id: string;
+  category: string;
+  vendor: string;
+  description: string;
+  amount: number;
+  currency: string;
+  incurred_on: string;
+  notes: string;
+  created_at: string;
+  creator_name: string;
+};
+
+type ExpenseCategory = { key: string; label: string };
+
+function ExpensesPanel({ projectId, defaultCurrency }: { projectId: string; defaultCurrency: string }) {
+  const qc = useQueryClient();
+  const [addOpen, setAddOpen] = useState(false);
+
+  const { data, isLoading } = useQuery<{ items: ExpenseRow[]; totals: { by_category: Record<string, number>; by_currency: Record<string, number>; count: number } }>({
+    queryKey: ["project-expenses", projectId],
+    queryFn: () => api(`/api/v1/projects/${projectId}/expenses`),
+  });
+  const items = data?.items ?? [];
+  const byCategory = data?.totals?.by_category ?? {};
+
+  const { data: catData } = useQuery<{ items: ExpenseCategory[] }>({
+    queryKey: ["expense-categories"],
+    queryFn: () => api("/api/v1/expense-categories"),
+    staleTime: Infinity,
+  });
+  const categories = catData?.items ?? [];
+  const catLabel = (k: string) => categories.find((c) => c.key === k)?.label ?? k;
+
+  const remove = useMutation({
+    mutationFn: (id: string) => api(`/api/v1/projects/${projectId}/expenses/${id}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-expenses", projectId] }),
+  });
+
+  const total = items.reduce((s, e) => s + e.amount, 0);
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted">
+          {items.length === 0 ? "No expenses logged yet." : `${items.length} expense${items.length === 1 ? "" : "s"} · ${defaultCurrency} ${total.toLocaleString("en-US", { maximumFractionDigits: 0 })} total`}
+        </div>
+        <button onClick={() => setAddOpen(true)} className="text-xs font-semibold text-accent hover:underline">
+          + Log expense
+        </button>
+      </div>
+
+      {Object.keys(byCategory).length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {Object.entries(byCategory)
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, v]) => (
+              <span key={k} className="pill bg-accent-soft text-accent">
+                {catLabel(k)} · {defaultCurrency} {v.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+              </span>
+            ))}
+        </div>
+      )}
+
+      {isLoading ? (
+        <div className="text-sm text-muted">Loading…</div>
+      ) : items.length > 0 ? (
+        <div className="overflow-x-auto border border-border rounded-lg">
+          <table className="w-full text-sm">
+            <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
+              <tr>
+                <th className="text-left px-3 py-2">Date</th>
+                <th className="text-left px-3 py-2">Category</th>
+                <th className="text-left px-3 py-2">Vendor / description</th>
+                <th className="text-right px-3 py-2">Amount</th>
+                <th className="text-left px-3 py-2">Logged by</th>
+                <th className="w-[40px]"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((e) => (
+                <tr key={e.id} className="border-t border-border">
+                  <td className="px-3 py-2 text-muted whitespace-nowrap">
+                    {new Date(e.incurred_on).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })}
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className="pill bg-bg text-text">{catLabel(e.category)}</span>
+                  </td>
+                  <td className="px-3 py-2">
+                    <div className="text-text font-semibold">{e.vendor || "—"}</div>
+                    {e.description && <div className="text-[11px] text-muted">{e.description}</div>}
+                    {e.notes && <div className="text-[11px] text-muted/80 italic">"{e.notes}"</div>}
+                  </td>
+                  <td className="px-3 py-2 text-right font-semibold text-text whitespace-nowrap">
+                    {e.currency} {e.amount.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                  </td>
+                  <td className="px-3 py-2 text-[11px] text-muted">{e.creator_name || "—"}</td>
+                  <td className="px-3 py-2 text-right">
+                    <button
+                      onClick={() => { if (confirm("Delete this expense?")) remove.mutate(e.id); }}
+                      className="text-muted hover:text-danger p-1"
+                      title="Delete"
+                    >
+                      <X size={14} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {addOpen && (
+        <AddExpenseDialog
+          projectId={projectId}
+          defaultCurrency={defaultCurrency}
+          categories={categories}
+          onClose={() => setAddOpen(false)}
+          onAdded={() => {
+            setAddOpen(false);
+            qc.invalidateQueries({ queryKey: ["project-expenses", projectId] });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AddExpenseDialog({
+  projectId, defaultCurrency, categories, onClose, onAdded,
+}: {
+  projectId: string;
+  defaultCurrency: string;
+  categories: ExpenseCategory[];
+  onClose: () => void;
+  onAdded: () => void;
+}) {
+  const [category, setCategory] = useState(categories[0]?.key ?? "other");
+  const [vendor, setVendor] = useState("");
+  const [description, setDescription] = useState("");
+  const [amount, setAmount] = useState<number>(0);
+  const [currency, setCurrency] = useState(defaultCurrency);
+  const [incurredOn, setIncurredOn] = useState(new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  const add = useMutation({
+    mutationFn: (b: any) => api(`/api/v1/projects/${projectId}/expenses`, { method: "POST", body: JSON.stringify(b) }),
+    onSuccess: onAdded,
+    onError: (e: any) => setErr(e?.message ?? "Could not log expense."),
+  });
+
+  function submit() {
+    setErr(null);
+    if (amount <= 0) { setErr("Amount must be greater than zero."); return; }
+    if (!incurredOn) { setErr("Date is required."); return; }
+    add.mutate({
+      category, vendor: vendor.trim(), description: description.trim(),
+      amount, currency, incurred_on: incurredOn, notes: notes.trim(),
+    });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div
+        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-lg max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="text-lg font-bold text-text">Log expense</h2>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted"><X size={16} /></button>
+        </header>
+
+        <div className="p-5 space-y-3">
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Category</div>
+            <select className="input" value={category} onChange={(e) => setCategory(e.target.value)}>
+              {categories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </select>
+          </label>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <label className="block">
+              <div className="text-[11px] text-muted font-medium mb-1">Vendor</div>
+              <input className="input" value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder="e.g. AWS, MTN, Lagos Hotel" />
+            </label>
+            <label className="block">
+              <div className="text-[11px] text-muted font-medium mb-1">Date</div>
+              <input type="date" className="input" value={incurredOn} onChange={(e) => setIncurredOn(e.target.value)} />
+            </label>
+          </div>
+
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Description</div>
+            <input className="input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What was this for?" />
+          </label>
+
+          <div className="grid grid-cols-[1fr_120px] gap-2">
+            <label className="block">
+              <div className="text-[11px] text-muted font-medium mb-1">Amount</div>
+              <input
+                type="number" min={0} step="0.01"
+                className="input"
+                value={amount === 0 ? "" : amount}
+                onChange={(e) => setAmount(e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))}
+                placeholder="0.00"
+              />
+            </label>
+            <label className="block">
+              <div className="text-[11px] text-muted font-medium mb-1">Currency</div>
+              <select className="input" value={currency} onChange={(e) => setCurrency(e.target.value)}>
+                {["NGN","USD","EUR","GBP","ZAR","KES","GHS","XAF"].map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Notes</div>
+            <textarea className="input min-h-[60px]" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Receipts, justification, approval chain…" />
+          </label>
+
+          {err && <div className="bg-danger/10 border border-danger/30 text-danger text-sm rounded-lg px-3 py-2">{err}</div>}
+        </div>
+
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text">Cancel</button>
+          <SmartButton variant="primary" disabled={add.isPending} loadingLabel="Saving…" onClick={submit}>
+            Log expense
+          </SmartButton>
+        </footer>
+      </div>
+    </div>
+  );
 }

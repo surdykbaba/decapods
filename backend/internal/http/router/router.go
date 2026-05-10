@@ -114,6 +114,8 @@ func New(d Deps) http.Handler {
 	authed.GET("/me/profile",     me.Profile)
 	authed.PUT("/me/profile",     me.PutProfile)
 	authed.POST("/me/heartbeat",  me.Heartbeat)
+	authed.GET("/me/status",      me.MyStatus)
+	authed.PUT("/me/status",      me.SetMyStatus)
 	authed.GET("/presence",       me.Presence)
 
 	vendors := handlers.NewVendors(d.DB)
@@ -161,6 +163,7 @@ func New(d Deps) http.Handler {
 	authed.GET("/members/invitations",       mw.RequirePermission("governance:write"), members.ListInvites)
 	authed.DELETE("/member-invitations/:inviteId", mw.RequirePermission("governance:write"), members.RevokeInvite)
 	authed.POST("/member-invitations/:inviteId/resend", mw.RequirePermission("governance:write"), members.ResendInvite)
+	authed.DELETE("/member-invitations/:inviteId/hard", mw.RequirePermission("governance:write"), members.DeleteInvite)
 	api.GET("/member-invite/:token",  members.PublicGetInvite)
 	api.POST("/member-invite/:token", members.PublicAcceptInvite)
 
@@ -189,6 +192,24 @@ func New(d Deps) http.Handler {
 	authed.GET("/settings/archived-projects", proj.ListArchived)
 	authed.POST("/projects/:id/restore", proj.Restore)
 
+	leave := handlers.NewLeave(d.DB)
+	authed.GET("/leave/types",                leave.ListTypes)
+	authed.GET("/leave/balances",             leave.Balances)
+	authed.GET("/leave/requests",             leave.ListRequests)
+	authed.POST("/leave/requests",            leave.CreateRequest)
+	authed.POST("/leave/requests/:id/decision", mw.RequirePermission("governance:write"), leave.Decide)
+	authed.POST("/leave/requests/:id/cancel", leave.Cancel)
+	authed.GET("/leave/dashboard",            leave.Dashboard)
+	authed.GET("/leave/calendar",             leave.Calendar)
+	authed.GET("/leave/public-holidays",      leave.PublicHolidays)
+	authed.POST("/leave/public-holidays",     mw.RequirePermission("governance:write"), leave.AddPublicHoliday)
+
+	exp := handlers.NewExpenses(d.DB)
+	authed.GET("/expense-categories",                   exp.Categories)
+	authed.GET("/projects/:id/expenses",                mw.RequirePermission("project:read"),  exp.List)
+	authed.POST("/projects/:id/expenses",               mw.RequirePermission("project:write"), exp.Add)
+	authed.DELETE("/projects/:id/expenses/:expenseId", mw.RequirePermission("project:write"), exp.Delete)
+
 	pmembers := handlers.NewProjectMembers(d.DB)
 	authed.GET("/projects/:id/members",                 mw.RequirePermission("project:read"),  pmembers.List)
 	authed.GET("/projects/:id/members/assignable",      mw.RequirePermission("project:read"),  pmembers.Assignable)
@@ -209,6 +230,7 @@ func New(d Deps) http.Handler {
 	authed.GET("/finance/billable",    mw.RequirePermission("invoice:read"), fin.Billable)
 	authed.PATCH("/finance/invoices/:id/status", mw.RequirePermission("invoice:write"), fin.UpdateInvoiceStatus)
 	authed.POST("/finance/invoices/lookup-irn",  mw.RequirePermission("invoice:read"),  fin.LookupIRN)
+	authed.GET("/finance/invoices/:id/payments", mw.RequirePermission("invoice:read"),  fin.ListInvoicePayments)
 
 	gov := handlers.NewGovernance(d.DB)
 	authed.GET("/governance/policies", mw.RequirePermission("policy:read"), gov.ListPolicies)

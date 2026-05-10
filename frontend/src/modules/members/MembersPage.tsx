@@ -768,6 +768,43 @@ function InvitationsPanel() {
     },
   });
 
+  // Hard delete — only works once the invitation is no longer live (revoked,
+  // accepted, or expired). The backend refuses with 409 otherwise so a stray
+  // call can't leak active access. UI confirms with a warning dialog because
+  // this destroys the row outright; there's no undo.
+  const hardDelete = useMutation({
+    mutationFn: (id: string) =>
+      api(`/api/v1/member-invitations/${id}/hard`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["members", "invitations"] });
+      toast.success("Invitation deleted");
+    },
+    onError: (e: unknown) => {
+      const msg = e instanceof ApiError ? ((e.body as any)?.error ?? e.message) : (e as Error)?.message;
+      toast.error("Could not delete", msg);
+    },
+  });
+
+  async function askThenRevoke(inv: Invitation) {
+    const ok = await confirmAction({
+      title: "Revoke this invitation?",
+      body: `The link sent to ${inv.email} will stop working immediately. You can issue a fresh invite later.`,
+      confirmLabel: "Revoke invite",
+      danger: true,
+    });
+    if (ok) revoke.mutate(inv.id);
+  }
+
+  async function askThenDelete(inv: Invitation) {
+    const ok = await confirmAction({
+      title: "Delete this invitation?",
+      body: `This permanently removes the invitation record for ${inv.email}. It can't be undone — but you can always invite them again.`,
+      confirmLabel: "Delete invitation",
+      danger: true,
+    });
+    if (ok) hardDelete.mutate(inv.id);
+  }
+
   // Resend the same token with a fresh expiry. Server returns sent:true if SMTP
   // is wired and the email actually went out, false if it just refreshed the link.
   const resend = useMutation({
@@ -817,9 +854,11 @@ function InvitationsPanel() {
           <InvitationRow
             key={inv.id}
             inv={inv}
-            onRevoke={() => revoke.mutate(inv.id)}
+            onRevoke={() => askThenRevoke(inv)}
             onResend={() => resend.mutate(inv.id)}
+            onDelete={() => askThenDelete(inv)}
             resending={resend.isPending && resend.variables === inv.id}
+            deleting={hardDelete.isPending && hardDelete.variables === inv.id}
           />
         ))}
       </ul>
@@ -828,12 +867,14 @@ function InvitationsPanel() {
 }
 
 function InvitationRow({
-  inv, onRevoke, onResend, resending,
+  inv, onRevoke, onResend, onDelete, resending, deleting,
 }: {
   inv: Invitation;
   onRevoke: () => void;
   onResend: () => void;
+  onDelete: () => void;
   resending: boolean;
+  deleting: boolean;
 }) {
   const inviteUrl = `${window.location.origin}/member-invite/${inv.token}`;
   const fmt = (iso: string | null) => {
@@ -907,6 +948,20 @@ function InvitationRow({
             onClick={onResend}
           >
             <RotateCcw size={11} className={resending ? "animate-spin" : ""} /> Reissue
+          </button>
+        )}
+        {/* Hard-delete is only safe once the invite can no longer be accepted.
+            Backend enforces the same rule; UI hides it for pending so the
+            obvious next click is "Revoke" instead. */}
+        {(inv.status === "revoked" || inv.status === "expired" || inv.status === "accepted") && (
+          <button
+            type="button"
+            title="Delete this invitation record permanently"
+            disabled={deleting}
+            className="p-1.5 rounded hover:bg-bg text-muted hover:text-danger disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={onDelete}
+          >
+            <Trash2 size={14} />
           </button>
         )}
       </div>
