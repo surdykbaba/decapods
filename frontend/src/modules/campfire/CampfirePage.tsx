@@ -209,22 +209,33 @@ export function CampfirePage() {
   ];
 
   return (
-    <div className="space-y-6">
-      <header className="flex items-end justify-between flex-wrap gap-4">
-        <div>
-          <h1 className="h1 flex items-center gap-2.5">
-            <Flame className="text-warn" size={28} />
-            Campfire
-          </h1>
-          <p className="text-sm text-muted mt-1">
-            The workspace's pulse — celebrate wins, ask for help, share what's on your mind.
-          </p>
+    // Sky backdrop — bleeds outside the Shell's padding so the gradient feels
+    // like the room you're in, not a card on a page. Decorative SVG clouds
+    // float behind the content; pointer-events:none keeps them inert.
+    <div className="relative -mx-8 -mt-0 px-8 pt-6 pb-8 min-h-full overflow-hidden">
+      <div
+        aria-hidden
+        className="absolute inset-0 -z-10 bg-gradient-to-b from-sky-100/70 via-sky-50/40 to-bg pointer-events-none dark:from-accent/10 dark:via-accent/5 dark:to-bg"
+      />
+      <CloudDeco />
+
+      <header className="flex items-end justify-between flex-wrap gap-4 mb-6">
+        <div className="flex items-center gap-3">
+          <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-br from-warn/30 via-warn/15 to-accent-soft border border-warn/30 grid place-items-center shadow-soft">
+            <Flame className="text-warn animate-flicker" size={28} strokeWidth={2.4} />
+          </div>
+          <div>
+            <h1 className="text-3xl font-extrabold tracking-tight text-text leading-none">Campfire</h1>
+            <p className="text-[13px] text-muted mt-1.5 max-w-md">
+              The workspace's pulse — celebrate wins, ask for help, share what's on your mind.
+            </p>
+          </div>
         </div>
       </header>
 
       <PresenceBar />
 
-      <div className="flex items-center gap-1 border-b border-border overflow-x-auto">
+      <div className="flex items-center gap-1 mt-6 mb-4 p-1 bg-surface/70 backdrop-blur border border-border rounded-full overflow-x-auto w-fit shadow-soft">
         {tabs.filter((t) => !t.admin || isAdmin).map((t) => {
           const Icon = t.icon;
           const active = tab === t.key;
@@ -232,11 +243,13 @@ export function CampfirePage() {
             <button
               key={t.key}
               onClick={() => setTab(t.key)}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
-                active ? "border-accent text-accent" : "border-transparent text-muted hover:text-text"
+              className={`inline-flex items-center gap-2 px-4 py-2 text-[13px] font-semibold whitespace-nowrap rounded-full transition-colors ${
+                active
+                  ? "bg-accent text-white shadow-soft"
+                  : "text-muted hover:text-text hover:bg-bg/40"
               }`}
             >
-              <Icon size={15} /> {t.label}
+              <Icon size={14} /> {t.label}
             </button>
           );
         })}
@@ -250,6 +263,30 @@ export function CampfirePage() {
         {tab === "rooms"    && <TeamRooms />}
         {tab === "insights" && isAdmin && <Insights />}
       </div>
+    </div>
+  );
+}
+
+// CloudDeco — two soft white blobs positioned in the top-right + middle-left.
+// Pure decoration: pointer-events:none so they never intercept clicks.
+function CloudDeco() {
+  return (
+    <div aria-hidden className="absolute inset-x-0 top-0 h-[360px] -z-10 pointer-events-none overflow-hidden">
+      <svg viewBox="0 0 200 80" className="absolute -top-2 right-8 w-[280px] opacity-70 dark:opacity-20">
+        <ellipse cx="60"  cy="50" rx="50" ry="20" fill="white" />
+        <ellipse cx="100" cy="42" rx="42" ry="22" fill="white" />
+        <ellipse cx="140" cy="50" rx="40" ry="18" fill="white" />
+      </svg>
+      <svg viewBox="0 0 200 80" className="absolute top-24 -left-8 w-[220px] opacity-60 dark:opacity-15">
+        <ellipse cx="50"  cy="50" rx="45" ry="18" fill="white" />
+        <ellipse cx="90"  cy="44" rx="38" ry="20" fill="white" />
+        <ellipse cx="125" cy="50" rx="35" ry="16" fill="white" />
+      </svg>
+      <svg viewBox="0 0 200 80" className="absolute top-40 right-1/3 w-[180px] opacity-50 dark:opacity-10">
+        <ellipse cx="45" cy="50" rx="40" ry="15" fill="white" />
+        <ellipse cx="85" cy="45" rx="35" ry="18" fill="white" />
+        <ellipse cx="120" cy="50" rx="30" ry="14" fill="white" />
+      </svg>
     </div>
   );
 }
@@ -276,7 +313,7 @@ function PresenceBar() {
   ];
 
   return (
-    <div className="bg-surface border border-border rounded-2xl p-4 flex items-start gap-4 flex-wrap">
+    <div className="bg-surface/80 backdrop-blur border border-border/70 rounded-3xl p-5 flex items-start gap-4 flex-wrap shadow-card">
       {buckets.map(({ key, label, dot, ring }) => {
         const list = data[key] ?? [];
         return (
@@ -345,7 +382,7 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
 
       <button
         onClick={() => setComposerOpen(true)}
-        className="w-full bg-surface border border-border rounded-2xl px-5 py-3.5 flex items-center gap-3 hover:border-accent/40 transition-colors text-left"
+        className="w-full bg-surface/90 backdrop-blur border border-border/70 rounded-3xl px-5 py-4 flex items-center gap-3 hover:border-accent/40 hover:shadow-soft transition-all text-left shadow-soft"
       >
         <Avatar name={user?.name ?? ""} email={user?.email ?? ""} size={36} />
         <span className="text-sm text-muted flex-1">Share something with the workspace…</span>
@@ -444,7 +481,9 @@ function SpotlightCard() {
   if (joiners.length === 0 && onLeave.length === 0 && !trend) return null;
 
   return (
-    <div className="bg-gradient-to-br from-accent-soft/60 via-surface to-warn/10 border border-accent/20 rounded-2xl p-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div className="relative bg-gradient-to-br from-warn/15 via-accent-soft/70 to-success/10 border border-accent/30 rounded-3xl p-5 grid grid-cols-1 md:grid-cols-3 gap-5 shadow-card overflow-hidden">
+      <div aria-hidden className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-warn/15 blur-2xl pointer-events-none" />
+      <div aria-hidden className="absolute -bottom-12 -left-8 w-44 h-44 rounded-full bg-accent/10 blur-2xl pointer-events-none" />
       <SpotlightCol
         icon={<UserPlus size={14} className="text-accent" />}
         title={joiners.length ? `Welcome ${joiners.length === 1 ? "our newest" : "our newest"} ${joiners.length === 1 ? "joiner" : "joiners"}` : "No new joiners yet"}

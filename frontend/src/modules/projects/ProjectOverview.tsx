@@ -1,9 +1,16 @@
-import { useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useOutletContext, useParams, Link } from "react-router-dom";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  CheckSquare, Users as UsersIcon, UploadCloud, Plus, Rocket, CheckCircle2,
+  MoreHorizontal, Calendar as CalendarIcon, X,
+} from "lucide-react";
 import { api } from "@/lib/api";
-import { ProjectOperationalOverview } from "./ProjectOperationalOverview";
+import { Avatar } from "@/components/Avatar";
+import { SmartButton } from "@/components/SmartButton";
+import { toast } from "@/lib/toast";
 
-type ProjectLink = { label: string; url: string; kind?: string };
+/* ---------- types ---------- */
 
 type Project = {
   id: string;
@@ -11,59 +18,522 @@ type Project = {
   name: string;
   status: string;
   health: string;
-  budget: number;
-  currency: string;
   description?: string;
-  links: ProjectLink[];
-  opportunity_id?: string | null;
+  budget?: number;
+  currency?: string;
+  client_name?: string;
   start_date?: string | null;
   end_date?: string | null;
-  lead_type?: string;
-  client_name?: string;
+  opportunity_id?: string | null;
 };
-
-type Task = {
-  id: string;
-  title: string;
-  description: string;
-  priority: number;
-  due_on: string | null;
-  assignee_id?: string | null;
-};
-
-type Board = {
-  columns: { todo: Task[]; in_progress: Task[]; review: Task[]; done: Task[] };
-};
-
 type Stakeholder = {
-  id: string;
-  name: string;
-  role: string;
-  kind: "internal" | "external";
-  email?: string;
-  phone?: string;
+  id: string; name: string; role: string; kind: "internal" | "external"; email?: string;
 };
+type Task = {
+  id: string; title: string; status: string; priority: number;
+  due_on: string | null; assignee_id?: string | null;
+};
+type Board = { columns: { todo: Task[]; in_progress: Task[]; review: Task[]; done: Task[] } };
+type AuditEntry = { id: string; action: string; actor_name: string; created_at: string; entity: string; entity_id?: string };
+
+type ShellCtx = {
+  project: Project | undefined;
+  stakeholders: Stakeholder[];
+  owner: Stakeholder | undefined;
+};
+
+/* ---------- helpers ---------- */
+
+function relTime(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso); if (isNaN(d.getTime())) return "";
+  const m = Math.floor((Date.now() - d.getTime()) / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const day = Math.floor(h / 24);
+  if (day < 7) return `${day}d ago`;
+  return d.toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" });
+}
+function fmtDueShort(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso); if (isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
+    " · " + d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+}
+function healthCopy(h: string | undefined): { title: string; emoji: string } {
+  if (h === "red")   return { title: "This Project needs attention!", emoji: "🚨" };
+  if (h === "amber") return { title: "This Project is at risk",        emoji: "⚠️" };
+  return { title: "This Project on track!", emoji: "🚀" };
+}
+
+/* ---------- main ---------- */
 
 export function ProjectOverview() {
   const { id } = useParams();
+  const { project, stakeholders, owner } = useOutletContext<ShellCtx>();
+  const qc = useQueryClient();
 
-  const { data: project } = useQuery<Project>({
-    queryKey: ["project", id], queryFn: () => api(`/api/v1/projects/${id}`), enabled: !!id,
-  });
   const { data: board } = useQuery<Board>({
     queryKey: ["project-board", id], queryFn: () => api(`/api/v1/projects/${id}/board`), enabled: !!id,
   });
-  const { data: stakeholdersData } = useQuery<{ items: Stakeholder[] }>({
-    queryKey: ["project-stakeholders", id], queryFn: () => api(`/api/v1/projects/${id}/stakeholders`), enabled: !!id,
+  const { data: audit } = useQuery<{ items: AuditEntry[] }>({
+    queryKey: ["project-audit", id],
+    queryFn: () => api(`/api/v1/audit?entity=project&id=${id}`),
+    enabled: !!id,
   });
 
-  if (!project) return <div className="text-muted">Loading…</div>;
+  const [taskOpen, setTaskOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [fileOpen, setFileOpen] = useState(false);
+
+  const allTasks: Task[] = [
+    ...(board?.columns.todo ?? []),
+    ...(board?.columns.in_progress ?? []),
+    ...(board?.columns.review ?? []),
+    ...(board?.columns.done ?? []),
+  ];
+  const recentTasks = allTasks
+    .slice()
+    .sort((a, b) => {
+      const da = a.due_on ? new Date(a.due_on).getTime() : Infinity;
+      const db = b.due_on ? new Date(b.due_on).getTime() : Infinity;
+      return da - db;
+    })
+    .slice(0, 5);
+
+  const addTask = useMutation({
+    mutationFn: (b: { title: string; description?: string; priority: number; due_on?: string }) =>
+      api(`/api/v1/projects/${id}/tasks`, { method: "POST", body: JSON.stringify(b) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-board", id] });
+      toast.success("Task created");
+      setTaskOpen(false);
+    },
+    onError: (e: any) => toast.error("Could not create task", e?.message),
+  });
+
+  const summary = healthCopy(project?.health);
 
   return (
-    <ProjectOperationalOverview
-      project={project as any}
-      board={board}
-      stakeholders={stakeholdersData?.items ?? []}
-    />
+    <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-5">
+      {/* ============== LEFT COLUMN ============== */}
+      <div className="space-y-5">
+        {/* Quick-action cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <ActionCard
+            icon={<CheckSquare size={18} />}
+            title="Create Task"
+            body="Organize task to your project"
+            onClick={() => setTaskOpen(true)}
+          />
+          <ActionCard
+            icon={<UsersIcon size={18} />}
+            title="Invite Team"
+            body="Staff a member onto this project"
+            onClick={() => setInviteOpen(true)}
+          />
+          <ActionCard
+            icon={<UploadCloud size={18} />}
+            title="Upload a File"
+            body="Upload file to your projects"
+            onClick={() => setFileOpen(true)}
+          />
+        </div>
+
+        {/* Description */}
+        <section className="bg-surface border border-border rounded-2xl p-5">
+          <h2 className="text-base font-bold text-text mb-1.5">Project Descriptions</h2>
+          <p className="text-sm text-muted leading-relaxed">
+            {project?.description?.trim() ||
+              "Provides a clear overview of a project's purpose, scope, objectives, and key details. It serves as a guide for all stakeholders involved, ensuring alignment and clarity throughout the project lifecycle."}
+          </p>
+        </section>
+
+        {/* Assignee */}
+        <section className="bg-surface border border-border rounded-2xl p-5">
+          <h2 className="text-base font-bold text-text mb-3">Assignee</h2>
+          {stakeholders.length === 0 ? (
+            <p className="text-sm text-muted italic">
+              No stakeholders yet. Add the project owner and any reviewers from the
+              source opportunity or the team panel below.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {stakeholders.slice(0, 6).map((s) => (
+                <div key={s.id} className="flex items-center gap-3 min-w-0">
+                  <Avatar name={s.name} email={s.email} size={36} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-text truncate">{s.name}</div>
+                    <div className="text-[11px] text-muted truncate">{s.role}</div>
+                  </div>
+                </div>
+              ))}
+              <button
+                onClick={() => setInviteOpen(true)}
+                className="flex items-center gap-3 min-w-0 text-left rounded-lg p-1 hover:bg-bg transition-colors"
+              >
+                <span className="w-9 h-9 rounded-full border-2 border-dashed border-border text-muted grid place-items-center shrink-0">
+                  <Plus size={14} />
+                </span>
+                <span className="text-sm font-semibold text-accent">+ Add role</span>
+              </button>
+            </div>
+          )}
+        </section>
+
+        {/* Recent Tasks */}
+        <section className="bg-surface border border-border rounded-2xl overflow-hidden">
+          <header className="flex items-center justify-between px-5 py-4 border-b border-border">
+            <h2 className="text-base font-bold text-text">Recent Tasks</h2>
+            <span className="text-[11px] text-muted">
+              {recentTasks.length} of {allTasks.length}
+            </span>
+          </header>
+          {recentTasks.length === 0 ? (
+            <div className="px-5 py-8 text-center text-sm text-muted">
+              No tasks yet. Click <strong className="text-text">+ Add Task</strong> below to create one.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
+                  <tr>
+                    <th className="text-left px-5 py-2">Name</th>
+                    <th className="text-left px-3 py-2 w-[160px]">Assignee</th>
+                    <th className="text-left px-3 py-2 w-[180px]">Due Date</th>
+                    <th className="w-[40px]"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentTasks.map((t) => (
+                    <TaskRow key={t.id} task={t} stakeholders={stakeholders} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="px-5 py-3 border-t border-border">
+            <button
+              onClick={() => setTaskOpen(true)}
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline"
+            >
+              <Plus size={14} /> Add Task
+            </button>
+          </div>
+        </section>
+      </div>
+
+      {/* ============== RIGHT RAIL ============== */}
+      <div className="space-y-5">
+        {/* Summary card with the accent top stripe */}
+        <section className="bg-surface border border-border rounded-2xl overflow-hidden">
+          <div className="h-1 bg-accent" />
+          <div className="p-5">
+            <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Summary</div>
+            <h3 className="text-lg font-extrabold text-text mb-2">
+              {summary.title}
+            </h3>
+            <p className="text-sm text-muted leading-relaxed">
+              {project?.description?.trim() ||
+                "This project focuses on delivering a streamlined and efficient solution to meet business needs."}
+              {!project?.description && (
+                <>
+                  <br /><br />
+                  Carefully planned to achieve success. {summary.emoji}
+                </>
+              )}
+            </p>
+            {owner && (
+              <div className="mt-4 pt-4 border-t border-border flex items-center gap-3">
+                <Avatar name={owner.name} email={owner.email} size={36} />
+                <div className="min-w-0">
+                  <div className="text-sm font-semibold text-text truncate">{owner.name}</div>
+                  <div className="text-[11px] text-muted truncate">{owner.role || "Project owner"}</div>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Recent activity timeline */}
+        <section className="bg-surface border border-border rounded-2xl overflow-hidden">
+          <header className="px-5 py-4 border-b border-border">
+            <h2 className="text-base font-bold text-text">Recent Activity</h2>
+          </header>
+          <ActivityList entries={audit?.items ?? []} />
+          {(audit?.items?.length ?? 0) > 5 && (
+            <Link
+              to={`/settings/audit?entity=project&id=${id}`}
+              className="block text-center px-5 py-3 border-t border-border text-sm font-semibold text-accent hover:underline"
+            >
+              View All
+            </Link>
+          )}
+        </section>
+      </div>
+
+      {/* Dialogs */}
+      {taskOpen && (
+        <AddTaskDialog
+          submitting={addTask.isPending}
+          onClose={() => setTaskOpen(false)}
+          onAdd={(b) => addTask.mutate(b)}
+        />
+      )}
+      {inviteOpen && (
+        <InfoDialog
+          icon={<Rocket size={16} className="text-accent" />}
+          title="Invite to the project"
+          body={
+            <>
+              The full staffing dialog lives on the legacy operational view — click{" "}
+              <Link to={`/members`} className="text-accent underline">Members</Link>{" "}
+              to add a workspace member, then assign them to this project from the
+              team panel.
+            </>
+          }
+          onClose={() => setInviteOpen(false)}
+        />
+      )}
+      {fileOpen && (
+        <InfoDialog
+          icon={<UploadCloud size={16} className="text-accent" />}
+          title="Upload a file"
+          body={
+            <>
+              Files attached to this project show up under the{" "}
+              <Link to="files" className="text-accent underline">Files</Link>{" "}
+              tab. Drag-and-drop upload is coming next; for now use the source
+              opportunity's document panel.
+            </>
+          }
+          onClose={() => setFileOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------- pieces ---------- */
+
+function ActionCard({
+  icon, title, body, onClick,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  body: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="bg-surface border border-border rounded-2xl p-4 flex items-center gap-3 text-left hover:border-accent/50 hover:bg-bg/30 transition-colors group"
+    >
+      <span className="relative w-12 h-12 rounded-xl bg-accent-soft/60 text-accent grid place-items-center shrink-0">
+        {icon}
+        <span className="absolute -bottom-1 -right-1 w-5 h-5 rounded-md bg-accent text-white grid place-items-center text-[10px] font-bold">
+          <Plus size={11} />
+        </span>
+      </span>
+      <div className="min-w-0">
+        <div className="text-sm font-bold text-text">{title}</div>
+        <div className="text-[11px] text-muted truncate">{body}</div>
+      </div>
+    </button>
+  );
+}
+
+function TaskRow({ task, stakeholders }: { task: Task; stakeholders: Stakeholder[] }) {
+  const assignee = stakeholders.find((s) => s.id === task.assignee_id);
+  const done = task.status === "done";
+  return (
+    <tr className="border-t border-border hover:bg-bg/30">
+      <td className="px-5 py-3">
+        <div className="flex items-center gap-2.5">
+          <span
+            className={`w-4 h-4 rounded-full border-2 grid place-items-center shrink-0 ${
+              done ? "border-success bg-success/20" : "border-border"
+            }`}
+          >
+            {done && <CheckCircle2 size={10} className="text-success" />}
+          </span>
+          <span className={`text-sm truncate ${done ? "line-through text-muted" : "text-text"}`}>
+            {task.title}
+          </span>
+        </div>
+      </td>
+      <td className="px-3 py-3">
+        {assignee ? (
+          <div className="inline-flex items-center gap-2 min-w-0">
+            <Avatar name={assignee.name} email={assignee.email} size={24} />
+            <span className="text-xs text-text truncate">{assignee.name.split(" ")[0]}</span>
+          </div>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-xs text-muted">
+            <UsersIcon size={12} /> Assign
+          </span>
+        )}
+      </td>
+      <td className="px-3 py-3">
+        {task.due_on ? (
+          <span className="text-xs text-text">{fmtDueShort(task.due_on)}</span>
+        ) : (
+          <span className="inline-flex items-center gap-1 text-xs text-muted">
+            <CalendarIcon size={12} /> Add date
+          </span>
+        )}
+      </td>
+      <td className="px-3 py-3 text-right">
+        <button className="text-muted hover:text-text p-1" aria-label="Task actions">
+          <MoreHorizontal size={14} />
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+function ActivityList({ entries }: { entries: AuditEntry[] }) {
+  if (entries.length === 0) {
+    return (
+      <div className="px-5 py-6 text-sm text-muted italic">
+        No recorded activity on this project yet.
+      </div>
+    );
+  }
+  const items = entries.slice(0, 5);
+  return (
+    <ul className="px-5 py-3 space-y-3">
+      {items.map((e, i) => (
+        <li key={e.id} className="flex items-start gap-3 relative">
+          {i !== items.length - 1 && (
+            <span className="absolute left-[7px] top-5 bottom-[-12px] w-px bg-border" aria-hidden />
+          )}
+          <span className="w-4 h-4 rounded-full bg-success/20 text-success grid place-items-center mt-0.5 shrink-0">
+            <CheckCircle2 size={10} />
+          </span>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm text-text">{humanAction(e.action)}</div>
+            <div className="text-[11px] text-muted">
+              {e.actor_name ? `${e.actor_name} · ` : ""}{relTime(e.created_at)}
+            </div>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function humanAction(action: string): string {
+  const map: Record<string, string> = {
+    "project.created":       "Project created",
+    "project.archived":      "Project archived",
+    "project.restored":      "Project restored",
+    "project.updated":       "Project details updated",
+    "milestone.created":     "Milestone created",
+    "milestone.completed":   "Milestone completed",
+    "task.created":          "Task added",
+    "task.removed":          "Task removed",
+    "task.completed":        "Task completed",
+    "task.status_changed":   "Task status changed",
+    "risk.raised":           "Risk raised",
+    "report.added":          "Status report added",
+    "document.attached":     "Document attached",
+    "member.added":          "Team member added",
+    "member.removed":        "Team member removed",
+  };
+  return map[action] ?? action.replace(/_/g, " ");
+}
+
+/* ---------- dialogs ---------- */
+
+function AddTaskDialog({
+  submitting, onClose, onAdd,
+}: {
+  submitting: boolean;
+  onClose: () => void;
+  onAdd: (b: { title: string; description?: string; priority: number; due_on?: string }) => void;
+}) {
+  const [title, setTitle]       = useState("");
+  const [description, setDesc]  = useState("");
+  const [priority, setPriority] = useState(3);
+  const [dueOn, setDueOn]       = useState("");
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="text-lg font-bold text-text">Create task</h2>
+          <button onClick={onClose} className="text-muted hover:text-text p-1.5 rounded hover:bg-bg"><X size={16} /></button>
+        </header>
+        <div className="p-5 space-y-3">
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Title</div>
+            <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus placeholder="e.g. Wire up checkout endpoint" />
+          </label>
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Description</div>
+            <textarea className="input min-h-[80px]" value={description} onChange={(e) => setDesc(e.target.value)} />
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <div className="text-[11px] text-muted font-medium mb-1">Priority</div>
+              <select className="input" value={priority} onChange={(e) => setPriority(Number(e.target.value))}>
+                <option value={1}>Lowest</option>
+                <option value={2}>Low</option>
+                <option value={3}>Medium</option>
+                <option value={4}>High</option>
+                <option value={5}>Highest</option>
+              </select>
+            </label>
+            <label className="block">
+              <div className="text-[11px] text-muted font-medium mb-1">Due date</div>
+              <input type="date" className="input" value={dueOn} onChange={(e) => setDueOn(e.target.value)} />
+            </label>
+          </div>
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text">Cancel</button>
+          <SmartButton
+            variant="primary"
+            disabled={!title.trim() || submitting}
+            loadingLabel="Creating…"
+            icon={<Plus size={14} />}
+            onClick={() => onAdd({
+              title: title.trim(), description: description.trim() || undefined, priority,
+              due_on: dueOn || undefined,
+            })}
+          >
+            Create task
+          </SmartButton>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function InfoDialog({
+  icon, title, body, onClose,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  body: React.ReactNode;
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="text-lg font-bold text-text inline-flex items-center gap-2">{icon} {title}</h2>
+          <button onClick={onClose} className="text-muted hover:text-text p-1.5 rounded hover:bg-bg"><X size={16} /></button>
+        </header>
+        <div className="p-5 text-sm text-muted leading-relaxed">{body}</div>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end">
+          <button onClick={onClose} className="text-sm font-semibold text-accent hover:underline">Got it</button>
+        </footer>
+      </div>
+    </div>
   );
 }

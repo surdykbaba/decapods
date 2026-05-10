@@ -14,6 +14,9 @@ import { ProjectsPage } from "@/modules/projects/ProjectsPage";
 import { ProjectShell } from "@/modules/projects/ProjectShell";
 import { ProjectBoard } from "@/modules/projects/ProjectBoard";
 import { ProjectOverview } from "@/modules/projects/ProjectOverview";
+import { ProjectListTab } from "@/modules/projects/ProjectListTab";
+import { ProjectCalendarTab } from "@/modules/projects/ProjectCalendarTab";
+import { ProjectFilesTab } from "@/modules/projects/ProjectFilesTab";
 import { WorkforcePage } from "@/modules/workforce/WorkforcePage";
 import { BurnoutPage } from "@/modules/workforce/BurnoutPage";
 import { FinancePage } from "@/modules/finance/FinancePage";
@@ -42,7 +45,7 @@ import {
 } from "@/modules/settings/SettingsLayout";
 import { MembersPage } from "@/modules/members/MembersPage";
 import { MemberInvitePage } from "@/modules/members/MemberInvitePage";
-// Keep the stub import to silence unused-import warnings without requiring a churn.
+// Keep parked imports silenced so a future wiring doesn't need the import dance.
 void SettingsMembersStub;
 
 export function App() {
@@ -73,8 +76,11 @@ export function App() {
         <Route path="/projects" element={<ProjectsPage />} />
         <Route path="/projects/:id" element={<ProjectShell />}>
           <Route index element={<ProjectOverview />} />
-          <Route path="board" element={<ProjectBoard />} />
-          <Route path="details" element={<Navigate to=".." replace relative="path" />} />
+          <Route path="list"     element={<ProjectListTab />} />
+          <Route path="board"    element={<ProjectBoard />} />
+          <Route path="calendar" element={<ProjectCalendarTab />} />
+          <Route path="files"    element={<ProjectFilesTab />} />
+          <Route path="details"  element={<Navigate to=".." replace relative="path" />} />
         </Route>
         <Route path="/workforce" element={<WorkforcePage />} />
         <Route path="/workforce/burnout" element={<BurnoutPage />} />
