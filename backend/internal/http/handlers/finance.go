@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"time"
 
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
@@ -61,6 +62,7 @@ func (h *Finance) CreateInvoice(c *gin.Context) {
 		Currency    string    `json:"currency"`
 		IssuedOn    string    `json:"issued_on"`
 		DueOn       string    `json:"due_on"`
+		IRN         string    `json:"irn"` // optional Invoice Reference Number from FIRS / e-Invoicing
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -69,16 +71,81 @@ func (h *Finance) CreateInvoice(c *gin.Context) {
 	id := uuid.New()
 	_, err := h.db.Exec(c, `
 		INSERT INTO invoices (id, tenant_id, project_id, milestone_id, number, amount, currency,
-		                      status, issued_on, due_on, created_by)
+		                      status, issued_on, due_on, created_by, irn)
 		VALUES ($1,$2,$3, NULLIF($4,'00000000-0000-0000-0000-000000000000')::uuid, $5,$6,
-		        COALESCE(NULLIF($7,''),'USD'),'draft', NULLIF($8,'')::date, NULLIF($9,'')::date, $10)`,
+		        COALESCE(NULLIF($7,''),'USD'),'draft', NULLIF($8,'')::date, NULLIF($9,'')::date, $10,
+		        NULLIF($11,''))`,
 		id, tid, req.ProjectID, req.MilestoneID, req.Number, req.Amount, req.Currency,
-		req.IssuedOn, req.DueOn, uid)
+		req.IssuedOn, req.DueOn, uid, req.IRN)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(201, gin.H{"id": id})
+}
+
+// LookupIRN tries to resolve an Invoice Reference Number to invoice details.
+// Two layers:
+//   1. **Local hit** — if we've seen this IRN before in this tenant, return the
+//      matching invoice's amount/currency/dates as a pre-fill. Useful for
+//      "I'm re-entering the same invoice" cases.
+//   2. **External fetch** — when a FIRS / e-Invoicing provider is wired, this is
+//      where the credentials-bearing call lives. Today it returns 501 so the UI
+//      can fall back to "use the IRN as the invoice number, fill the rest in".
+//
+// Body: { irn: string }
+func (h *Finance) LookupIRN(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	var req struct {
+		IRN string `json:"irn" binding:"required,min=4"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	irn := strings.TrimSpace(req.IRN)
+	if len(irn) > 128 {
+		c.JSON(400, gin.H{"error": "IRN too long"})
+		return
+	}
+
+	// Local hit first — covers re-entry / duplicate prevention.
+	var (
+		number, currency string
+		amount           float64
+		issuedOn, dueOn  *time.Time
+		projectID        *uuid.UUID
+	)
+	err := h.db.QueryRow(c, `
+		SELECT number, amount, currency, issued_on, due_on, project_id
+		FROM invoices
+		WHERE tenant_id=$1 AND irn=$2 AND deleted_at IS NULL
+		ORDER BY created_at DESC LIMIT 1`, tid, irn).Scan(
+		&number, &amount, &currency, &issuedOn, &dueOn, &projectID,
+	)
+	if err == nil {
+		c.JSON(200, gin.H{
+			"source":     "local",
+			"irn":        irn,
+			"number":     number,
+			"amount":     amount,
+			"currency":   currency,
+			"issued_on":  issuedOn,
+			"due_on":     dueOn,
+			"project_id": projectID,
+			"warning":    "An invoice with this IRN already exists in your workspace. Confirm before re-issuing.",
+		})
+		return
+	}
+
+	// No local hit. Honest 501 — the e-Invoicing provider integration is the
+	// next-pass hook. The UI uses the IRN as the invoice number as a fallback.
+	c.JSON(501, gin.H{
+		"error":  "IRN lookup against the e-Invoicing provider isn't wired yet.",
+		"code":   "irn_lookup_unconfigured",
+		"action": "use_as_number",
+		"hint":   "We'll save the IRN on the invoice. Fill in amount and dates manually for now — the lookup will populate them once FIRS credentials are provisioned.",
+	})
 }
 
 func (h *Finance) RecordPayment(c *gin.Context) {

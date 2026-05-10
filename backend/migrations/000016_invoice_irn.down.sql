@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_invoices_irn;
+ALTER TABLE invoices DROP COLUMN IF EXISTS irn;
