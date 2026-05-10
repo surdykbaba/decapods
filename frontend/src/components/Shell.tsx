@@ -52,7 +52,8 @@ export function Shell() {
   const { data: vis } = useQuery<{ sections: string[] }>({
     queryKey: ["me-visibility"],
     queryFn: () => api("/api/v1/me/visibility"),
-    staleTime: 60_000,
+    staleTime: 10_000,
+    refetchOnWindowFocus: true,
   });
   const visibleNav = useMemo(() => {
     if (!vis?.sections) return navTop;

@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
-import { ShieldCheck, Check, Lock, Info } from "lucide-react";
+import { ShieldCheck, Check, Lock, Info, Eye } from "lucide-react";
 
 type Section = { key: string; label: string; fixed: boolean };
 type Role    = { name: string; label: string };
@@ -11,10 +12,18 @@ type Resp    = { sections: Section[]; roles: Role[]; matrix: Record<string, stri
 
 export function RolesPermissionsPage() {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const isSuperAdmin = (user?.roles ?? []).includes("super_admin");
+
   const { data, isLoading } = useQuery<Resp>({
     queryKey: ["role-visibility"],
     queryFn: () => api("/api/v1/settings/role-visibility"),
   });
+
+  // "Preview as role" — picks one role and shows the resulting visible
+  // sections so admins can sanity-check the matrix without signing out as
+  // a super_admin (who always sees everything).
+  const [previewRole, setPreviewRole] = useState<string>("");
 
   const [draft, setDraft] = useState<Record<string, Set<string>>>({});
   useEffect(() => {
@@ -83,6 +92,12 @@ export function RolesPermissionsPage() {
     return false;
   })();
 
+  const previewSections = !previewRole ? null : data.sections.filter((s) => {
+    if (s.fixed) return true;
+    const allowed = Array.from(draft[s.key] ?? new Set<string>(data.matrix[s.key] ?? []));
+    return allowed.includes("*") || allowed.includes(previewRole);
+  });
+
   return (
     <div className="space-y-5 max-w-6xl">
       <header className="flex items-end justify-between flex-wrap gap-4">
@@ -108,6 +123,48 @@ export function RolesPermissionsPage() {
           Save permissions
         </SmartButton>
       </header>
+
+      {isSuperAdmin && (
+        <div className="bg-accent-soft/40 border border-accent/20 rounded-2xl p-4">
+          <div className="flex items-start gap-3">
+            <Info size={16} className="text-accent shrink-0 mt-0.5" />
+            <div className="text-sm text-text">
+              You're signed in as a <span className="font-mono font-semibold">super_admin</span>, so your own sidebar will keep
+              showing every section regardless of what you toggle here — that's an intentional recovery guardrail. Use the{" "}
+              <span className="font-semibold">Preview as role</span> picker below to see what a different role would see, or sign in
+              as a member with that role to confirm.
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-surface border border-border rounded-2xl p-4 flex flex-wrap items-center gap-3">
+        <div className="inline-flex items-center gap-2 text-sm text-muted">
+          <Eye size={14} /> Preview the sidebar as
+        </div>
+        <select
+          value={previewRole}
+          onChange={(e) => setPreviewRole(e.target.value)}
+          className="bg-bg border border-border rounded-full text-sm px-3 py-1.5 focus:outline-none focus:border-accent"
+        >
+          <option value="">— pick a role —</option>
+          {data.roles.filter((r) => r.name !== "super_admin").map((r) => (
+            <option key={r.name} value={r.name}>{r.name}</option>
+          ))}
+        </select>
+        {previewSections && (
+          <div className="text-sm text-text flex flex-wrap items-center gap-2">
+            <span className="text-muted">→ would see</span>
+            {previewSections.length === 0 ? (
+              <span className="text-warn font-semibold">nothing (locked out of every section)</span>
+            ) : (
+              previewSections.map((s) => (
+                <span key={s.key} className="pill bg-accent-soft text-accent">{s.label}</span>
+              ))
+            )}
+          </div>
+        )}
+      </div>
 
       <div className="bg-surface border border-border rounded-2xl overflow-hidden">
         <div className="overflow-x-auto">
