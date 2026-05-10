@@ -8,7 +8,7 @@ import {
   GitPullRequest, GitCommit, Rocket, X, Check, Clock, CircleDot, ArrowRight,
   ListChecks, Bug, FileBarChart2, Wallet, History,
   Flag, CalendarClock, Mail, Target, Archive,
-  MoreHorizontal,
+  MoreHorizontal, Eye,
 } from "lucide-react";
 
 /* ---------- Types ---------- */
@@ -56,11 +56,26 @@ type Project = {
 type Task = { id: string; title: string; description: string; priority: number; due_on: string | null; status?: string };
 type Board = { columns: { todo: Task[]; in_progress: Task[]; review: Task[]; done: Task[] } };
 
+type OppDoc = { id: string; kind: string; name: string; object_key?: string };
+
 type OppData = {
-  documents?: { id: string; kind: string; name: string }[];
+  documents?: OppDoc[];
   required_documents?: string[];
   compliance_tags?: string[];
   team_composition?: { name: string; kind: "internal" | "external"; count: number; days: number }[];
+};
+
+// Map each checkpoint key to the document kinds that satisfy it. Multiple
+// kinds → first matching doc on the opportunity wins for the inline "View"
+// link; the rest become a small "+N more" sub-link.
+const CHECKPOINT_DOC_KINDS: Record<keyof Checkpoints, string[]> = {
+  nda:                ["NDA"],
+  sla:                ["MSA", "SLA"],
+  contract:           ["Contract", "MSA"],
+  scope:              ["ScopeDocument", "TechnicalProposal"],
+  security:           ["ComplianceForm"],   // no dedicated security doc kind today
+  qa:                 [],                   // internal sign-off — no doc
+  client_acceptance:  [],                   // internal sign-off — no doc
 };
 
 const CHECKPOINT_DEFS: { key: keyof Checkpoints; label: string; help: string }[] = [
@@ -330,24 +345,44 @@ export function ProjectOperationalOverview({
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           {CHECKPOINT_DEFS.map((c) => {
             const on = !!checkpoints[c.key];
+            // Find every doc on the opportunity that satisfies this checkpoint.
+            const matchingDocs = (opp?.documents ?? []).filter(
+              (d) => CHECKPOINT_DOC_KINDS[c.key]?.includes(d.kind),
+            );
+            const firstDoc = matchingDocs[0];
+            const moreCount = matchingDocs.length - 1;
+
             return (
-              <button
+              <div
                 key={c.key}
-                onClick={() => setCheckpoints.mutate({ ...checkpoints, [c.key]: !on })}
-                className={`flex items-start gap-3 text-left p-3 rounded-md border transition-colors ${
+                className={`flex items-start gap-3 p-3 rounded-md border transition-colors ${
                   on ? "border-success/40 bg-success/5" : "border-border hover:bg-bg"
                 }`}
               >
-                <span className={`w-7 h-7 rounded-full grid place-items-center shrink-0 ${
-                  on ? "bg-success/15 text-success" : "bg-bg border border-border text-muted"
-                }`}>
-                  {on ? <Check size={14} /> : <CircleDot size={14} />}
-                </span>
-                <div className="min-w-0 flex-1">
+                <button
+                  type="button"
+                  onClick={() => setCheckpoints.mutate({ ...checkpoints, [c.key]: !on })}
+                  className="shrink-0"
+                  aria-label={on ? `Mark ${c.label} unverified` : `Mark ${c.label} verified`}
+                >
+                  <span className={`w-7 h-7 rounded-full grid place-items-center transition-colors ${
+                    on ? "bg-success/15 text-success" : "bg-bg border border-border text-muted hover:border-success/40"
+                  }`}>
+                    {on ? <Check size={14} /> : <CircleDot size={14} />}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCheckpoints.mutate({ ...checkpoints, [c.key]: !on })}
+                  className="min-w-0 flex-1 text-left"
+                >
                   <div className="text-sm font-medium text-text">{c.label}</div>
                   <div className="text-xs text-muted">{c.help}</div>
-                </div>
-              </button>
+                </button>
+                {firstDoc && (
+                  <DocPreviewLink doc={firstDoc} moreCount={moreCount} otherDocs={matchingDocs.slice(1)} />
+                )}
+              </div>
             );
           })}
         </div>
@@ -437,6 +472,92 @@ export function ProjectOperationalOverview({
   );
 }
 
+/* Compact preview link surfaced inside each governance-checkpoint row when a
+ * supporting document exists on the source opportunity. Click opens the URL
+ * in a new tab (for shareable links) or a lightweight in-app preview modal
+ * (for storage-keyed files). "+N" appears when multiple docs satisfy the
+ * same checkpoint; hovering it lists their names. */
+function DocPreviewLink({
+  doc, moreCount, otherDocs,
+}: {
+  doc: OppDoc;
+  moreCount: number;
+  otherDocs: OppDoc[];
+}) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const objectKey = doc.object_key ?? "";
+  const isUrl = /^https?:\/\//i.test(objectKey);
+  const otherSummary = otherDocs.length > 0
+    ? otherDocs.map((d) => d.name || d.kind).join("\n")
+    : "";
+
+  function handleClick(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (isUrl) {
+      window.open(objectKey, "_blank", "noopener,noreferrer");
+    } else {
+      setPreviewOpen(true);
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={handleClick}
+        title={doc.name || doc.kind}
+        className="shrink-0 inline-flex items-center gap-1 text-[11.5px] font-semibold text-accent hover:underline px-2 py-1 rounded-full hover:bg-accent-soft/60 transition-colors"
+      >
+        <Eye size={11} />
+        View
+        {moreCount > 0 && (
+          <span className="text-[9.5px] font-bold text-muted ml-0.5" title={otherSummary}>
+            +{moreCount}
+          </span>
+        )}
+      </button>
+      {previewOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={() => setPreviewOpen(false)}>
+          <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md bg-surface border border-border rounded-2xl shadow-card overflow-hidden">
+            <header className="flex items-start justify-between p-5 border-b border-border gap-3">
+              <div className="flex items-start gap-3 min-w-0">
+                <div className="w-9 h-9 rounded-full bg-accent-soft text-accent grid place-items-center shrink-0"><FileText size={16} /></div>
+                <div className="min-w-0">
+                  <h2 className="text-base font-bold text-text truncate">{doc.name || doc.kind}</h2>
+                  <p className="text-[11.5px] text-muted mt-0.5">{doc.kind}</p>
+                </div>
+              </div>
+              <button onClick={() => setPreviewOpen(false)} className="text-muted hover:text-text"><X size={18} /></button>
+            </header>
+            <div className="p-5 space-y-3">
+              <div className="rounded-lg border border-border bg-bg/40 p-3">
+                <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1">Storage key</div>
+                <div className="text-[12.5px] font-mono text-text break-all">{objectKey || "—"}</div>
+              </div>
+              <p className="text-[12px] text-muted leading-snug">
+                This document is stored under an internal storage key rather than a shareable URL.
+                Inline preview lands when the storage signing layer is wired — for now, copy the
+                key and pull the file from your storage console.
+              </p>
+            </div>
+            <footer className="flex items-center justify-end gap-2 p-4 border-t border-border bg-bg">
+              <button onClick={() => setPreviewOpen(false)} className="btn-ghost">Close</button>
+              {objectKey && (
+                <button
+                  onClick={() => { navigator.clipboard.writeText(objectKey).catch(() => {}); setPreviewOpen(false); }}
+                  className="btn-outline"
+                >
+                  Copy key
+                </button>
+              )}
+            </footer>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 /* ---------- Section primitives ---------- */
 
 function Section({
@@ -508,6 +629,8 @@ type AssignableUser = {
   email: string;
   name: string;
   roles: string[];
+  current_allocation?: number;
+  active_projects?: { id: string; name: string; role: string; allocation: number }[];
 };
 
 function TeamPanel({
@@ -797,25 +920,38 @@ function AddProjectMemberDialog({
                 ) : (
                   <>
                     <ul className="divide-y divide-border">
-                      {candidates.map((u) => (
-                        <li key={u.id}>
-                          <button
-                            type="button"
-                            onClick={() => setPicked(u)}
-                            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-bg text-left"
-                          >
-                            <span className="w-8 h-8 rounded-full bg-accent-soft text-accent grid place-items-center text-xs font-bold shrink-0">
-                              {(u.name || u.email).charAt(0).toUpperCase()}
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <div className="text-sm font-semibold text-text truncate">{u.name || u.email}</div>
-                              <div className="text-[11px] text-muted truncate">
-                                {u.email}{u.roles.length > 0 && ` · ${u.roles.join(", ")}`}
+                      {candidates.map((u) => {
+                        const load = u.current_allocation ?? 0;
+                        const overloaded = load >= 0.95;
+                        const busy = load >= 0.5 && !overloaded;
+                        return (
+                          <li key={u.id}>
+                            <button
+                              type="button"
+                              onClick={() => setPicked(u)}
+                              className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-bg text-left"
+                            >
+                              <span className="w-8 h-8 rounded-full bg-accent-soft text-accent grid place-items-center text-xs font-bold shrink-0">
+                                {(u.name || u.email).charAt(0).toUpperCase()}
+                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm font-semibold text-text truncate inline-flex items-center gap-2">
+                                  {u.name || u.email}
+                                  {overloaded && <span className="pill bg-danger/15 text-danger">Overloaded · {Math.round(load * 100)}%</span>}
+                                  {busy       && <span className="pill bg-warn/15 text-warn">Busy · {Math.round(load * 100)}%</span>}
+                                  {load === 0 && <span className="pill bg-success/15 text-success">Available</span>}
+                                </div>
+                                <div className="text-[11px] text-muted truncate">
+                                  {u.email}{u.roles.length > 0 && ` · ${u.roles.join(", ")}`}
+                                  {u.active_projects && u.active_projects.length > 0 && (
+                                    <> · on {u.active_projects.length} project{u.active_projects.length === 1 ? "" : "s"}</>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          </button>
-                        </li>
-                      ))}
+                            </button>
+                          </li>
+                        );
+                      })}
                     </ul>
                     {skippedCount > 0 && (
                       <div className="border-t border-border px-3 py-2 text-[11px] text-muted bg-bg/30">
@@ -845,9 +981,47 @@ function AddProjectMemberDialog({
                 </button>
               </div>
 
+              {/* Conflict / busy warning — surfaces existing assignments before */}
+              {/* the allocation slider so the operator can knock the % down or */}
+              {/* remove a competing assignment before saving. */}
+              {(() => {
+                const curLoad = picked.current_allocation ?? 0;
+                const newLoad = curLoad + allocation / 100;
+                if (curLoad <= 0) return null;
+                const tone = newLoad > 1.05
+                  ? "bg-danger/10 border-danger/30 text-danger"
+                  : "bg-warn/10 border-warn/30 text-warn";
+                const headline = newLoad > 1.05
+                  ? `${picked.name || picked.email} would be overloaded — ${Math.round(newLoad * 100)}% allocation across all projects.`
+                  : `${picked.name || picked.email} is currently busy at ${Math.round(curLoad * 100)}% across other projects.`;
+                return (
+                  <div className={`border rounded-lg px-3 py-2.5 text-sm ${tone}`}>
+                    <div className="font-semibold flex items-start gap-2">
+                      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                      <span>{headline}</span>
+                    </div>
+                    {picked.active_projects && picked.active_projects.length > 0 && (
+                      <ul className="mt-1.5 pl-6 text-[11px] space-y-0.5">
+                        {picked.active_projects.map((ap) => (
+                          <li key={ap.id} className="opacity-90">
+                            · <Link to={`/projects/${ap.id}`} className="underline hover:no-underline">{ap.name}</Link>
+                            {" "}— {ap.role}, {Math.round(ap.allocation * 100)}%
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })()}
+
               <label className="block">
                 <div className="text-[11px] text-muted font-medium mb-1">
                   Allocation · <span className="text-text font-semibold">{allocation}%</span>
+                  {picked.current_allocation != null && picked.current_allocation > 0 && (
+                    <span className="ml-2 text-muted">
+                      (would total {Math.round((picked.current_allocation + allocation / 100) * 100)}%)
+                    </span>
+                  )}
                 </div>
                 <input
                   type="range" min={10} max={100} step={5}

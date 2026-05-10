@@ -11,6 +11,8 @@ type Person = {
   id: string;
   name: string;
   weeks: { week: string; hours: number; utilization: number }[];
+  current_allocation?: number;
+  active_projects?: { id: string; name: string; role: string; allocation: number }[];
 };
 
 type Bucket = "available" | "engaged" | "overloaded";
@@ -37,6 +39,10 @@ const COL_META: Record<Bucket, { label: string; tone: string; bar: string; chip:
 };
 
 function avgUtilization(p: Person): number {
+  // Prefer the live project_members allocation if the server provided one —
+  // that captures "engaged" the moment somebody is staffed, before they log
+  // any hours. Falls back to the rolling time_entries average otherwise.
+  if (typeof p.current_allocation === "number") return p.current_allocation;
   if (!p.weeks.length) return 0;
   const sum = p.weeks.reduce((s, w) => s + (w.utilization || 0), 0);
   return sum / p.weeks.length;

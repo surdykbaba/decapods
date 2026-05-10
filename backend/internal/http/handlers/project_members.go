@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -186,12 +187,29 @@ func (h *ProjectMembers) Assignable(c *gin.Context) {
 		return
 	}
 	q := "%" + strings.TrimSpace(c.Query("q")) + "%"
+	// The LATERAL subqueries give each candidate their current total allocation
+	// + the list of active projects they're already on, so the staffing dialog
+	// can warn before adding someone who's already at capacity.
 	rows, err := h.db.Query(c, `
 		SELECT u.id, u.email::text, COALESCE(u.full_name,''),
-		       COALESCE(ARRAY_AGG(r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
+		       COALESCE(ARRAY_AGG(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles,
+		       COALESCE(load.total, 0)::float8 AS current_allocation,
+		       COALESCE(load.projects, '[]'::jsonb) AS active_projects
 		  FROM users u
 		  LEFT JOIN user_roles ur ON ur.user_id = u.id
 		  LEFT JOIN roles r ON r.id = ur.role_id
+		  LEFT JOIN LATERAL (
+		    SELECT SUM(pm.allocation) AS total,
+		           jsonb_agg(jsonb_build_object(
+		             'id', p.id, 'name', p.name,
+		             'role', pm.role, 'allocation', pm.allocation::float8
+		           ) ORDER BY p.name) AS projects
+		      FROM project_members pm
+		      JOIN projects p ON p.id = pm.project_id
+		     WHERE pm.user_id = u.id
+		       AND pm.removed_at IS NULL
+		       AND p.deleted_at IS NULL
+		  ) load ON true
 		 WHERE u.tenant_id = $1
 		   AND u.deleted_at IS NULL
 		   AND u.status <> 'disabled'
@@ -200,8 +218,8 @@ func (h *ProjectMembers) Assignable(c *gin.Context) {
 		      WHERE project_id = $2 AND removed_at IS NULL
 		   )
 		   AND ($3 = '%%' OR u.full_name ILIKE $3 OR u.email::text ILIKE $3)
-		 GROUP BY u.id
-		 ORDER BY u.full_name NULLS LAST, u.email
+		 GROUP BY u.id, load.total, load.projects
+		 ORDER BY load.total NULLS FIRST, u.full_name NULLS LAST, u.email
 		 LIMIT 50`, tid, pid, q)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -211,12 +229,20 @@ func (h *ProjectMembers) Assignable(c *gin.Context) {
 	out := []gin.H{}
 	for rows.Next() {
 		var (
-			id          uuid.UUID
-			email, name string
-			roles       []string
+			id           uuid.UUID
+			email, name  string
+			roles        []string
+			curAlloc     float64
+			activeRaw    []byte
 		)
-		if err := rows.Scan(&id, &email, &name, &roles); err == nil {
-			out = append(out, gin.H{"id": id, "email": email, "name": name, "roles": roles})
+		if err := rows.Scan(&id, &email, &name, &roles, &curAlloc, &activeRaw); err == nil {
+			var active []map[string]any
+			_ = json.Unmarshal(activeRaw, &active)
+			out = append(out, gin.H{
+				"id": id, "email": email, "name": name, "roles": roles,
+				"current_allocation": curAlloc,
+				"active_projects":    active,
+			})
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out})

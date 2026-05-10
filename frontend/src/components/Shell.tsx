@@ -12,6 +12,7 @@ import { api } from "@/lib/api";
 import { useTheme, toggleTheme } from "@/lib/theme";
 import { useHeartbeat } from "@/lib/presence";
 import { NotificationsBell } from "@/components/NotificationsBell";
+import { StatusBadge } from "@/components/StatusBadge";
 import { CommandPalette } from "@/components/CommandPalette";
 
 type NavItem = {
@@ -203,8 +204,10 @@ export function Shell() {
       <main className="flex-1 min-w-0 p-3 pl-0">
         <div className="h-full bg-surface rounded-3xl shadow-card border border-border flex flex-col overflow-hidden">
           {/* Top bar */}
-          <header className="h-[68px] px-6 flex items-center gap-4 shrink-0">
+          <header className="h-[68px] px-6 flex items-center gap-2 shrink-0">
             <div className="flex-1" />
+
+            <StatusBadge />
 
             <button
               onClick={toggleTheme}

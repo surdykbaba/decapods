@@ -32,7 +32,12 @@ func (s *Service) LogTime(ctx context.Context, in TimeEntryInput) (uuid.UUID, er
 	return id, err
 }
 
-// LoadHeatmap returns utilization per user per week for the last 8 weeks.
+// LoadHeatmap returns utilization per user per week for the last 8 weeks,
+// plus a `current_allocation` (sum of allocations on active project_members)
+// and the list of active projects. The frontend buckets people into
+// available / engaged / overloaded primarily off current_allocation, so
+// staffing a fresh project moves someone into "engaged" the moment they're
+// added — even before any hours are logged.
 func (s *Service) LoadHeatmap(ctx context.Context, tenantID uuid.UUID) (map[string]any, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT u.id, u.full_name,
@@ -53,6 +58,12 @@ func (s *Service) LoadHeatmap(ctx context.Context, tenantID uuid.UUID) (map[stri
 		Hours float64   `json:"hours"`
 		Util  float64   `json:"utilization"`
 	}
+	type activeProject struct {
+		ID         uuid.UUID `json:"id"`
+		Name       string    `json:"name"`
+		Role       string    `json:"role"`
+		Allocation float64   `json:"allocation"`
+	}
 	people := map[uuid.UUID]map[string]any{}
 	for rows.Next() {
 		var (
@@ -65,7 +76,12 @@ func (s *Service) LoadHeatmap(ctx context.Context, tenantID uuid.UUID) (map[stri
 			continue
 		}
 		if _, ok := people[uid]; !ok {
-			people[uid] = map[string]any{"id": uid, "name": name, "weeks": []cell{}}
+			people[uid] = map[string]any{
+				"id": uid, "name": name,
+				"weeks":              []cell{},
+				"current_allocation": 0.0,
+				"active_projects":    []activeProject{},
+			}
 		}
 		if wk != nil {
 			h := 0.0
@@ -77,6 +93,46 @@ func (s *Service) LoadHeatmap(ctx context.Context, tenantID uuid.UUID) (map[stri
 			})
 		}
 	}
+
+	// Layer current project assignments on top so "engaged" reflects staffing,
+	// not just logged hours.
+	assignmentRows, err := s.db.Query(ctx, `
+		SELECT u.id, u.full_name, p.id, p.name, pm.role, pm.allocation::float8
+		  FROM project_members pm
+		  JOIN users u    ON u.id = pm.user_id
+		  JOIN projects p ON p.id = pm.project_id
+		 WHERE u.tenant_id = $1
+		   AND u.deleted_at IS NULL
+		   AND p.deleted_at IS NULL
+		   AND pm.removed_at IS NULL`, tenantID)
+	if err == nil {
+		defer assignmentRows.Close()
+		for assignmentRows.Next() {
+			var (
+				uid, pid uuid.UUID
+				uname, pname, role string
+				alloc float64
+			)
+			if err := assignmentRows.Scan(&uid, &uname, &pid, &pname, &role, &alloc); err != nil {
+				continue
+			}
+			if _, ok := people[uid]; !ok {
+				people[uid] = map[string]any{
+					"id": uid, "name": uname,
+					"weeks":              []cell{},
+					"current_allocation": 0.0,
+					"active_projects":    []activeProject{},
+				}
+			}
+			cur, _ := people[uid]["current_allocation"].(float64)
+			people[uid]["current_allocation"] = cur + alloc
+			people[uid]["active_projects"] = append(
+				people[uid]["active_projects"].([]activeProject),
+				activeProject{ID: pid, Name: pname, Role: role, Allocation: alloc},
+			)
+		}
+	}
+
 	out := []map[string]any{}
 	for _, p := range people {
 		out = append(out, p)
