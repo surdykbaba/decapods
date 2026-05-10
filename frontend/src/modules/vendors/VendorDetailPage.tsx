@@ -787,7 +787,7 @@ function InviteVendorDialog({
               <div className="text-[11px] text-muted mt-1">Pre-filled with a friendly default. Edit it however you like.</div>
             </label>
             <div className="rounded-lg border border-border bg-bg/30 p-3 text-[12px] text-muted">
-              The link is good for 14 days, single-use, and any older invite for this vendor is automatically revoked.
+              The link is good for 5 days, single-use, and any older invite for this vendor is automatically revoked.
             </div>
           </div>
         )}

@@ -445,7 +445,7 @@ func (h *Vendors) DeleteDocument(c *gin.Context) {
  * has to be marked signed by an internal user.
  */
 
-const inviteTTL = 14 * 24 * time.Hour
+const inviteTTL = 5 * 24 * time.Hour
 
 // CreateInvite mints a token for a vendor and returns the public URL.
 // POST /vendors/:id/invite  body: { email, message? }

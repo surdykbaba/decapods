@@ -5,7 +5,7 @@ import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
 import {
   Users, Plus, Search, ShieldCheck, ShieldAlert, Mail, X, Pencil, Trash2,
-  Copy, KeyRound, CheckCircle2, Clock, Send, Link as LinkIcon, Circle,
+  Copy, KeyRound, CheckCircle2, Clock, Send, Link as LinkIcon, Circle, RotateCcw,
 } from "lucide-react";
 import { type Presence, presenceLabel, PRESENCE_COLORS } from "@/lib/presence";
 import { confirmAction } from "@/lib/confirm";
@@ -414,7 +414,7 @@ function AddMemberDialog({
   const [picked, setPicked] = useState<string[]>([]);
   const [message, setMessage] = useState(
     "Hi — welcome to the workspace! Click the link below to set up your password and sign in. " +
-    "It expires in 14 days.",
+    "It expires in 5 days.",
   );
   const valid = /\S+@\S+\.\S+/.test(email) && name.trim().length > 1;
   const toggle = (r: string) =>
@@ -754,6 +754,25 @@ function InvitationsPanel() {
     },
   });
 
+  // Resend the same token with a fresh expiry. Server returns sent:true if SMTP
+  // is wired and the email actually went out, false if it just refreshed the link.
+  const resend = useMutation({
+    mutationFn: (id: string) =>
+      api<{ sent: boolean; email: string }>(`/api/v1/member-invitations/${id}/resend`, { method: "POST" }),
+    onSuccess: (res) => {
+      qc.invalidateQueries({ queryKey: ["members", "invitations"] });
+      if (res.sent) {
+        toast.success("Invite resent", `Email re-sent to ${res.email}.`);
+      } else {
+        toast.success("Invite refreshed", "Link extended for 14 days. Email isn't wired — copy the link to share.");
+      }
+    },
+    onError: (e: unknown) => {
+      const msg = e instanceof ApiError ? ((e.body as any)?.error ?? e.message) : (e as Error)?.message;
+      toast.error("Could not resend", msg);
+    },
+  });
+
   if (isLoading && items.length === 0) return null;
   if (items.length === 0) return null;
 
@@ -781,14 +800,27 @@ function InvitationsPanel() {
       </div>
       <ul className="divide-y divide-border">
         {sorted.map((inv) => (
-          <InvitationRow key={inv.id} inv={inv} onRevoke={() => revoke.mutate(inv.id)} />
+          <InvitationRow
+            key={inv.id}
+            inv={inv}
+            onRevoke={() => revoke.mutate(inv.id)}
+            onResend={() => resend.mutate(inv.id)}
+            resending={resend.isPending && resend.variables === inv.id}
+          />
         ))}
       </ul>
     </div>
   );
 }
 
-function InvitationRow({ inv, onRevoke }: { inv: Invitation; onRevoke: () => void }) {
+function InvitationRow({
+  inv, onRevoke, onResend, resending,
+}: {
+  inv: Invitation;
+  onRevoke: () => void;
+  onResend: () => void;
+  resending: boolean;
+}) {
   const inviteUrl = `${window.location.origin}/member-invite/${inv.token}`;
   const fmt = (iso: string | null) => {
     if (!iso) return "—";
@@ -835,6 +867,15 @@ function InvitationRow({ inv, onRevoke }: { inv: Invitation; onRevoke: () => voi
             </button>
             <button
               type="button"
+              title="Resend invite email · refreshes expiry"
+              disabled={resending}
+              className="p-1.5 rounded hover:bg-bg text-muted hover:text-accent disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={onResend}
+            >
+              <RotateCcw size={14} className={resending ? "animate-spin" : ""} />
+            </button>
+            <button
+              type="button"
               title="Revoke invite"
               className="p-1.5 rounded hover:bg-bg text-muted hover:text-danger"
               onClick={onRevoke}
@@ -842,6 +883,17 @@ function InvitationRow({ inv, onRevoke }: { inv: Invitation; onRevoke: () => voi
               <X size={14} />
             </button>
           </>
+        )}
+        {inv.status === "expired" && (
+          <button
+            type="button"
+            title="Reissue invite (extends expiry by 14 days, re-sends email)"
+            disabled={resending}
+            className="text-[11.5px] font-semibold text-accent hover:underline px-2 py-1 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-1"
+            onClick={onResend}
+          >
+            <RotateCcw size={11} className={resending ? "animate-spin" : ""} /> Reissue
+          </button>
         )}
       </div>
     </li>

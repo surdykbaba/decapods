@@ -75,7 +75,7 @@ export function LoginPage() {
             </Field>
 
             <div className="flex justify-center">
-              <a className="text-xs text-muted hover:text-text cursor-pointer">Forgot your password?</a>
+              <Link to="/forgot-password" className="text-xs text-muted hover:text-text">Forgot your password?</Link>
             </div>
 
             {err && (

@@ -1,9 +1,12 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { Shell } from "@/components/Shell";
 import { Toaster } from "@/components/Toaster";
+import { ConfirmHost } from "@/components/ConfirmHost";
 import { RequireAuth } from "@/app/RequireAuth";
 import { LoginPage } from "@/modules/auth/LoginPage";
 import { MfaPage } from "@/modules/auth/MfaPage";
+import { ForgotPasswordPage } from "@/modules/auth/ForgotPasswordPage";
+import { ResetPasswordPage } from "@/modules/auth/ResetPasswordPage";
 import { PipelinePage } from "@/modules/pipeline/PipelinePage";
 import { OpportunityWizard } from "@/modules/pipeline/OpportunityWizard";
 import { OpportunityDetail } from "@/modules/pipeline/OpportunityDetail";
@@ -42,9 +45,12 @@ export function App() {
   return (
     <>
     <Toaster />
+    <ConfirmHost />
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/mfa" element={<MfaPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
       {/* Public, token-gated onboarding pages — no JWT required */}
       <Route path="/vendor-invite/:token" element={<VendorInvitePage />} />
       <Route path="/agent-invite/:token"  element={<AgentInvitePage />} />

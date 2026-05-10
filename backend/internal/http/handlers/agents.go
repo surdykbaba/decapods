@@ -33,7 +33,7 @@ var AgentMandatoryDocs = []string{
 	"approval_memo",
 }
 
-const agentInviteTTL = 14 * 24 * time.Hour
+const agentInviteTTL = 5 * 24 * time.Hour
 
 /* ---------------- List / Create / Get / Update / Delete ---------------- */
 

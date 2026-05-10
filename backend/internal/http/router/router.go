@@ -51,12 +51,23 @@ func New(d Deps) http.Handler {
 	api.POST("/auth/refresh", auth.Refresh)
 	api.POST("/auth/mfa/verify", auth.VerifyMFA)
 
+	// Build the notification engine early so handlers can attach it.
+	earlyMailer := notifications.NewMailer(d.Cfg)
+
+	// Password reset — public, no auth required.
+	pwReset := handlers.NewPasswordReset(d.DB, earlyMailer, d.Cfg)
+	api.POST("/auth/forgot-password",        pwReset.Request)
+	api.POST("/auth/reset-password",         pwReset.Reset)
+	api.GET("/auth/reset-password/:token",   pwReset.Verify)
+
 	authed := api.Group("")
 	authed.Use(mw.RequireAuth([]byte(d.Cfg.JWTAccessSecret)))
 
 	authed.GET("/me", auth.Me)
 
-	opp := handlers.NewOpportunities(d.DB)
+	earlyEngine := notifications.NewEngine(d.DB, earlyMailer, d.Cfg)
+
+	opp := handlers.NewOpportunities(d.DB).WithEngine(earlyEngine)
 	authed.GET("/opportunities", mw.RequirePermission("opportunity:read"), opp.List)
 	authed.POST("/opportunities", mw.RequirePermission("opportunity:write"), opp.Create)
 	authed.GET("/opportunities/:id", mw.RequirePermission("opportunity:read"), opp.Get)
@@ -129,8 +140,11 @@ func New(d Deps) http.Handler {
 	api.GET("/agent-invite/:token",  agents.PublicGetInvite)
 	api.POST("/agent-invite/:token", agents.PublicAcceptInvite)
 
-	mailer := notifications.NewMailer(d.Cfg)
-	members := handlers.NewMembers(d.DB).WithMailer(mailer, d.Cfg)
+	prefs := handlers.NewNotificationPrefs(earlyEngine)
+	authed.GET("/me/notification-preferences",  prefs.List)
+	authed.PUT("/me/notification-preferences",  prefs.Set)
+
+	members := handlers.NewMembers(d.DB).WithMailer(earlyMailer, d.Cfg)
 	authed.GET("/members",                   members.List)
 	authed.GET("/members/roles",             members.ListRoles)
 	authed.POST("/members",                  mw.RequirePermission("governance:write"), members.Create)

@@ -737,7 +737,7 @@ function InviteAgentDialog({
               <textarea className="input" rows={5} value={message} onChange={(e) => setMessage(e.target.value)} />
             </label>
             <div className="rounded-lg border border-border bg-bg/30 p-3 text-[12px] text-muted">
-              The link is good for 14 days, single-use, and any older invite for this agent is automatically revoked.
+              The link is good for 5 days, single-use, and any older invite for this agent is automatically revoked.
             </div>
           </div>
         )}

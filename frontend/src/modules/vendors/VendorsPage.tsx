@@ -654,7 +654,7 @@ function InviteByLinkDialog({
               <textarea className="input" rows={4} value={message} onChange={(e) => setMessage(e.target.value)} />
             </label>
             <div className="rounded-lg border border-border bg-bg/30 p-3 text-[12px] text-muted">
-              The link is good for 14 days, single-use. The vendor's full profile is filled in by them — you'll see it land here once they submit.
+              The link is good for 5 days, single-use. The vendor's full profile is filled in by them — you'll see it land here once they submit.
             </div>
             {err && <div className="text-xs text-danger">{err}</div>}
           </div>

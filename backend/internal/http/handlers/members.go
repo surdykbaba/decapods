@@ -336,7 +336,7 @@ func (h *Members) Delete(c *gin.Context) {
  * one transaction. Until accepted, the user does NOT exist in the directory.
  */
 
-const memberInviteTTL = 14 * 24 * time.Hour
+const memberInviteTTL = 5 * 24 * time.Hour
 
 // CreateInvite mints an invite. Body: { email, name, roles?, message? }
 func (h *Members) CreateInvite(c *gin.Context) {
@@ -406,7 +406,7 @@ func (h *Members) dispatchMemberInviteEmail(ctx context.Context, tid uuid.UUID, 
 
 	subject := fmt.Sprintf("You're invited to %s", company.DisplayName())
 	plain := fmt.Sprintf(
-		"Hi %s,\n\n%s has invited you to join their workspace on D'Accubin.\n\nAccept the invite:\n%s\n\n%s\n\nThis link expires in 14 days.",
+		"Hi %s,\n\n%s has invited you to join their workspace on D'Accubin.\n\nAccept the invite:\n%s\n\n%s\n\nThis link expires in 5 days.",
 		name, company.DisplayName(), link, strings.TrimSpace(personalMsg),
 	)
 	html := buildInviteHTML(company, name, link, personalMsg)
@@ -475,7 +475,7 @@ func buildInviteHTML(co companyHeader, name, link, msg string) string {
 %s
 <p style="margin:0 0 18px"><a href="%s" style="background:#0F7B97;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Accept the invite</a></p>
 <p style="font-size:12px;color:#64748b;margin:0">Or paste this URL into your browser:<br/><a href="%s">%s</a></p>
-<p style="font-size:11px;color:#94a3b8;margin-top:18px">This link expires in 14 days.</p>
+<p style="font-size:11px;color:#94a3b8;margin-top:18px">This link expires in 5 days.</p>
 </div></body></html>`, logo, htmlEscape(co.DisplayName()), htmlEscape(name), personal, link, link, link)
 }
 
@@ -523,7 +523,7 @@ func (h *Members) ListInvites(c *gin.Context) {
 // RevokeInvite cancels a pending invite so its link can no longer be used.
 // ResendInvite re-fires the invite email for an existing pending invitation.
 // Same token, same link — just dispatches the email again. Extends the expiry
-// to a fresh 14 days so a near-stale invite becomes useful again. 410 if the
+// to a fresh 5 days so a near-stale invite becomes useful again. 410 if the
 // invite is already accepted or revoked.
 func (h *Members) ResendInvite(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
