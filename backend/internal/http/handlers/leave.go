@@ -46,7 +46,7 @@ func canApproveAsManager(roles []string) bool {
 }
 func canApproveAsHR(roles []string) bool {
 	for _, r := range roles {
-		if r == "super_admin" || r == "hr" {
+		if r == "super_admin" || r == "hr" || r == "hr_manager" {
 			return true
 		}
 	}

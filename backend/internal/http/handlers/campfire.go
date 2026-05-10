@@ -42,6 +42,7 @@ type linkPreview struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	Image       string `json:"image"`
+	Favicon     string `json:"favicon"`
 	SiteName    string `json:"site_name"`
 }
 
@@ -1036,12 +1037,30 @@ func (h *Campfire) MarkSeen(c *gin.Context) {
 
 var (
 	previewTTL = 30 * time.Minute
-	httpClient = &http.Client{Timeout: 5 * time.Second}
+	httpClient = &http.Client{
+		Timeout: 8 * time.Second,
+		// Follow up to 5 redirects — news sites like to bounce through
+		// consent / locale gates before delivering the article HTML.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 5 {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
 
+	// Open Graph (property="og:*") in either attribute order.
 	reMetaProp  = regexp.MustCompile(`(?is)<meta[^>]+property=["']og:(title|description|image|site_name)["'][^>]*content=["']([^"']+)["']`)
 	reMetaProp2 = regexp.MustCompile(`(?is)<meta[^>]+content=["']([^"']+)["'][^>]*property=["']og:(title|description|image|site_name)["']`)
-	reMetaName  = regexp.MustCompile(`(?is)<meta[^>]+name=["']description["'][^>]*content=["']([^"']+)["']`)
-	reTitle     = regexp.MustCompile(`(?is)<title[^>]*>([^<]+)</title>`)
+	// Twitter card fallback — many sites only set twitter:* (or set it more
+	// reliably than og:*). Treated as lower priority than og:* via merge order.
+	reMetaTw  = regexp.MustCompile(`(?is)<meta[^>]+name=["']twitter:(title|description|image|site)["'][^>]*content=["']([^"']+)["']`)
+	reMetaTw2 = regexp.MustCompile(`(?is)<meta[^>]+content=["']([^"']+)["'][^>]*name=["']twitter:(title|description|image|site)["']`)
+	// Plain description / favicon / title fallbacks.
+	reMetaName = regexp.MustCompile(`(?is)<meta[^>]+name=["']description["'][^>]*content=["']([^"']+)["']`)
+	reMetaName2 = regexp.MustCompile(`(?is)<meta[^>]+content=["']([^"']+)["'][^>]*name=["']description["']`)
+	reTitle    = regexp.MustCompile(`(?is)<title[^>]*>([^<]+)</title>`)
+	reFavicon  = regexp.MustCompile(`(?is)<link[^>]+rel=["'][^"']*icon[^"']*["'][^>]+href=["']([^"']+)["']`)
 )
 
 func (h *Campfire) LinkPreview(c *gin.Context) {
@@ -1075,15 +1094,24 @@ func (h *Campfire) LinkPreview(c *gin.Context) {
 }
 
 func fetchPreview(ctx context.Context, raw string) linkPreview {
+	// Always seed the hostname so even a total fetch failure gives the UI
+	// something to render (a hostname pill linking back to the URL).
 	out := linkPreview{URL: raw}
+	if u, err := url.Parse(raw); err == nil {
+		out.SiteName = strings.TrimPrefix(u.Hostname(), "www.")
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
 	if err != nil {
 		return out
 	}
-	// Pretend to be a friendly browser — Cloudflare and friends serve bot
-	// pages otherwise, which have no OG tags.
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; D'AccubinBot/1.0; +https://myaccubin.com)")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	// Pretend to be a real browser. Some big sites (BBC, NYT, anything behind
+	// Cloudflare's bot mitigation) serve a bare consent page or 403 to anything
+	// that doesn't look like a desktop browser. Use a real-looking UA + an
+	// Accept-Language so we land on the article HTML, not a stub.
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return out
@@ -1092,20 +1120,32 @@ func fetchPreview(ctx context.Context, raw string) linkPreview {
 	if resp.StatusCode >= 400 {
 		return out
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024)) // 512KB cap
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024)) // 1MB cap
 	if err != nil {
 		return out
 	}
 	html := string(body)
+	base := baseURL(raw)
 
+	// Open Graph (preferred).
 	for _, m := range reMetaProp.FindAllStringSubmatch(html, -1) {
 		assignPreview(&out, m[1], m[2])
 	}
 	for _, m := range reMetaProp2.FindAllStringSubmatch(html, -1) {
 		assignPreview(&out, m[2], m[1])
 	}
+	// Twitter cards — fill gaps only, never overwrite og:*.
+	for _, m := range reMetaTw.FindAllStringSubmatch(html, -1) {
+		assignPreviewIfEmpty(&out, twKey(m[1]), m[2])
+	}
+	for _, m := range reMetaTw2.FindAllStringSubmatch(html, -1) {
+		assignPreviewIfEmpty(&out, twKey(m[2]), m[1])
+	}
+	// Plain <meta name="description"> as a last-resort body line.
 	if out.Description == "" {
 		if m := reMetaName.FindStringSubmatch(html); len(m) > 1 {
+			out.Description = strings.TrimSpace(decodeHTML(m[1]))
+		} else if m := reMetaName2.FindStringSubmatch(html); len(m) > 1 {
 			out.Description = strings.TrimSpace(decodeHTML(m[1]))
 		}
 	}
@@ -1114,12 +1154,75 @@ func fetchPreview(ctx context.Context, raw string) linkPreview {
 			out.Title = strings.TrimSpace(decodeHTML(m[1]))
 		}
 	}
-	if out.SiteName == "" {
-		if u, err := url.Parse(raw); err == nil {
-			out.SiteName = strings.TrimPrefix(u.Hostname(), "www.")
-		}
+	if out.Image != "" {
+		out.Image = resolveURL(base, out.Image)
+	}
+	// Favicon for sites with no og:image (so the card still has *something*
+	// visual). Prefer the explicit <link rel="icon"> if present, else the
+	// well-known /favicon.ico fallback.
+	if m := reFavicon.FindStringSubmatch(html); len(m) > 1 {
+		out.Favicon = resolveURL(base, decodeHTML(m[1]))
+	} else if base != "" {
+		out.Favicon = base + "/favicon.ico"
 	}
 	return out
+}
+
+func twKey(s string) string {
+	if s == "site" {
+		return "site_name"
+	}
+	return s
+}
+
+func baseURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// resolveURL normalises a meta-tag href into a fully qualified URL. Handles
+// "//cdn.example.com/img.jpg" (protocol-relative), "/path/img.jpg" (root-
+// relative) and pass-through for already-absolute URLs.
+func resolveURL(base, href string) string {
+	href = strings.TrimSpace(href)
+	if href == "" {
+		return ""
+	}
+	if strings.HasPrefix(href, "//") {
+		return "https:" + href
+	}
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
+		return href
+	}
+	if strings.HasPrefix(href, "/") && base != "" {
+		return base + href
+	}
+	return href
+}
+
+func assignPreviewIfEmpty(out *linkPreview, key, val string) {
+	val = decodeHTML(strings.TrimSpace(val))
+	switch key {
+	case "title":
+		if out.Title == "" {
+			out.Title = val
+		}
+	case "description":
+		if out.Description == "" {
+			out.Description = val
+		}
+	case "image":
+		if out.Image == "" {
+			out.Image = val
+		}
+	case "site_name":
+		if out.SiteName == "" {
+			out.SiteName = val
+		}
+	}
 }
 
 func assignPreview(out *linkPreview, key, val string) {

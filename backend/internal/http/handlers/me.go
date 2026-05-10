@@ -492,10 +492,10 @@ func (h *Me) Profile(c *gin.Context) {
 	rs, _ := roles.([]string)
 
 	var (
-		email, name, ghUser string
+		email, name, ghUser, avatarURL string
 	)
-	_ = h.db.QueryRow(c, `SELECT email, COALESCE(full_name,''), COALESCE(github_username,'')
-		FROM users WHERE id=$1`, uid).Scan(&email, &name, &ghUser)
+	_ = h.db.QueryRow(c, `SELECT email, COALESCE(full_name,''), COALESCE(github_username,''), COALESCE(avatar_url,'')
+		FROM users WHERE id=$1`, uid).Scan(&email, &name, &ghUser, &avatarURL)
 
 	// Activity counters
 	type act struct {
@@ -518,6 +518,7 @@ func (h *Me) Profile(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"id": uid, "email": email, "name": name,
 		"github_username": ghUser,
+		"avatar_url":      avatarURL,
 		"roles": rs,
 		"performance": gin.H{
 			"tasks_done":     a.TasksDone,
@@ -534,6 +535,7 @@ func (h *Me) PutProfile(c *gin.Context) {
 	var req struct {
 		Name           *string `json:"name"`
 		GithubUsername *string `json:"github_username"`
+		AvatarURL      *string `json:"avatar_url"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil { c.JSON(400, gin.H{"error": err.Error()}); return }
 	sets := []string{}
@@ -541,6 +543,27 @@ func (h *Me) PutProfile(c *gin.Context) {
 	add := func(col string, v any) { args = append(args, v); sets = append(sets, col+"=$"+strconv.Itoa(len(args))) }
 	if req.Name != nil           { add("full_name", strings.TrimSpace(*req.Name)) }
 	if req.GithubUsername != nil { add("github_username", strings.TrimSpace(*req.GithubUsername)) }
+	if req.AvatarURL != nil {
+		v := strings.TrimSpace(*req.AvatarURL)
+		// Accept either an external http(s) URL or an inline data URI. Cap the
+		// data URI at 500 KB so a single row can't bloat the users table.
+		if v != "" {
+			if strings.HasPrefix(v, "data:image/") {
+				if len(v) > 512*1024 {
+					c.JSON(400, gin.H{"error": "avatar too large (max ~375 KB after base64)"})
+					return
+				}
+			} else if !strings.HasPrefix(v, "http://") && !strings.HasPrefix(v, "https://") {
+				c.JSON(400, gin.H{"error": "avatar_url must be http(s) or a data: URI"})
+				return
+			}
+		}
+		if v == "" {
+			add("avatar_url", nil)
+		} else {
+			add("avatar_url", v)
+		}
+	}
 	if len(sets) == 0 { c.JSON(400, gin.H{"error":"nothing to update"}); return }
 	args = append(args, uid)
 	q := "UPDATE users SET " + strings.Join(sets, ", ") + " WHERE id=$" + strconv.Itoa(len(args))

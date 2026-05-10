@@ -101,28 +101,57 @@ type Preview = {
   title?: string;
   description?: string;
   image?: string;
+  favicon?: string;
   site_name?: string;
 };
+
+function hostname(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ""); }
+  catch { return url; }
+}
 
 export function LinkEmbed({ url }: { url: string }) {
   const { data, isLoading } = useQuery<Preview>({
     queryKey: ["campfire", "link-preview", url],
     queryFn: () => api(`/api/v1/campfire/link-preview?url=${encodeURIComponent(url)}`),
     staleTime: 30 * 60_000, // mirrors the server cache TTL
-    // Don't retry on the off-chance the link 404s — we'd rather silently
-    // omit the card than spam the API trying.
     retry: false,
   });
 
   if (isLoading) {
     return (
       <div className="mt-2 border border-border rounded-xl px-3.5 py-2.5 flex items-center gap-2 text-[12px] text-muted bg-bg/30">
-        <ImageIcon size={13} className="opacity-40" />
+        <ImageIcon size={13} className="opacity-40 animate-pulse" />
         Loading preview…
       </div>
     );
   }
-  if (!data || (!data.title && !data.description && !data.image)) return null;
+
+  const host = data?.site_name || hostname(url);
+  const hasRichMeta = !!(data?.title || data?.description || data?.image);
+
+  // Even when the upstream blocks our fetch, give the user a clickable hostname
+  // pill so the link is never "naked" in the body. Rich metadata renders the
+  // full image+title card; bare fetches still get the slim chip.
+  if (!hasRichMeta) {
+    return (
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="mt-2 inline-flex items-center gap-2 px-3 py-2 rounded-xl border border-border hover:border-accent/40 bg-bg/30 text-[12px] text-text transition-colors"
+      >
+        {data?.favicon ? (
+          <img src={data.favicon} alt="" className="w-4 h-4 rounded-sm" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+        ) : (
+          <ExternalLink size={12} className="text-muted" />
+        )}
+        <span className="font-semibold">{host}</span>
+        <span className="text-muted">Open link</span>
+      </a>
+    );
+  }
 
   return (
     <a
@@ -133,22 +162,26 @@ export function LinkEmbed({ url }: { url: string }) {
       className="mt-2 block border border-border rounded-xl overflow-hidden hover:border-accent/40 transition-colors bg-bg/20"
     >
       <div className="flex">
-        {data.image && (
+        {data?.image ? (
           <img
             src={data.image}
             alt=""
             className="w-28 h-28 object-cover shrink-0 bg-bg"
             onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
           />
-        )}
+        ) : data?.favicon ? (
+          <div className="w-28 h-28 shrink-0 bg-bg grid place-items-center">
+            <img src={data.favicon} alt="" className="w-10 h-10 opacity-80" onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+          </div>
+        ) : null}
         <div className="flex-1 min-w-0 p-3">
           <div className="text-[10.5px] uppercase tracking-wider text-muted font-bold flex items-center gap-1">
-            <ExternalLink size={10} /> {data.site_name || new URL(url).hostname}
+            <ExternalLink size={10} /> {host}
           </div>
-          {data.title && (
+          {data?.title && (
             <div className="text-[13px] font-bold text-text mt-0.5 line-clamp-2">{data.title}</div>
           )}
-          {data.description && (
+          {data?.description && (
             <div className="text-[12px] text-muted mt-0.5 line-clamp-2">{data.description}</div>
           )}
         </div>
