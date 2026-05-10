@@ -140,6 +140,7 @@ func New(d Deps) http.Handler {
 	authed.POST("/members/invite",           mw.RequirePermission("governance:write"), members.CreateInvite)
 	authed.GET("/members/invitations",       mw.RequirePermission("governance:write"), members.ListInvites)
 	authed.DELETE("/member-invitations/:inviteId", mw.RequirePermission("governance:write"), members.RevokeInvite)
+	authed.POST("/member-invitations/:inviteId/resend", mw.RequirePermission("governance:write"), members.ResendInvite)
 	api.GET("/member-invite/:token",  members.PublicGetInvite)
 	api.POST("/member-invite/:token", members.PublicAcceptInvite)
 
@@ -186,6 +187,7 @@ func New(d Deps) http.Handler {
 	gov := handlers.NewGovernance(d.DB)
 	authed.GET("/governance/policies", mw.RequirePermission("policy:read"), gov.ListPolicies)
 	authed.POST("/governance/policies", mw.RequirePermission("policy:write"), gov.UpsertPolicy)
+	authed.DELETE("/governance/policies/:id", mw.RequirePermission("policy:write"), gov.DeletePolicy)
 	authed.GET("/audit", mw.RequirePermission("audit:read"), gov.Audit)
 
 	an := handlers.NewAnalytics(d.DB)

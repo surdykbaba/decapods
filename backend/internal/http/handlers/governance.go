@@ -62,6 +62,25 @@ func (h *Governance) UpsertPolicy(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true})
 }
 
+func (h *Governance) DeletePolicy(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	tag, err := h.db.Exec(c, `DELETE FROM policy_rules WHERE id=$1 AND tenant_id=$2`, id, tid)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(404, gin.H{"error": "policy not found"})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
 func (h *Governance) Audit(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	entity := c.Query("entity")

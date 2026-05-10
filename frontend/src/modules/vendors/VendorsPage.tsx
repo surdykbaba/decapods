@@ -236,14 +236,6 @@ export function VendorsPage() {
         </div>
       </header>
 
-      {/* KPI strip */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KpiTile label="Total"       value={counts.all}        tone="neutral" />
-        <KpiTile label="Onboarded"   value={counts.onboarded}  tone="info" />
-        <KpiTile label="SLA signed"  value={counts.sla_signed} tone="good" />
-        <KpiTile label="Onboarding"  value={counts.draft}      tone={counts.draft ? "warn" : "neutral"} />
-      </div>
-
       {/* Status pills */}
       <div className="flex gap-1 p-1 bg-surface border border-border rounded-full w-fit">
         {(["all","sla_signed","onboarded","draft","suspended"] as const).map((k) => (
@@ -375,18 +367,6 @@ function VendorCard({ v }: { v: VendorRow }) {
         <span className="shrink-0">{v.document_count} doc{v.document_count === 1 ? "" : "s"}</span>
       </div>
     </Link>
-  );
-}
-
-function KpiTile({ label, value, tone }: { label: string; value: number; tone: "good" | "warn" | "info" | "neutral" }) {
-  const cls = {
-    good: "text-success", warn: "text-warn", info: "text-accent", neutral: "text-text",
-  }[tone];
-  return (
-    <div className="bg-surface border border-border rounded-2xl p-4">
-      <div className="text-[11px] uppercase tracking-wider font-bold text-muted">{label}</div>
-      <div className={`text-2xl font-extrabold mt-1 ${cls}`}>{value}</div>
-    </div>
   );
 }
 

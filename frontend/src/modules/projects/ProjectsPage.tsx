@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { Empty, Skeleton } from "@/components/ui";
 import {
   Search, X, LayoutGrid, List as ListIcon, ChevronRight, Users, AlertCircle,
-  Flag, Wallet, Clock, CheckCircle2, AlertTriangle, Activity,
+  Flag, Wallet, Clock, CheckCircle2,
   MoreHorizontal, Loader,
 } from "lucide-react";
 
@@ -84,18 +84,6 @@ export function ProjectsPage() {
   const [filter, setFilter] = useState<StatusFilter>("all");
 
   const items = data ?? [];
-  const summary = useMemo(() => {
-    const active = items.filter((p) => ACTIVE_STATUSES.includes(p.status)).length;
-    const onTrack = items.filter((p) => p.health === "green").length;
-    const atRisk = items.filter((p) => p.health !== "green" && !FINISHED_STATUSES.includes(p.status)).length;
-    const overdue = items.filter((p) => {
-      const d = daysUntil(p.end_date);
-      return d !== null && d < 0 && !FINISHED_STATUSES.includes(p.status);
-    }).length;
-    const totalBudget = items.reduce((s, p) => s + (p.budget || 0), 0);
-    return { active, onTrack, atRisk, overdue, totalBudget };
-  }, [items]);
-
   const filtered = useMemo(() => {
     return items.filter((p) => {
       if (query && !`${p.name} ${p.code} ${p.client_name}`.toLowerCase().includes(query.toLowerCase())) return false;
@@ -114,15 +102,6 @@ export function ProjectsPage() {
           <p className="text-sm text-muted mt-1">Engagements that crossed the planning gate.</p>
         </div>
       </header>
-
-      {/* Summary strip */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <SummaryTile label="Active"   value={summary.active}        icon={<Activity size={14} />}      tone="info" />
-        <SummaryTile label="On track" value={summary.onTrack}       icon={<CheckCircle2 size={14} />}  tone="good" />
-        <SummaryTile label="At risk"  value={summary.atRisk}        icon={<AlertTriangle size={14} />} tone={summary.atRisk ? "warn" : "good"} />
-        <SummaryTile label="Overdue"  value={summary.overdue}       icon={<Clock size={14} />}         tone={summary.overdue ? "bad" : "good"} />
-        <SummaryTile label="Portfolio value" value={fmtMoney(summary.totalBudget)} icon={<Wallet size={14} />} tone="neutral" />
-      </div>
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
@@ -182,26 +161,6 @@ export function ProjectsPage() {
 }
 
 /* ---------- Pieces ---------- */
-
-function SummaryTile({
-  label, value, icon, tone = "neutral",
-}: {
-  label: string; value: number | string; icon: React.ReactNode;
-  tone?: "good" | "warn" | "bad" | "info" | "neutral";
-}) {
-  const valCls = {
-    good: "text-success", warn: "text-warn", bad: "text-danger",
-    info: "text-accent", neutral: "text-text",
-  }[tone];
-  return (
-    <div className="bg-surface border border-border rounded-md p-3">
-      <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted font-semibold">
-        {icon} {label}
-      </div>
-      <div className={`text-2xl font-bold mt-1 ${valCls}`}>{value}</div>
-    </div>
-  );
-}
 
 function FilterPill({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
