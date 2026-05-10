@@ -4,6 +4,7 @@ package projects
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,24 +59,67 @@ type Project struct {
 	EndDate   *time.Time `json:"end_date"`
 }
 
-func (s *Service) List(ctx context.Context, tenantID uuid.UUID, status string) ([]Project, error) {
-	q := `SELECT id, code, name, status, health, risk_score, COALESCE(budget_amount,0), start_date, end_date
-	      FROM projects WHERE tenant_id=$1 AND deleted_at IS NULL`
+type ListItem struct {
+	ID            uuid.UUID  `json:"id"`
+	Code          string     `json:"code"`
+	Name          string     `json:"name"`
+	Status        string     `json:"status"`
+	Health        string     `json:"health"`
+	RiskScore     float64    `json:"risk_score"`
+	Budget        float64    `json:"budget"`
+	Currency      string     `json:"currency"`
+	StartDate     *time.Time `json:"start_date"`
+	EndDate       *time.Time `json:"end_date"`
+	OpportunityID *uuid.UUID `json:"opportunity_id"`
+	ClientName    string     `json:"client_name"`
+	LeadType      string     `json:"lead_type"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	Tasks         int        `json:"tasks"`
+	TasksDone     int        `json:"tasks_done"`
+	Blockers      int        `json:"blockers"`
+	Stakeholders  int        `json:"stakeholders"`
+	Milestones    int        `json:"milestones"`
+}
+
+func (s *Service) List(ctx context.Context, tenantID uuid.UUID, status string) ([]ListItem, error) {
+	q := `
+		SELECT
+		  p.id, p.code, p.name, p.status, p.health, p.risk_score,
+		  COALESCE(p.budget_amount, 0), p.currency, p.start_date, p.end_date,
+		  p.opportunity_id, COALESCE(c.name, ''), COALESCE(o.lead_type, ''),
+		  p.updated_at,
+		  (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.deleted_at IS NULL),
+		  (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.deleted_at IS NULL AND t.status = 'done'),
+		  (SELECT COUNT(*) FROM tasks t WHERE t.project_id = p.id AND t.deleted_at IS NULL AND t.priority <= 1 AND t.status <> 'done'),
+		  (SELECT COUNT(*) FROM stakeholders s WHERE s.tenant_id = p.tenant_id AND s.entity_type = 'project' AND s.entity_id = p.id),
+		  (SELECT COUNT(*) FROM milestones m WHERE m.project_id = p.id)
+		FROM projects p
+		LEFT JOIN clients c       ON c.id = p.client_id
+		LEFT JOIN opportunities o ON o.id = p.opportunity_id
+		WHERE p.tenant_id = $1 AND p.deleted_at IS NULL
+		  AND p.status IN ('planning','in_progress','qa_review','client_acceptance','invoiced','paid','closed')`
 	args := []any{tenantID}
 	if status != "" {
-		q += ` AND status=$2`
+		q += ` AND p.status = $2`
 		args = append(args, status)
 	}
-	q += ` ORDER BY created_at DESC LIMIT 200`
+	q += ` ORDER BY p.updated_at DESC LIMIT 200`
+
 	rows, err := s.db.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := []Project{}
+	out := []ListItem{}
 	for rows.Next() {
-		var p Project
-		if err := rows.Scan(&p.ID, &p.Code, &p.Name, &p.Status, &p.Health, &p.RiskScore, &p.Budget, &p.StartDate, &p.EndDate); err != nil {
+		var p ListItem
+		if err := rows.Scan(
+			&p.ID, &p.Code, &p.Name, &p.Status, &p.Health, &p.RiskScore,
+			&p.Budget, &p.Currency, &p.StartDate, &p.EndDate,
+			&p.OpportunityID, &p.ClientName, &p.LeadType,
+			&p.UpdatedAt,
+			&p.Tasks, &p.TasksDone, &p.Blockers, &p.Stakeholders, &p.Milestones,
+		); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -96,25 +140,251 @@ func (s *Service) Create(ctx context.Context, in CreateInput) (uuid.UUID, error)
 }
 
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (map[string]any, error) {
-	var p Project
+	var (
+		p           Project
+		oppID       *uuid.UUID
+		clientID    uuid.UUID
+		currency    string
+		md          map[string]any
+		description string
+		leadType    string
+		clientName  string
+	)
 	err := s.db.QueryRow(ctx, `
-		SELECT id, code, name, status, health, risk_score, COALESCE(budget_amount,0), start_date, end_date
-		FROM projects WHERE id=$1 AND deleted_at IS NULL`, id).
-		Scan(&p.ID, &p.Code, &p.Name, &p.Status, &p.Health, &p.RiskScore, &p.Budget, &p.StartDate, &p.EndDate)
+		SELECT p.id, p.code, p.name, p.status, p.health, p.risk_score,
+		       COALESCE(p.budget_amount,0), p.start_date, p.end_date,
+		       p.opportunity_id, p.client_id, p.currency, p.metadata,
+		       COALESCE(o.proposal_summary, ''),
+		       COALESCE(o.lead_type, ''),
+		       COALESCE(c.name, '')
+		FROM projects p
+		LEFT JOIN opportunities o ON o.id = p.opportunity_id
+		LEFT JOIN clients c       ON c.id = p.client_id
+		WHERE p.id=$1 AND p.deleted_at IS NULL`, id).
+		Scan(&p.ID, &p.Code, &p.Name, &p.Status, &p.Health, &p.RiskScore, &p.Budget,
+			&p.StartDate, &p.EndDate, &oppID, &clientID, &currency, &md, &description,
+			&leadType, &clientName)
 	if err != nil {
 		return nil, err
 	}
+	if md == nil {
+		md = map[string]any{}
+	}
+	links := md["links"]
+	if links == nil {
+		links = []any{}
+	}
+	// Milestones
+	milestones := []map[string]any{}
+	if rows, err := s.db.Query(ctx, `
+		SELECT id, title, due_on, status, created_at
+		FROM milestones WHERE project_id=$1
+		ORDER BY due_on NULLS LAST, created_at`, p.ID); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				mid    uuid.UUID
+				title  string
+				due    *time.Time
+				status string
+				ca     time.Time
+			)
+			if err := rows.Scan(&mid, &title, &due, &status, &ca); err == nil {
+				milestones = append(milestones, map[string]any{
+					"id": mid, "title": title, "due_on": due, "status": status, "created_at": ca,
+				})
+			}
+		}
+	}
+
+	// Invoices
+	invoices := []map[string]any{}
+	var invTotal, invPaid float64
+	if rows, err := s.db.Query(ctx, `
+		SELECT id, number, amount::float8, currency, status, issued_on
+		FROM invoices WHERE project_id=$1 ORDER BY issued_on DESC NULLS LAST`, p.ID); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				iid          uuid.UUID
+				number, st   string
+				ccy          string
+				amt          float64
+				issued       *time.Time
+			)
+			if err := rows.Scan(&iid, &number, &amt, &ccy, &st, &issued); err == nil {
+				invoices = append(invoices, map[string]any{
+					"id": iid, "number": number, "amount": amt, "currency": ccy,
+					"status": st, "issued_on": issued,
+				})
+				invTotal += amt
+				if st == "paid" {
+					invPaid += amt
+				}
+			}
+		}
+	}
+
+	// GitHub repos linked to this project
+	repos := []map[string]any{}
+	if rows, err := s.db.Query(ctx, `
+		SELECT id, owner, name FROM gh_repositories WHERE project_id=$1`, p.ID); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				rid          uuid.UUID
+				owner, name  string
+			)
+			if err := rows.Scan(&rid, &owner, &name); err == nil {
+				repos = append(repos, map[string]any{"id": rid, "owner": owner, "name": name})
+			}
+		}
+	}
+
 	return map[string]any{
 		"id": p.ID, "code": p.Code, "name": p.Name, "status": p.Status,
 		"health": p.Health, "risk_score": p.RiskScore, "budget": p.Budget,
 		"start_date": p.StartDate, "end_date": p.EndDate,
+		"opportunity_id": oppID,
+		"client_id":      clientID,
+		"client_name":    clientName,
+		"currency":       currency,
+		"description":    description,
+		"lead_type":      leadType,
+		"links":          links,
+		"metadata":       md,
+		"milestones":     milestones,
+		"invoices":       invoices,
+		"invoice_total":  invTotal,
+		"invoice_paid":   invPaid,
+		"repos":          repos,
 	}, nil
+}
+
+// Archive soft-deletes the project (sets deleted_at).
+func (s *Service) Archive(ctx context.Context, id, tenantID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE projects SET deleted_at = now(), updated_at = now()
+		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, id, tenantID)
+	return err
+}
+
+// Restore clears deleted_at on a previously-archived project.
+func (s *Service) Restore(ctx context.Context, id, tenantID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE projects SET deleted_at = NULL, updated_at = now()
+		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NOT NULL`, id, tenantID)
+	return err
+}
+
+// ListArchived returns soft-deleted projects for a tenant.
+func (s *Service) ListArchived(ctx context.Context, tenantID uuid.UUID) ([]ListItem, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT
+		  p.id, p.code, p.name, p.status, p.health, p.risk_score,
+		  COALESCE(p.budget_amount, 0), p.currency, p.start_date, p.end_date,
+		  p.opportunity_id, COALESCE(c.name, ''), COALESCE(o.lead_type, ''),
+		  p.deleted_at,
+		  0, 0, 0, 0, 0
+		FROM projects p
+		LEFT JOIN clients c       ON c.id = p.client_id
+		LEFT JOIN opportunities o ON o.id = p.opportunity_id
+		WHERE p.tenant_id = $1 AND p.deleted_at IS NOT NULL
+		ORDER BY p.deleted_at DESC LIMIT 200`, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ListItem{}
+	for rows.Next() {
+		var p ListItem
+		if err := rows.Scan(
+			&p.ID, &p.Code, &p.Name, &p.Status, &p.Health, &p.RiskScore,
+			&p.Budget, &p.Currency, &p.StartDate, &p.EndDate,
+			&p.OpportunityID, &p.ClientName, &p.LeadType,
+			&p.UpdatedAt,
+			&p.Tasks, &p.TasksDone, &p.Blockers, &p.Stakeholders, &p.Milestones,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// AppendLog appends an item to a JSON array under metadata.{kind}.
+// Used for metadata.risks, metadata.reports, metadata.audit_log.
+func (s *Service) AppendLog(ctx context.Context, id uuid.UUID, kind string, item map[string]any) error {
+	b, err := json.Marshal(item)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
+		UPDATE projects
+		SET metadata = jsonb_set(
+		  COALESCE(metadata, '{}'::jsonb),
+		  ARRAY[$1],
+		  COALESCE(metadata->$1, '[]'::jsonb) || $2::jsonb,
+		  true
+		),
+		updated_at = now()
+		WHERE id = $3`, kind, b, id)
+	return err
+}
+
+// PatchLogItem replaces a single item by id within metadata.{kind} array.
+func (s *Service) PatchLogItem(ctx context.Context, id uuid.UUID, kind, itemID string, patch map[string]any) error {
+	b, err := json.Marshal(patch)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
+		WITH updated AS (
+		  SELECT jsonb_agg(
+		    CASE WHEN x->>'id' = $1 THEN x || $2::jsonb ELSE x END
+		  ) AS arr
+		  FROM jsonb_array_elements(COALESCE((SELECT metadata->$3 FROM projects WHERE id=$4),'[]'::jsonb)) x
+		)
+		UPDATE projects p
+		SET metadata = jsonb_set(COALESCE(metadata,'{}'::jsonb), ARRAY[$3], COALESCE((SELECT arr FROM updated),'[]'::jsonb), true),
+		    updated_at = now()
+		WHERE p.id = $4`, itemID, b, kind, id)
+	return err
+}
+
+// SetMetaKey replaces a single top-level metadata key with the given value.
+func (s *Service) SetMetaKey(ctx context.Context, id uuid.UUID, key string, value any) error {
+	b, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
+		UPDATE projects
+		SET metadata = jsonb_set(COALESCE(metadata,'{}'::jsonb), ARRAY[$1], $2::jsonb, true),
+		    updated_at = now()
+		WHERE id = $3`, key, b, id)
+	return err
+}
+
+// UpdateLinks replaces metadata.links on the project with the given list.
+func (s *Service) UpdateLinks(ctx context.Context, id uuid.UUID, links []map[string]any) error {
+	b, err := json.Marshal(links)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
+		UPDATE projects
+		SET metadata = jsonb_set(COALESCE(metadata,'{}'::jsonb), '{links}', $1::jsonb, true),
+		    updated_at = now()
+		WHERE id=$2`, b, id)
+	return err
 }
 
 func (s *Service) Board(ctx context.Context, id uuid.UUID) (map[string]any, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, title, status, priority, assignee_id, due_on
-		FROM tasks WHERE project_id=$1 AND deleted_at IS NULL`, id)
+		SELECT id, title, COALESCE(description,''), status, priority, assignee_id, due_on
+		FROM tasks WHERE project_id=$1 AND deleted_at IS NULL
+		ORDER BY priority ASC, due_on ASC NULLS LAST, created_at DESC`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -124,12 +394,15 @@ func (s *Service) Board(ctx context.Context, id uuid.UUID) (map[string]any, erro
 	}
 	for rows.Next() {
 		var (
-			tid, assignee uuid.UUID
-			title, status string
-			prio          int
-			due           *time.Time
+			tid       uuid.UUID
+			assignee  *uuid.UUID
+			title     string
+			desc      string
+			status    string
+			prio      int
+			due       *time.Time
 		)
-		if err := rows.Scan(&tid, &title, &status, &prio, &assignee, &due); err != nil {
+		if err := rows.Scan(&tid, &title, &desc, &status, &prio, &assignee, &due); err != nil {
 			continue
 		}
 		bucket := status
@@ -137,7 +410,8 @@ func (s *Service) Board(ctx context.Context, id uuid.UUID) (map[string]any, erro
 			bucket = "todo"
 		}
 		cols[bucket] = append(cols[bucket], map[string]any{
-			"id": tid, "title": title, "priority": prio, "assignee_id": assignee, "due_on": due,
+			"id": tid, "title": title, "description": desc,
+			"priority": prio, "assignee_id": assignee, "due_on": due,
 		})
 	}
 	return map[string]any{"columns": cols}, nil

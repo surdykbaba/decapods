@@ -82,6 +82,12 @@ func (e *Engine) EvaluateOpportunitySubmission(ctx context.Context, tenantID, op
 	return d
 }
 
+// RequiredDocsFor exposes the required-documents list so handlers can
+// surface it in the opportunity GET response (not only at submit time).
+func RequiredDocsFor(leadType string, value float64) []string {
+	return requiredDocsFor(leadType, value)
+}
+
 func requiredDocsFor(leadType string, value float64) []string {
 	base := []string{"NDA", "TechnicalProposal", "ScopeDocument"}
 	switch leadType {

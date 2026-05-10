@@ -3,40 +3,74 @@
 @tailwind utilities;
 
 :root {
-  --bg: 11 18 32;
-  --surface: 17 25 40;
-  --border: 32 42 64;
-  --muted: 120 132 158;
-  --text: 226 232 240;
-  --accent: 99 179 237;
+  /* D'Accubin brand — teal-blue primary, easy-on-the-eyes paper palette */
+  --bg: 240 235 226;             /* warm sand — page background */
+  --surface: 250 247 241;        /* cream — cards float over the page */
+  --border: 222 213 198;         /* warm hairline */
+  --muted: 96 100 110;            /* zinc grey */
+  --text: 36 40 50;               /* deep slate, not pure black */
+  --accent: 15 123 151;          /* #0F7B97 — D'Accubin teal-blue */
+  --accent-soft: 218 234 240;    /* pale teal */
+  --accent-hover: 11 100 124;
+  --highlight: 56 189 217;       /* bright cyan secondary */
+  --highlight-soft: 213 238 246;
+  --lime: 197 242 85;            /* retained for completion fills */
+  --lime-soft: 226 244 188;
+  --success: 22 122 82;
+  --warn: 175 105 12;
+  --danger: 188 42 50;
+}
+
+:root.dark {
+  --bg: 12 18 28;               /* deep navy bg */
+  --surface: 19 27 40;          /* card surface */
+  --border: 36 48 66;           /* hairline */
+  --muted: 144 158 178;         /* readable grey */
+  --text: 232 240 248;          /* near-white text */
+  --accent: 56 189 217;         /* brighter teal in dark mode */
+  --accent-soft: 22 50 66;
+  --accent-hover: 124 213 232;
+  --highlight: 56 189 217;
+  --highlight-soft: 22 50 66;
+  --lime: 197 242 85;
+  --lime-soft: 56 78 26;
   --success: 52 211 153;
   --warn: 251 191 36;
   --danger: 248 113 113;
 }
 
-:root.light {
-  --bg: 248 250 252;
-  --surface: 255 255 255;
-  --border: 226 232 240;
-  --muted: 100 116 139;
-  --text: 15 23 42;
-  --accent: 37 99 235;
-  --success: 5 150 105;
-  --warn: 217 119 6;
-  --danger: 220 38 38;
+html, body, #root { height: 100%; }
+html { font-size: 16px; }
+
+body {
+  font-family: 'Manrope', InterVariable, Inter, system-ui, sans-serif;
+  background: rgb(var(--bg));
+  color: rgb(var(--text));
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'cv11', 'ss01';
+  letter-spacing: -0.005em;
+  font-size: 15px;
+  line-height: 1.55;
 }
 
-html, body, #root { height: 100%; }
-body { font-family: InterVariable, Inter, system-ui, sans-serif; }
-
 @layer components {
-  .card { @apply bg-surface border border-border rounded-xl; }
-  .btn  { @apply inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition; }
-  .btn-primary { @apply btn bg-accent text-white hover:opacity-90; }
-  .btn-ghost   { @apply btn hover:bg-border/40 text-text; }
-  .pill { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs; }
-  .input { @apply w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent; }
-  .label { @apply text-xs uppercase tracking-wide text-muted mb-1 block; }
-  .h1 { @apply text-2xl font-semibold tracking-tight; }
-  .h2 { @apply text-lg font-semibold tracking-tight; }
+  .card { @apply bg-surface border border-border rounded-2xl; }
+  .btn  { @apply inline-flex items-center gap-2 px-4 py-2.5 rounded-full text-[14px] font-semibold transition-all; }
+  .btn-primary { @apply btn bg-accent text-white hover:bg-[rgb(var(--accent-hover))] shadow-soft; }
+  .btn-ghost   { @apply btn hover:bg-bg text-text; }
+  .btn-outline { @apply btn border border-border bg-surface text-text hover:bg-bg; }
+  .pill { @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[12px] font-semibold; }
+  .input {
+    @apply w-full bg-surface border border-border rounded-xl px-3.5 py-2.5 text-[14.5px] text-text placeholder:text-muted
+           focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/25 transition-colors;
+  }
+  .label { @apply text-[11.5px] uppercase tracking-[0.06em] text-muted mb-1.5 block font-bold; }
+  .h1 { @apply text-[2rem] md:text-[2.4rem] font-extrabold tracking-tight leading-tight; }
+  .h2 { @apply text-[1.15rem] font-bold tracking-tight; }
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
