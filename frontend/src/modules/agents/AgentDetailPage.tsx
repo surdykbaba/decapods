@@ -1,9 +1,12 @@
 import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
+import { useAuth } from "@/lib/auth";
+import { confirmAction } from "@/lib/confirm";
+import { DangerZone } from "@/components/DangerZone";
 import {
   Network, ShieldCheck, ShieldAlert, Clock, CheckCircle2, FileText, Plus,
   ArrowLeft, Globe, Mail, Phone, Trash2, Pencil, X, Link as LinkIcon, FileCheck2,
@@ -114,6 +117,9 @@ function fmtRel(iso: string | null | undefined): string {
 
 export function AgentDetailPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const isSuperAdmin = (user?.roles ?? []).includes("super_admin");
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<Agent>({
     queryKey: ["agent", id], queryFn: () => api(`/api/v1/agents/${id}`),
@@ -181,6 +187,19 @@ export function AgentDetailPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["agent-invites", id] }),
   });
 
+  const remove = useMutation({
+    mutationFn: () => api(`/api/v1/agents/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agents"] });
+      toast.success("Agent deleted");
+      navigate("/agents");
+    },
+    onError: (e: unknown) => {
+      const msg = e instanceof ApiError ? ((e.body as any)?.error ?? e.message) : (e as Error)?.message;
+      toast.error("Could not delete agent", msg);
+    },
+  });
+
   if (isLoading || !data) return <div className="text-muted">Loading agent…</div>;
 
   return (
@@ -214,6 +233,23 @@ export function AgentDetailPage() {
       {tab === "performance"   && <NextUpStub icon={<GaugeCircle size={20} />} title="Performance dashboard" body="Introductions made, qualified opportunities influenced, meetings secured, follow-ups completed, conversion contribution, active relationships, pending actions, closed engagements. Aggregated from the engagement and introduction tables once they're populated." />}
       {tab === "portal"        && <NextUpStub icon={<UsersIcon size={20} />} title="Agent portal access" body="Restricted accounts so agents can view their own engagements, upload required documents, log introductions, submit invoices and respond to compliance requests — scoped to only what's assigned to them." />}
       {tab === "audit"         && <NextUpStub icon={<History size={20} />} title="Audit trail" body="Timeline of onboarding actions, document uploads, engagement approvals, introduction logs, stakeholder updates, fee approvals, invoice submissions, compliance flags and management decisions." />}
+
+      {isSuperAdmin && (
+        <DangerZone
+          entityLabel="agent"
+          name={data.name}
+          deleting={remove.isPending}
+          onDelete={async () => {
+            const ok = await confirmAction({
+              title: "Delete agent?",
+              body: `Permanently remove "${data.name}". This cannot be undone — their documents, invitations and engagement links will be detached. Audit history is retained.`,
+              confirmLabel: "Delete agent",
+              danger: true,
+            });
+            if (ok) remove.mutate();
+          }}
+        />
+      )}
 
       {editOpen && (
         <EditAgentDialog v={data} submitting={update.isPending} onClose={() => setEditOpen(false)} onSave={(p) => update.mutate(p)} />

@@ -1,9 +1,12 @@
 import { useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
+import { useAuth } from "@/lib/auth";
+import { confirmAction } from "@/lib/confirm";
+import { DangerZone } from "@/components/DangerZone";
 import {
   Handshake, ShieldCheck, ShieldAlert, Clock, CheckCircle2, FileText, Plus,
   ArrowLeft, Globe, Mail, Phone, Trash2, Pencil, X, Link as LinkIcon, FileCheck2,
@@ -122,6 +125,9 @@ function fmtRel(iso: string | null | undefined): string {
 
 export function VendorDetailPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const isSuperAdmin = (user?.roles ?? []).includes("super_admin");
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<Vendor>({
     queryKey: ["vendor", id], queryFn: () => api(`/api/v1/vendors/${id}`),
@@ -207,6 +213,19 @@ export function VendorDetailPage() {
     },
   });
 
+  const remove = useMutation({
+    mutationFn: () => api(`/api/v1/vendors/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["vendors"] });
+      toast.success("Vendor deleted");
+      navigate("/vendors");
+    },
+    onError: (e: unknown) => {
+      const msg = e instanceof ApiError ? ((e.body as any)?.error ?? e.message) : (e as Error)?.message;
+      toast.error("Could not delete vendor", msg);
+    },
+  });
+
   if (isLoading || !data) return <div className="text-muted">Loading vendor…</div>;
 
   return (
@@ -246,6 +265,23 @@ export function VendorDetailPage() {
       {tab === "finance"      && <NextUpStub icon={<Wallet size={20} />} title="Finance & milestone payments" body="Contract value, milestone schedule, invoices submitted vs approved vs paid, outstanding balance, blocked payments. Payment approval will be hard-gated to deliverable acceptance." />}
       {tab === "portal"       && <NextUpStub icon={<UsersIcon size={20} />} title="Vendor portal access" body="Restricted accounts so vendors can submit deliverables, respond to comments, raise blockers and submit invoices — scoped to only what they're assigned to." />}
       {tab === "audit"        && <NextUpStub icon={<History size={20} />} title="Vendor activity & audit trail" body="Timeline of onboarding actions, document uploads, project assignments, deliverable submissions, reviews, approvals, invoices, payments and escalations." />}
+
+      {isSuperAdmin && (
+        <DangerZone
+          entityLabel="vendor"
+          name={data.name}
+          deleting={remove.isPending}
+          onDelete={async () => {
+            const ok = await confirmAction({
+              title: "Delete vendor?",
+              body: `Permanently remove "${data.name}". This cannot be undone — their documents, SLA records, invitations and project links will be detached. Audit history is retained.`,
+              confirmLabel: "Delete vendor",
+              danger: true,
+            });
+            if (ok) remove.mutate();
+          }}
+        />
+      )}
 
       {editOpen && (
         <EditVendorDialog
