@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -619,7 +619,10 @@ function TeamPanel({
       {addOpen && (
         <AddProjectMemberDialog
           projectId={projectId}
-          plannedRoles={(opp?.team_composition ?? []).filter((t) => t.kind === "internal").map((t) => t.name)}
+          plannedTeam={(opp?.team_composition ?? [])
+            .filter((t) => t.kind === "internal")
+            .map((t) => ({ name: t.name, count: t.count }))}
+          existingMembers={members}
           onClose={() => setAddOpen(false)}
           onAdded={() => {
             setAddOpen(false);
@@ -632,24 +635,79 @@ function TeamPanel({
 }
 
 function AddProjectMemberDialog({
-  projectId, plannedRoles, onClose, onAdded,
+  projectId, plannedTeam, existingMembers, onClose, onAdded,
 }: {
   projectId: string;
-  plannedRoles: string[];
+  plannedTeam: { name: string; count: number }[];
+  existingMembers: ProjectMember[];
   onClose: () => void;
   onAdded: () => void;
 }) {
-  const [query, setQuery] = useState("");
+  // Roles available are exactly what the planning step provisioned, plus a
+  // safety fallback so projects without a plan still work. Each option carries
+  // its capacity + current fill so we can lock the option once it's saturated.
+  const roleOptions = useMemo(() => {
+    const planned = plannedTeam.filter((r) => r.name && r.count > 0);
+    if (planned.length > 0) return planned;
+    // No plan — fall back to a small generic catalog with 1 slot each so the
+    // operator can still staff somebody without revisiting the wizard.
+    return [
+      { name: "Engineer",  count: 1 },
+      { name: "Tech lead", count: 1 },
+      { name: "Designer",  count: 1 },
+      { name: "QA",        count: 1 },
+      { name: "Analyst",   count: 1 },
+    ];
+  }, [plannedTeam]);
+
+  // How many slots of each role are already filled. Match on case-insensitive
+  // role name because the dropdown values are display-cased ("Designer") while
+  // the stored role on a member follows whatever was typed at add-time.
+  const filled = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const mem of existingMembers) {
+      const key = mem.role.trim().toLowerCase();
+      m.set(key, (m.get(key) ?? 0) + 1);
+    }
+    return m;
+  }, [existingMembers]);
+
+  const firstOpen = roleOptions.find((r) => (filled.get(r.name.toLowerCase()) ?? 0) < r.count);
+  const [role, setRole] = useState<string>(firstOpen?.name ?? roleOptions[0].name);
   const [picked, setPicked] = useState<AssignableUser | null>(null);
-  const [role, setRole] = useState<string>(plannedRoles[0] ?? "engineer");
+  const [query, setQuery] = useState("");
   const [allocation, setAllocation] = useState(100);
+
+  const roleFilled = filled.get(role.toLowerCase()) ?? 0;
+  const rolePlan   = roleOptions.find((r) => r.name.toLowerCase() === role.toLowerCase());
+  const roleCap    = rolePlan?.count ?? 1;
+  const atCapacity = roleFilled >= roleCap;
+
+  // Reset the candidate when the role changes — a new role needs new candidates.
+  useEffect(() => { setPicked(null); /* re-validate on role change */ }, [role]);
 
   const { data, isLoading } = useQuery<{ items: AssignableUser[] }>({
     queryKey: ["project-assignable", projectId, query],
     queryFn: () =>
       api(`/api/v1/projects/${projectId}/members/assignable?q=${encodeURIComponent(query)}`),
   });
-  const candidates = data?.items ?? [];
+  const allCandidates = data?.items ?? [];
+
+  // Skill match: a user qualifies for a role if any of their workspace roles
+  // shares a word with the project role (case-insensitive). "Tech Lead" matches
+  // a user with "tech_lead", "Senior Engineer" matches "engineer", etc. A user
+  // with super_admin can be staffed onto anything (they're typically the workspace
+  // owner standing in for a real engineer during early-stage staffing).
+  const candidates = useMemo(() => {
+    const tokens = role.toLowerCase().split(/[\s_/\-]+/).filter((t) => t.length >= 3);
+    return allCandidates.filter((u) => {
+      if (u.roles.includes("super_admin")) return true;
+      const roleStr = u.roles.join(" ").toLowerCase();
+      return tokens.some((t) => roleStr.includes(t));
+    });
+  }, [allCandidates, role]);
+
+  const skippedCount = allCandidates.length - candidates.length;
 
   const add = useMutation({
     mutationFn: (b: { user_id: string; role: string; allocation: number }) =>
@@ -669,50 +727,102 @@ function AddProjectMemberDialog({
         </header>
 
         <div className="p-5 space-y-4">
+          {/* ---- 1. Pick role first so we know which skills to filter for ---- */}
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Role on this project</div>
+            <select
+              className="input"
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+            >
+              {roleOptions.map((r) => {
+                const used = filled.get(r.name.toLowerCase()) ?? 0;
+                const full = used >= r.count;
+                return (
+                  <option key={r.name} value={r.name} disabled={full}>
+                    {r.name} · {used}/{r.count}{full ? " — full" : ""}
+                  </option>
+                );
+              })}
+            </select>
+            {plannedTeam.length === 0 && (
+              <div className="text-[11px] text-muted mt-1">
+                No planning team was set on the source opportunity — using a default catalog.
+              </div>
+            )}
+          </label>
+
+          {atCapacity && (
+            <div className="bg-warn/10 border border-warn/30 text-warn text-sm rounded-lg px-3 py-2">
+              All {roleCap} slot{roleCap === 1 ? "" : "s"} for <span className="font-semibold">{role}</span> are
+              filled. Remove someone first, or pick a different role.
+            </div>
+          )}
+
+          {/* ---- 2. Candidate picker filtered by the chosen role ---- */}
           {!picked ? (
             <>
               <label className="block">
-                <div className="text-[11px] text-muted font-medium mb-1">Find a workspace member</div>
+                <div className="text-[11px] text-muted font-medium mb-1">
+                  Find a workspace member with the <span className="font-semibold text-text">{role}</span> skill
+                </div>
                 <input
                   type="text"
                   className="input"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Search by name or email…"
+                  disabled={atCapacity}
                   autoFocus
                 />
               </label>
 
-              <div className="max-h-[280px] overflow-y-auto border border-border rounded-lg">
-                {isLoading && candidates.length === 0 ? (
+              <div className="max-h-[240px] overflow-y-auto border border-border rounded-lg">
+                {atCapacity ? (
+                  <div className="px-3 py-6 text-sm text-muted text-center">
+                    Role at capacity.
+                  </div>
+                ) : isLoading && candidates.length === 0 ? (
                   <div className="px-3 py-6 text-sm text-muted text-center">Loading members…</div>
                 ) : candidates.length === 0 ? (
                   <div className="px-3 py-6 text-sm text-muted text-center">
-                    No matching members.{" "}
-                    {query ? "Try a different search." : "Everyone in this workspace is already on the project."}
+                    No workspace member has the <span className="font-semibold text-text">{role}</span> skill.
+                    {allCandidates.length > 0 && (
+                      <div className="mt-1 text-[11px]">
+                        {allCandidates.length} candidate{allCandidates.length === 1 ? "" : "s"} hidden — assign them the role
+                        from <Link to="/settings/members" className="text-accent hover:underline">Settings → Members</Link> first.
+                      </div>
+                    )}
                   </div>
                 ) : (
-                  <ul className="divide-y divide-border">
-                    {candidates.map((u) => (
-                      <li key={u.id}>
-                        <button
-                          type="button"
-                          onClick={() => setPicked(u)}
-                          className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-bg text-left"
-                        >
-                          <span className="w-8 h-8 rounded-full bg-accent-soft text-accent grid place-items-center text-xs font-bold shrink-0">
-                            {(u.name || u.email).charAt(0).toUpperCase()}
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <div className="text-sm font-semibold text-text truncate">{u.name || u.email}</div>
-                            <div className="text-[11px] text-muted truncate">
-                              {u.email}{u.roles.length > 0 && ` · ${u.roles.join(", ")}`}
+                  <>
+                    <ul className="divide-y divide-border">
+                      {candidates.map((u) => (
+                        <li key={u.id}>
+                          <button
+                            type="button"
+                            onClick={() => setPicked(u)}
+                            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-bg text-left"
+                          >
+                            <span className="w-8 h-8 rounded-full bg-accent-soft text-accent grid place-items-center text-xs font-bold shrink-0">
+                              {(u.name || u.email).charAt(0).toUpperCase()}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-semibold text-text truncate">{u.name || u.email}</div>
+                              <div className="text-[11px] text-muted truncate">
+                                {u.email}{u.roles.length > 0 && ` · ${u.roles.join(", ")}`}
+                              </div>
                             </div>
-                          </div>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                    {skippedCount > 0 && (
+                      <div className="border-t border-border px-3 py-2 text-[11px] text-muted bg-bg/30">
+                        {skippedCount} member{skippedCount === 1 ? "" : "s"} hidden — they don't have the {role} skill.
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </>
@@ -736,25 +846,6 @@ function AddProjectMemberDialog({
               </div>
 
               <label className="block">
-                <div className="text-[11px] text-muted font-medium mb-1">Role on this project</div>
-                <input
-                  list="planned-roles"
-                  className="input"
-                  value={role}
-                  onChange={(e) => setRole(e.target.value)}
-                  placeholder="engineer, designer, qa, tech_lead, …"
-                />
-                <datalist id="planned-roles">
-                  {plannedRoles.map((r) => <option key={r} value={r} />)}
-                  <option value="engineer" />
-                  <option value="tech_lead" />
-                  <option value="designer" />
-                  <option value="qa" />
-                  <option value="analyst" />
-                </datalist>
-              </label>
-
-              <label className="block">
                 <div className="text-[11px] text-muted font-medium mb-1">
                   Allocation · <span className="text-text font-semibold">{allocation}%</span>
                 </div>
@@ -775,11 +866,11 @@ function AddProjectMemberDialog({
           </button>
           <SmartButton
             variant="primary"
-            disabled={!picked || !role.trim() || add.isPending}
+            disabled={!picked || atCapacity || add.isPending}
             loadingLabel="Adding…"
             onClick={() => {
-              if (!picked) return;
-              add.mutate({ user_id: picked.id, role: role.trim(), allocation: allocation / 100 });
+              if (!picked || atCapacity) return;
+              add.mutate({ user_id: picked.id, role, allocation: allocation / 100 });
             }}
           >
             Add to project
