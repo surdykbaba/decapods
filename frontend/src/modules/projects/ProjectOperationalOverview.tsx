@@ -6,7 +6,7 @@ import { SmartButton } from "@/components/SmartButton";
 import {
   AlertTriangle, AlertCircle, FileText, Upload, Plus, ShieldCheck, Github,
   GitPullRequest, GitCommit, Rocket, X, Check, Clock, CircleDot, ArrowRight,
-  ListChecks, Bug, FileBarChart2, Wallet, Users as UsersIcon, History,
+  ListChecks, Bug, FileBarChart2, Wallet, History,
   Flag, CalendarClock, Mail, Target, Archive,
   MoreHorizontal,
 } from "lucide-react";
@@ -493,15 +493,48 @@ function KPI({
 
 /* ---------- Team panel ---------- */
 
+type ProjectMember = {
+  id: string;
+  user_id: string;
+  role: string;
+  allocation: number;
+  email: string;
+  name: string;
+  user_roles: string[];
+};
+
+type AssignableUser = {
+  id: string;
+  email: string;
+  name: string;
+  roles: string[];
+};
+
 function TeamPanel({
-  stakeholders, tasks, opp,
+  project, stakeholders, tasks, opp,
 }: {
   project: Project; stakeholders: Stakeholder[]; tasks: Task[]; opp?: OppData;
 }) {
+  const qc = useQueryClient();
+  const projectId = project.id;
+  const [addOpen, setAddOpen] = useState(false);
+
+  const { data, isLoading } = useQuery<{ items: ProjectMember[] }>({
+    queryKey: ["project-members", projectId],
+    queryFn: () => api(`/api/v1/projects/${projectId}/members`),
+    enabled: !!projectId,
+  });
+  const members = data?.items ?? [];
+
+  const remove = useMutation({
+    mutationFn: (memberId: string) =>
+      api(`/api/v1/projects/${projectId}/members/${memberId}`, { method: "DELETE" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["project-members", projectId] }),
+  });
+
+  // The PM role is whoever's flagged in stakeholders as manager/lead/sponsor.
+  // This is intentionally separate from project_members (the delivery team).
   const manager = stakeholders.find((s) => /manager|lead|sponsor/i.test(s.role)) ?? stakeholders[0];
-  const team = (opp?.team_composition ?? []);
-  const internalRoles = team.filter(t => t.kind === "internal");
-  const externalRoles = team.filter(t => t.kind === "external");
 
   return (
     <div className="space-y-4">
@@ -530,20 +563,50 @@ function TeamPanel({
       </div>
 
       <div>
-        <div className="text-[11px] uppercase tracking-wide text-muted font-semibold mb-2">Workstream ownership</div>
-        {team.length === 0 ? (
-          <p className="text-sm text-muted italic">No workstreams assigned yet.</p>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[11px] uppercase tracking-wide text-muted font-semibold">Delivery team</div>
+          <button
+            onClick={() => setAddOpen(true)}
+            className="text-[11px] font-semibold inline-flex items-center gap-1 text-accent hover:underline"
+          >
+            + Add member
+          </button>
+        </div>
+        {isLoading ? (
+          <div className="text-sm text-muted italic">Loading team…</div>
+        ) : members.length === 0 ? (
+          <p className="text-sm text-muted italic">
+            No engineers staffed yet. Click <strong className="text-text">+ Add member</strong> above to assign one
+            from your workspace.
+          </p>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-            {[...internalRoles, ...externalRoles].slice(0, 6).map((t, i) => (
-              <div key={i} className="flex items-center gap-2 border border-border rounded-md px-3 py-2 text-sm">
-                <UsersIcon size={14} className="text-muted" />
-                <span className="font-medium text-text">{t.name}</span>
-                <span className="text-xs text-muted ml-auto">×{t.count}</span>
-                {t.kind === "external" && <span className="pill bg-warn/15 text-warn">ext</span>}
-              </div>
+          <ul className="divide-y divide-border border border-border rounded-lg overflow-hidden">
+            {members.map((m) => (
+              <li key={m.id} className="flex items-center gap-3 px-3 py-2 bg-bg/30">
+                <span className="w-8 h-8 rounded-full bg-accent-soft text-accent grid place-items-center text-xs font-bold shrink-0">
+                  {(m.name || m.email || "?").charAt(0).toUpperCase()}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-text truncate">{m.name || m.email}</div>
+                  <div className="text-[11px] text-muted truncate">
+                    {m.role}
+                    {m.allocation < 1 && <span> · {Math.round(m.allocation * 100)}% allocation</span>}
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    if (confirm(`Remove ${m.name || m.email} from this project?`)) {
+                      remove.mutate(m.id);
+                    }
+                  }}
+                  className="text-muted hover:text-danger p-1"
+                  title="Remove from project"
+                >
+                  <X size={14} />
+                </button>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </div>
 
@@ -551,6 +614,177 @@ function TeamPanel({
         <Stat label="Active tasks" value={tasks.filter(t => t.status !== "done").length} />
         <Stat label="In review"    value={tasks.filter(t => t.status === "review").length} />
         <Stat label="Stakeholders" value={stakeholders.length} />
+      </div>
+
+      {addOpen && (
+        <AddProjectMemberDialog
+          projectId={projectId}
+          plannedRoles={(opp?.team_composition ?? []).filter((t) => t.kind === "internal").map((t) => t.name)}
+          onClose={() => setAddOpen(false)}
+          onAdded={() => {
+            setAddOpen(false);
+            qc.invalidateQueries({ queryKey: ["project-members", projectId] });
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function AddProjectMemberDialog({
+  projectId, plannedRoles, onClose, onAdded,
+}: {
+  projectId: string;
+  plannedRoles: string[];
+  onClose: () => void;
+  onAdded: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [picked, setPicked] = useState<AssignableUser | null>(null);
+  const [role, setRole] = useState<string>(plannedRoles[0] ?? "engineer");
+  const [allocation, setAllocation] = useState(100);
+
+  const { data, isLoading } = useQuery<{ items: AssignableUser[] }>({
+    queryKey: ["project-assignable", projectId, query],
+    queryFn: () =>
+      api(`/api/v1/projects/${projectId}/members/assignable?q=${encodeURIComponent(query)}`),
+  });
+  const candidates = data?.items ?? [];
+
+  const add = useMutation({
+    mutationFn: (b: { user_id: string; role: string; allocation: number }) =>
+      api(`/api/v1/projects/${projectId}/members`, { method: "POST", body: JSON.stringify(b) }),
+    onSuccess: onAdded,
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div
+        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-lg max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="text-lg font-bold text-text">Add team member</h2>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted"><X size={16} /></button>
+        </header>
+
+        <div className="p-5 space-y-4">
+          {!picked ? (
+            <>
+              <label className="block">
+                <div className="text-[11px] text-muted font-medium mb-1">Find a workspace member</div>
+                <input
+                  type="text"
+                  className="input"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search by name or email…"
+                  autoFocus
+                />
+              </label>
+
+              <div className="max-h-[280px] overflow-y-auto border border-border rounded-lg">
+                {isLoading && candidates.length === 0 ? (
+                  <div className="px-3 py-6 text-sm text-muted text-center">Loading members…</div>
+                ) : candidates.length === 0 ? (
+                  <div className="px-3 py-6 text-sm text-muted text-center">
+                    No matching members.{" "}
+                    {query ? "Try a different search." : "Everyone in this workspace is already on the project."}
+                  </div>
+                ) : (
+                  <ul className="divide-y divide-border">
+                    {candidates.map((u) => (
+                      <li key={u.id}>
+                        <button
+                          type="button"
+                          onClick={() => setPicked(u)}
+                          className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-bg text-left"
+                        >
+                          <span className="w-8 h-8 rounded-full bg-accent-soft text-accent grid place-items-center text-xs font-bold shrink-0">
+                            {(u.name || u.email).charAt(0).toUpperCase()}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-semibold text-text truncate">{u.name || u.email}</div>
+                            <div className="text-[11px] text-muted truncate">
+                              {u.email}{u.roles.length > 0 && ` · ${u.roles.join(", ")}`}
+                            </div>
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="bg-accent-soft/30 border border-accent/20 rounded-lg p-3 flex items-center gap-3">
+                <span className="w-9 h-9 rounded-full bg-accent text-white grid place-items-center text-sm font-bold">
+                  {(picked.name || picked.email).charAt(0).toUpperCase()}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-bold text-text truncate">{picked.name || picked.email}</div>
+                  <div className="text-[11px] text-muted truncate">{picked.email}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPicked(null)}
+                  className="text-[11px] text-muted hover:text-text underline"
+                >
+                  Change
+                </button>
+              </div>
+
+              <label className="block">
+                <div className="text-[11px] text-muted font-medium mb-1">Role on this project</div>
+                <input
+                  list="planned-roles"
+                  className="input"
+                  value={role}
+                  onChange={(e) => setRole(e.target.value)}
+                  placeholder="engineer, designer, qa, tech_lead, …"
+                />
+                <datalist id="planned-roles">
+                  {plannedRoles.map((r) => <option key={r} value={r} />)}
+                  <option value="engineer" />
+                  <option value="tech_lead" />
+                  <option value="designer" />
+                  <option value="qa" />
+                  <option value="analyst" />
+                </datalist>
+              </label>
+
+              <label className="block">
+                <div className="text-[11px] text-muted font-medium mb-1">
+                  Allocation · <span className="text-text font-semibold">{allocation}%</span>
+                </div>
+                <input
+                  type="range" min={10} max={100} step={5}
+                  value={allocation}
+                  onChange={(e) => setAllocation(Number(e.target.value))}
+                  className="w-full accent-accent"
+                />
+              </label>
+            </>
+          )}
+        </div>
+
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text">
+            Cancel
+          </button>
+          <SmartButton
+            variant="primary"
+            disabled={!picked || !role.trim() || add.isPending}
+            loadingLabel="Adding…"
+            onClick={() => {
+              if (!picked) return;
+              add.mutate({ user_id: picked.id, role: role.trim(), allocation: allocation / 100 });
+            }}
+          >
+            Add to project
+          </SmartButton>
+        </footer>
       </div>
     </div>
   );

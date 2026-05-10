@@ -189,6 +189,12 @@ func New(d Deps) http.Handler {
 	authed.GET("/settings/archived-projects", proj.ListArchived)
 	authed.POST("/projects/:id/restore", proj.Restore)
 
+	pmembers := handlers.NewProjectMembers(d.DB)
+	authed.GET("/projects/:id/members",                 mw.RequirePermission("project:read"),  pmembers.List)
+	authed.GET("/projects/:id/members/assignable",      mw.RequirePermission("project:read"),  pmembers.Assignable)
+	authed.POST("/projects/:id/members",                mw.RequirePermission("project:write"), pmembers.Add)
+	authed.DELETE("/projects/:id/members/:memberId",   mw.RequirePermission("project:write"), pmembers.Remove)
+
 	wf := handlers.NewWorkforce(d.DB)
 	authed.GET("/workforce/load", mw.RequirePermission("workforce:read"), wf.Load)
 	authed.GET("/workforce/burnout", mw.RequirePermission("workforce:read"), wf.Burnout)
