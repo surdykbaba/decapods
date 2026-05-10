@@ -68,6 +68,10 @@ if [ "$RUN_MIGRATIONS" = "true" ]; then
   echo "==> Running migrations"
   set -a; . "$REL/.env"; set +a
   "$REL/bin/pgdp-migrate" -dir "$REL/migrations" -cmd up
+  if [ -x "$REL/bin/pgdp-seed" ]; then
+    echo "==> Seeding (idempotent — refreshes admin password hash)"
+    "$REL/bin/pgdp-seed" || echo "(seed skipped/failed; continuing)"
+  fi
 fi
 
 # ---- 3. Symlink swap ----

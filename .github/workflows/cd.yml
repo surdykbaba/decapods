@@ -68,6 +68,7 @@ jobs:
             -o ../dist/bin/pgdp-api ./cmd/api
           go build -trimpath -ldflags "-s -w" -o ../dist/bin/pgdp-migrate ./cmd/migrate
           go build -trimpath -ldflags "-s -w" -o ../dist/bin/pgdp-worker  ./cmd/worker
+          go build -trimpath -ldflags "-s -w" -o ../dist/bin/pgdp-seed    ./cmd/seed
 
       # ---------- frontend ----------
       - uses: actions/setup-node@v4
