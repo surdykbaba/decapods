@@ -37,8 +37,9 @@ jobs:
           port: ${{ secrets.SSH_PORT }}
           command_timeout: 15m
           envs: DB_PASS,DOMAIN
-          script_stop: true
+          script_stop: false
           script: |
+            bash -s <<'PROVISION'
             set -Eeuo pipefail
             set -x
             export DEBIAN_FRONTEND=noninteractive
@@ -174,6 +175,7 @@ jobs:
             ss -tlnp 2>/dev/null | grep -E ':80 |:443 ' || sudo -n ss -tlnp | grep -E ':80 |:443 '
             curl -sk -o /dev/null -w "local 443 -> %%{http_code}\n" https://localhost/
             echo "==> Done."
+            PROVISION
 
   diagnose:
     if: ${{ inputs.subject == 'diagnose-only' }}
