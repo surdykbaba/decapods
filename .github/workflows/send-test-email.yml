@@ -41,10 +41,21 @@ jobs:
           script: |
             set -euo pipefail
             export DEBIAN_FRONTEND=noninteractive
+            export NEEDRESTART_SUSPEND=1
+            export NEEDRESTART_MODE=a
+
+            echo "==> Disable needrestart auto-prompts (it restarts sshd mid-install)"
+            sudo -n bash -c 'mkdir -p /etc/needrestart/conf.d && printf "\$nrconf{restart} = '\''l'\'';\n\$nrconf{kernelhints} = -1;\n" > /etc/needrestart/conf.d/no-restart.conf' || true
 
             echo "==> apt update & install base packages"
             sudo -n apt-get update -y
-            sudo -n apt-get install -y nginx postgresql postgresql-contrib redis-server openssl curl
+            sudo -n -E apt-get install -y -o Dpkg::Options::="--force-confnew" \
+              nginx postgresql postgresql-contrib redis-server openssl curl
+
+            echo "==> Wait for postgres to accept connections"
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              sudo -n -u postgres pg_isready -q && break || sleep 2
+            done
 
             echo "==> Postgres role + db (idempotent)"
             ROLE=$(sudo -n -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='pgdp'")
