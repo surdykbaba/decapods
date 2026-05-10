@@ -40,8 +40,15 @@ export const SmartButton = forwardRef<HTMLButtonElement, Props>(function SmartBu
 ) {
   const [autoLoading, setAutoLoading] = useState(false);
   const [flashSuccess, setFlashSuccess] = useState(false);
+  // Track mounted state across StrictMode's mount→cleanup→mount cycle. Setting
+  // `mounted.current = true` in the effect setup (not just at ref-init) means
+  // the second mount in StrictMode flips it back from the false the first
+  // cleanup left behind. Without this, finally blocks never clear loading.
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const isLoading = loading ?? autoLoading;
 
