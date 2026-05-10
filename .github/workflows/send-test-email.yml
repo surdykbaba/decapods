@@ -13,8 +13,45 @@ on:
         default: "D'Accubin · Mailgun connectivity test"
 
 jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe origin via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          command_timeout: 2m
+          script: |
+            echo "==> Public IP"
+            curl -s https://api.ipify.org; echo
+            echo
+            echo "==> Listening on 80/443"
+            ss -tlnp 2>/dev/null | grep -E ':80 |:443 ' || sudo -n ss -tlnp 2>/dev/null | grep -E ':80 |:443 ' || echo "(nothing on 80/443)"
+            echo
+            echo "==> nginx status"
+            sudo -n systemctl is-active nginx && sudo -n systemctl status nginx --no-pager | head -8 || echo "nginx NOT running"
+            echo
+            echo "==> nginx config test"
+            sudo -n nginx -t 2>&1 | head -10 || true
+            echo
+            echo "==> Firewall (ufw)"
+            sudo -n ufw status 2>/dev/null || echo "ufw not installed / inactive"
+            echo
+            echo "==> Let's Encrypt cert"
+            sudo -n ls /etc/letsencrypt/live/ 2>/dev/null || echo "no LE certs"
+            echo
+            echo "==> nginx server_name & listen lines"
+            sudo -n grep -RhnE 'server_name|listen' /etc/nginx/sites-enabled/ 2>/dev/null | head -20 || true
+            echo
+            echo "==> Local 443 self-test"
+            curl -sk -o /dev/null -w "https://localhost/  -> %{http_code}\n" --max-time 5 https://localhost/ || echo "local 443 unreachable"
+
   send:
     runs-on: ubuntu-latest
+    if: ${{ inputs.subject != 'diagnose-only' }}
     steps:
       - name: Send via Mailgun SMTP
         env:
