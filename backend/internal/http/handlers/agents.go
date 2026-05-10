@@ -306,17 +306,15 @@ func (h *Agents) AddDocument(c *gin.Context) {
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
+	// One-shot inline struct — earlier version had `Kind, Name, ObjectKey
+	// string \`json:"kind"\`` which made all three fields share the same json
+	// tag and tripped `go vet`. Single struct with distinct tags is enough.
 	var req struct {
-		Kind, Name, ObjectKey string `json:"kind"`
-	}
-	type body struct {
 		Kind      string `json:"kind"`
 		Name      string `json:"name"`
 		ObjectKey string `json:"object_key"`
 	}
-	var b body
-	if err := c.ShouldBindJSON(&b); err != nil { c.JSON(400, gin.H{"error": err.Error()}); return }
-	req.Kind, req.Name, req.ObjectKey = b.Kind, b.Name, b.ObjectKey
+	if err := c.ShouldBindJSON(&req); err != nil { c.JSON(400, gin.H{"error": err.Error()}); return }
 	if req.Kind == "" || req.Name == "" || req.ObjectKey == "" {
 		c.JSON(400, gin.H{"error": "kind, name and object_key required"})
 		return
