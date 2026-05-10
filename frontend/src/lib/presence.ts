@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { api } from "./api";
 import { useAuth } from "./auth";
 
-export type Presence = "online" | "away" | "offline";
+export type Presence = "online" | "away" | "busy" | "offline";
 
 const HEARTBEAT_MS    = 60_000; // ping cadence while visible
 const FAST_RESUME_MS  = 1_500;  // ping ~immediately when the tab regains focus
@@ -80,7 +80,8 @@ export function presenceLabel(presence: Presence | string, lastSeenIso: string |
 }
 
 export const PRESENCE_COLORS: Record<Presence, { dot: string; pill: string }> = {
-  online:  { dot: "bg-success",        pill: "bg-success/15 text-success" },
-  away:    { dot: "bg-warn",           pill: "bg-warn/15 text-warn" },
-  offline: { dot: "bg-muted/50",       pill: "bg-bg text-muted border border-border" },
+  online:  { dot: "bg-success",  pill: "bg-success/15 text-success" },
+  away:    { dot: "bg-warn",     pill: "bg-warn/15 text-warn" },
+  busy:    { dot: "bg-danger",   pill: "bg-danger/15 text-danger" },
+  offline: { dot: "bg-muted/50", pill: "bg-bg text-muted border border-border" },
 };

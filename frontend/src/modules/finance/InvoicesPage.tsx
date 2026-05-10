@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
@@ -299,9 +299,11 @@ export function InvoicesPage() {
           invoice={recordFor}
           onClose={() => setRecordFor(null)}
           onRecorded={() => {
+            const closingId = recordFor.id;
             setRecordFor(null);
             qc.invalidateQueries({ queryKey: ["invoices"] });
             qc.invalidateQueries({ queryKey: ["finance", "summary"] });
+            qc.invalidateQueries({ queryKey: ["invoice-payments", closingId] });
           }}
         />
       )}
@@ -602,6 +604,14 @@ function CreateInvoiceDialog({
 
 /* ---------- Record payment dialog ---------- */
 
+type PaymentHistoryItem = {
+  id: string;
+  amount: number;
+  paid_on: string;
+  method: string;
+  reference: string;
+};
+
 function RecordPaymentDialog({
   invoice, onClose, onRecorded,
 }: {
@@ -609,10 +619,30 @@ function RecordPaymentDialog({
   onClose: () => void;
   onRecorded: () => void;
 }) {
-  const [amount, setAmount] = useState<number>(invoice.outstanding);
+  // Pull payment history so the user can see prior partials before adding more.
+  const { data: history } = useQuery<{
+    payments: PaymentHistoryItem[];
+    paid_total: number;
+    outstanding: number;
+    count: number;
+  }>({
+    queryKey: ["invoice-payments", invoice.id],
+    queryFn: () => api(`/api/v1/finance/invoices/${invoice.id}/payments`),
+  });
+  const paidSoFar = history?.paid_total ?? invoice.paid;
+  const outstanding = history?.outstanding ?? invoice.outstanding;
+  const prevCount = history?.count ?? 0;
+
+  const [amount, setAmount] = useState<number>(outstanding);
   const [paidOn, setPaidOn] = useState(new Date().toISOString().slice(0, 10));
   const [method, setMethod] = useState("bank_transfer");
   const [reference, setReference] = useState("");
+
+  // Keep amount in sync when history loads (race between dialog open and fetch).
+  useEffect(() => {
+    if (history && amount === 0) setAmount(history.outstanding);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [history?.outstanding]);
 
   const record = useMutation({
     mutationFn: () => api(`/api/v1/finance/payments`, {
@@ -623,37 +653,104 @@ function RecordPaymentDialog({
       }),
     }),
     onSuccess: () => {
-      toast.success("Payment recorded");
+      const willFullyClose = Math.abs(amount - outstanding) < 0.01;
+      toast.success(
+        willFullyClose ? "Invoice paid in full" : "Partial payment recorded",
+        willFullyClose
+          ? `${invoice.number} is now closed.`
+          : `${fmtMoney(outstanding - amount, invoice.currency)} still outstanding.`,
+      );
       onRecorded();
     },
     onError: (e: Error) => toast.error("Could not record payment", e.message),
   });
 
-  const valid = amount > 0 && amount <= invoice.outstanding && !!paidOn;
-  const overpay = amount > invoice.outstanding;
+  const valid = amount > 0 && amount <= outstanding && !!paidOn;
+  const overpay = amount > outstanding;
+  const isPartial = amount > 0 && amount < outstanding;
+  const willCloseInvoice = amount > 0 && Math.abs(amount - outstanding) < 0.01;
+  const collectionPct = invoice.amount > 0 ? Math.min(100, ((paidSoFar + amount) / invoice.amount) * 100) : 0;
+
+  const setPercent = (pct: number) => {
+    const v = Math.round((outstanding * pct) / 100 * 100) / 100;
+    setAmount(v);
+  };
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-md bg-surface border border-border rounded-2xl shadow-card overflow-hidden">
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg bg-surface border border-border rounded-2xl shadow-card overflow-hidden">
         <header className="flex items-start justify-between p-5 border-b border-border gap-3">
           <div className="flex items-start gap-3">
             <div className="w-9 h-9 rounded-full bg-success/15 text-success grid place-items-center shrink-0"><ArrowDownToLine size={16} /></div>
             <div>
               <h2 className="text-base font-bold text-text">Record payment</h2>
               <p className="text-xs text-muted mt-0.5">
-                Against <span className="font-mono font-bold">{invoice.number}</span> · outstanding {fmtMoney(invoice.outstanding, invoice.currency)}
+                Against <span className="font-mono font-bold">{invoice.number}</span>
+                {prevCount > 0 && <> · payment {prevCount + 1} of an ongoing collection</>}
               </p>
             </div>
           </div>
           <button onClick={onClose} className="text-muted hover:text-text"><X size={18} /></button>
         </header>
-        <div className="p-5 space-y-3">
+
+        <div className="p-5 space-y-4">
+          {/* Collection summary — total / paid / outstanding with a progress bar */}
+          <div className="bg-bg/50 border border-border rounded-xl p-3">
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div>
+                <div className="text-[10px] uppercase tracking-wider font-bold text-muted">Invoice total</div>
+                <div className="text-[15px] font-bold text-text mt-0.5">{fmtMoney(invoice.amount, invoice.currency)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider font-bold text-muted">Paid so far</div>
+                <div className="text-[15px] font-bold text-success mt-0.5">{fmtMoney(paidSoFar, invoice.currency)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider font-bold text-muted">Outstanding</div>
+                <div className={`text-[15px] font-bold mt-0.5 ${outstanding > 0 ? "text-warn" : "text-muted"}`}>
+                  {fmtMoney(outstanding, invoice.currency)}
+                </div>
+              </div>
+            </div>
+            <div className="h-1.5 bg-bg rounded-full overflow-hidden mt-3 flex">
+              {invoice.amount > 0 && (
+                <>
+                  <div className="h-full bg-success" style={{ width: `${(paidSoFar / invoice.amount) * 100}%` }} />
+                  {amount > 0 && (
+                    <div className="h-full bg-success/40" style={{ width: `${Math.max(0, collectionPct - (paidSoFar / invoice.amount) * 100)}%` }} />
+                  )}
+                </>
+              )}
+            </div>
+            <div className="text-[10.5px] text-muted text-center mt-1">
+              {willCloseInvoice ? "This payment will close the invoice ✓"
+                : isPartial ? `Partial · ${fmtMoney(outstanding - amount, invoice.currency)} will still be outstanding`
+                : amount === 0 ? "Enter an amount or pick a preset below"
+                : ""}
+            </div>
+          </div>
+
+          {/* Quick-pick amount chips */}
+          <div className="flex flex-wrap gap-1.5">
+            <button type="button" onClick={() => setAmount(outstanding)}
+              className={`text-[11.5px] font-semibold px-3 py-1.5 rounded-full border transition-colors ${
+                willCloseInvoice ? "bg-accent text-white border-accent" : "bg-surface text-muted border-border hover:text-text hover:border-accent"
+              }`}>Full balance</button>
+            <button type="button" onClick={() => setPercent(50)}
+              className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full border bg-surface text-muted border-border hover:text-text hover:border-accent transition-colors">Half</button>
+            <button type="button" onClick={() => setPercent(25)}
+              className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full border bg-surface text-muted border-border hover:text-text hover:border-accent transition-colors">25%</button>
+            <button type="button" onClick={() => setAmount(0)}
+              className="text-[11.5px] font-semibold px-3 py-1.5 rounded-full border bg-surface text-muted border-border hover:text-text hover:border-accent transition-colors">Clear</button>
+          </div>
+
+          {/* Inputs */}
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <div className="label">Amount ({invoice.currency}) *</div>
-              <input className="input text-right" type="number" min={0} step="0.01"
+              <input className="input text-right" type="number" min={0} step="0.01" max={outstanding}
                 value={amount} onChange={(e) => setAmount(parseFloat(e.target.value) || 0)} />
-              {overpay && <div className="text-[11px] text-warn mt-1">Exceeds outstanding balance — record only what was actually received.</div>}
+              {overpay && <div className="text-[11px] text-warn mt-1">Exceeds outstanding — capped at {fmtMoney(outstanding, invoice.currency)}.</div>}
             </label>
             <label className="block">
               <div className="label">Paid on *</div>
@@ -674,18 +771,45 @@ function RecordPaymentDialog({
               <input className="input" value={reference} onChange={(e) => setReference(e.target.value)} placeholder="e.g. txn id" />
             </label>
           </div>
+
+          {/* Payment history (collapsed when none) */}
+          {prevCount > 0 && (
+            <details className="bg-bg/40 border border-border rounded-xl overflow-hidden" open>
+              <summary className="cursor-pointer text-[11.5px] font-semibold text-text px-3 py-2 hover:bg-bg/60">
+                Previous payments · {prevCount}
+              </summary>
+              <ul className="divide-y divide-border">
+                {(history?.payments ?? []).map((p) => (
+                  <li key={p.id} className="flex items-center justify-between px-3 py-2 text-[12px]">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <ArrowDownToLine size={11} className="text-success shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-text font-semibold">
+                          {fmtMoney(p.amount, invoice.currency)}
+                          {p.method && <span className="text-muted font-normal"> · {p.method}</span>}
+                        </div>
+                        {p.reference && <div className="text-[10.5px] text-muted truncate">ref {p.reference}</div>}
+                      </div>
+                    </div>
+                    <span className="text-[10.5px] text-muted whitespace-nowrap shrink-0">{fmtDate(p.paid_on)}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
+
         <footer className="flex items-center justify-end gap-2 p-4 border-t border-border bg-bg">
           <button onClick={onClose} className="btn-ghost">Cancel</button>
           <SmartButton
             variant="primary"
             disabled={!valid}
             loadingLabel="Recording…"
-            successLabel="Recorded"
+            successLabel={willCloseInvoice ? "Closed" : "Recorded"}
             icon={<ArrowDownToLine size={13} />}
             onClick={() => record.mutateAsync()}
           >
-            Record payment
+            {willCloseInvoice ? "Record & close invoice" : isPartial ? "Record partial payment" : "Record payment"}
           </SmartButton>
         </footer>
       </div>

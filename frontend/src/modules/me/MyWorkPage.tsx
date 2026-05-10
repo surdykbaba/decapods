@@ -9,6 +9,7 @@ import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
   Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
+  Sparkles,
 } from "lucide-react";
 
 type TaskRow = {
@@ -163,8 +164,118 @@ function DashboardTab() {
   if (isLoading || !data) return <div className="text-muted">Loading…</div>;
 
   const c = data.counts;
+  // Derived insights — computed once, shared by the briefing, triage panel,
+  // and the "next moves" card so the dashboard stays coherent.
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayMs = today.getTime();
+  const oneDayMs = 86_400_000;
+  const triage = data.priorities.map((t) => {
+    const due = t.due_on ? new Date(t.due_on).getTime() : null;
+    const daysFromToday = due ? Math.round((due - todayMs) / oneDayMs) : null;
+    let bucket: "overdue" | "today" | "blocked" | "soon" | "later" = "later";
+    if (t.status === "blocked") bucket = "blocked";
+    else if (daysFromToday != null && daysFromToday < 0) bucket = "overdue";
+    else if (daysFromToday != null && daysFromToday === 0) bucket = "today";
+    else if (daysFromToday != null && daysFromToday <= 3) bucket = "soon";
+    return { ...t, bucket, daysFromToday };
+  });
+  const overdue   = triage.filter((t) => t.bucket === "overdue");
+  const dueToday  = triage.filter((t) => t.bucket === "today");
+  const blocked   = triage.filter((t) => t.bucket === "blocked");
+  const dueSoon   = triage.filter((t) => t.bucket === "soon");
+  const rest      = triage.filter((t) => t.bucket === "later");
+  const orderedTriage = [...overdue, ...dueToday, ...blocked, ...dueSoon, ...rest];
+
+  // Health pulse — qualitative read on how the user is doing right now.
+  const health: { label: string; tone: "good" | "warn" | "bad"; sub: string } = (() => {
+    if (overdue.length >= 3 || blocked.length >= 2) {
+      return { label: "Falling behind", tone: "bad", sub: "Multiple overdue or blocked tasks need attention." };
+    }
+    if (overdue.length > 0 || blocked.length > 0) {
+      return { label: "Pay attention", tone: "warn", sub: "A few items are slipping — clear them today." };
+    }
+    if (c.active_tasks === 0) {
+      return { label: "Inbox zero", tone: "good", sub: "Nothing on your plate — sync with your PM for new work." };
+    }
+    return { label: "On track", tone: "good", sub: "Healthy task flow. Keep shipping." };
+  })();
+  const healthCls = { good: "bg-success/10 text-success border-success/30",
+                      warn: "bg-warn/10 text-warn border-warn/30",
+                      bad:  "bg-danger/10 text-danger border-danger/30" }[health.tone];
+
+  // Adaptive briefing — single sentence that summarises the situation. Skips
+  // pieces that don't apply so it never reads like a template.
+  const briefingPieces: string[] = [];
+  if (overdue.length > 0)  briefingPieces.push(`${overdue.length} overdue`);
+  if (dueToday.length > 0) briefingPieces.push(`${dueToday.length} due today`);
+  if (blocked.length > 0)  briefingPieces.push(`${blocked.length} blocked`);
+  if (dueSoon.length > 0)  briefingPieces.push(`${dueSoon.length} due within 3 days`);
+  const briefing = briefingPieces.length === 0
+    ? c.active_tasks > 0
+      ? `${c.active_tasks} task${c.active_tasks === 1 ? "" : "s"} in flight — no urgent deadlines on the horizon.`
+      : "Your queue is clear."
+    : briefingPieces.join(" · ");
+
+  // Suggested next moves — 2-4 concrete prompts based on state. Adaptive.
+  const suggestions: { icon: React.ReactNode; title: string; body: string; tone: "warn" | "info" | "good" }[] = [];
+  if (overdue.length > 0) {
+    const worst = overdue[0];
+    suggestions.push({
+      icon: <AlertTriangle size={14} />,
+      title: `Tackle "${worst.title}" first`,
+      body: `Overdue by ${Math.abs(worst.daysFromToday ?? 0)} day${Math.abs(worst.daysFromToday ?? 0) === 1 ? "" : "s"}. Clearing oldest-first beats trying to catch up everywhere.`,
+      tone: "warn",
+    });
+  }
+  if (blocked.length > 0) {
+    suggestions.push({
+      icon: <PauseCircle size={14} />,
+      title: `Unblock ${blocked.length} task${blocked.length === 1 ? "" : "s"}`,
+      body: `Open each one, leave a comment naming what's needed and who owns the resolution. Blocked tasks don't unblock themselves.`,
+      tone: "warn",
+    });
+  }
+  if (c.pending_updates > 0) {
+    suggestions.push({
+      icon: <MessageSquare size={14} />,
+      title: "Submit your daily update",
+      body: `It's been ${c.pending_updates} day${c.pending_updates === 1 ? "" : "s"} since your last check-in. A two-line update keeps your PM out of your inbox.`,
+      tone: "info",
+    });
+  }
+  if (c.hours_this_week < 10 && c.active_tasks > 0) {
+    suggestions.push({
+      icon: <Clock size={14} />,
+      title: "Log your hours",
+      body: `Only ${c.hours_this_week.toFixed(1)}h logged this week. Time entries feed the burnout watchlist and capacity planning — keep them current.`,
+      tone: "info",
+    });
+  }
+  if (suggestions.length === 0 && c.active_tasks > 0) {
+    suggestions.push({
+      icon: <CheckCircle2 size={14} />,
+      title: "Keep momentum",
+      body: "Nothing's slipping. Ship the next thing on the list before the day fills up with meetings.",
+      tone: "good",
+    });
+  }
+
   return (
     <div className="space-y-5">
+      {/* Smart briefing — adaptive headline, health badge, briefing sentence */}
+      <section className="bg-surface border border-border rounded-2xl p-5">
+        <div className="flex items-start justify-between flex-wrap gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] uppercase tracking-wider font-bold text-muted">Today's briefing</div>
+            <div className="text-[15px] text-text mt-1.5 leading-snug max-w-2xl">{briefing}</div>
+          </div>
+          <span className={`pill ${healthCls} whitespace-nowrap`} title={health.sub}>
+            <Activity size={11} /> {health.label}
+          </span>
+        </div>
+        <div className="text-[11.5px] text-muted mt-1.5 leading-snug">{health.sub}</div>
+      </section>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <KpiTile label="Active tasks"    value={c.active_tasks}    icon={<ListChecks size={14} />}     tone="info" />
         <KpiTile label="Overdue"         value={c.overdue_tasks}   icon={<AlertTriangle size={14} />}  tone={c.overdue_tasks ? "bad" : "good"} />
@@ -173,11 +284,18 @@ function DashboardTab() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Today's priorities */}
+        {/* Triage — overdue → today → blocked → soon → rest */}
         <section className="bg-surface border border-border rounded-2xl p-5 lg:col-span-2">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="h2 flex items-center gap-2"><Zap size={16} className="text-accent" /> Today's priorities</h2>
-            <span className="text-xs text-muted">{data.priorities.length} item{data.priorities.length === 1 ? "" : "s"}</span>
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <h2 className="h2 flex items-center gap-2"><Zap size={16} className="text-accent" /> Needs you now</h2>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {overdue.length > 0  && <span className="pill bg-danger/15 text-danger">{overdue.length} overdue</span>}
+              {dueToday.length > 0 && <span className="pill bg-warn/15 text-warn">{dueToday.length} today</span>}
+              {blocked.length > 0  && <span className="pill bg-warn/15 text-warn">{blocked.length} blocked</span>}
+              {overdue.length === 0 && dueToday.length === 0 && blocked.length === 0 && (
+                <span className="text-xs text-muted">{data.priorities.length} item{data.priorities.length === 1 ? "" : "s"}</span>
+              )}
+            </div>
           </div>
           {data.priorities.length === 0 ? (
             <EmptyHint
@@ -187,7 +305,21 @@ function DashboardTab() {
             />
           ) : (
             <ul className="divide-y divide-border">
-              {data.priorities.map((t) => <TaskRowItem key={t.id} task={t} compact />)}
+              {orderedTriage.map((t) => (
+                <li key={t.id} className="relative">
+                  {/* Left edge accent strip — quick visual cue for bucket */}
+                  <span className={`absolute left-0 top-0 bottom-0 w-1 rounded-r ${
+                    t.bucket === "overdue" ? "bg-danger"
+                    : t.bucket === "blocked" ? "bg-warn"
+                    : t.bucket === "today"   ? "bg-accent"
+                    : t.bucket === "soon"    ? "bg-accent/40"
+                    : "bg-transparent"
+                  }`} />
+                  <div className="pl-3">
+                    <TaskRowItem task={t} compact />
+                  </div>
+                </li>
+              ))}
             </ul>
           )}
         </section>
@@ -232,17 +364,30 @@ function DashboardTab() {
         </section>
       </div>
 
-      {/* File & media library */}
-      <FileLibraryCard />
-
-      {c.pending_updates > 0 && (
-        <div className="rounded-2xl bg-accent-soft border border-accent/20 px-4 py-3 flex items-center gap-3">
-          <span className="w-9 h-9 rounded-full bg-accent text-white grid place-items-center"><MessageSquare size={15} /></span>
-          <div className="flex-1">
-            <div className="text-sm font-semibold text-text">Submit your daily update</div>
-            <div className="text-xs text-muted">It's been {c.pending_updates} day{c.pending_updates === 1 ? "" : "s"} since your last check-in.</div>
-          </div>
-        </div>
+      {suggestions.length > 0 && (
+        <section className="bg-surface border border-border rounded-2xl p-5">
+          <h2 className="h2 flex items-center gap-2 mb-3">
+            <Sparkles size={16} className="text-accent" /> Suggested next moves
+          </h2>
+          <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {suggestions.map((s, i) => {
+              const toneCls = s.tone === "warn" ? "bg-warn/10 text-warn border-warn/30"
+                : s.tone === "info" ? "bg-accent-soft text-accent border-accent/30"
+                : "bg-success/10 text-success border-success/30";
+              return (
+                <li key={i} className="flex items-start gap-3 bg-bg/40 border border-border rounded-xl p-3">
+                  <span className={`w-7 h-7 rounded-full grid place-items-center shrink-0 border ${toneCls}`}>
+                    {s.icon}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-bold text-text">{s.title}</div>
+                    <div className="text-[12px] text-muted leading-snug mt-0.5">{s.body}</div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       )}
     </div>
   );
@@ -337,7 +482,7 @@ function fileExtColor(ext: string, isLink: boolean): string {
   return "bg-bg text-muted border-border";
 }
 
-function FileLibraryCard() {
+export function FileLibraryCard() {
   const { data, isLoading } = useQuery<{ items: FileRow[] }>({
     queryKey: ["me", "files"], queryFn: () => api("/api/v1/me/files"),
   });

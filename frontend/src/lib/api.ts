@@ -24,7 +24,20 @@ export async function api<T = unknown>(path: string, init: RequestInit = {}): Pr
     throw new ApiError(401, null, "unauthorized");
   }
   const text = await res.text();
-  const body = text ? JSON.parse(text) : null;
-  if (!res.ok) throw new ApiError(res.status, body, (body as any)?.error ?? res.statusText);
+  // Most endpoints return JSON, but Gin's default 404 / 405 / panic responses
+  // are plain text ("404 page not found"). Don't let those crash the parser
+  // and obscure the real status — fall back to a string body in that case.
+  let body: any = null;
+  if (text) {
+    try { body = JSON.parse(text); }
+    catch { body = text; }
+  }
+  if (!res.ok) {
+    const message = (body && typeof body === "object" && (body as any).error)
+      || (typeof body === "string" && body)
+      || res.statusText
+      || `HTTP ${res.status}`;
+    throw new ApiError(res.status, body, message);
+  }
   return body as T;
 }
