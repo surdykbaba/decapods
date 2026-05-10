@@ -21,6 +21,55 @@ on:
         default: "myaccubin.com"
 
 jobs:
+  letsencrypt:
+    if: ${{ inputs.subject == 'letsencrypt' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Issue LE cert + reconfigure nginx
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DOMAIN: ${{ inputs.domain }}
+          EMAIL:  ${{ inputs.to }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          command_timeout: 10m
+          envs: DOMAIN,EMAIL
+          script_stop: false
+          script: |
+            bash -s <<'LE'
+            set -Eeuo pipefail
+            set -x
+            export DEBIAN_FRONTEND=noninteractive
+            export NEEDRESTART_SUSPEND=1
+
+            sudo -n apt-get update -y
+            sudo -n -E apt-get install -y certbot python3-certbot-nginx
+
+            # certbot needs port 80 reachable through Cloudflare; CF proxies
+            # /.well-known/acme-challenge/ to origin even with the orange cloud on.
+            sudo -n certbot --nginx -d "$DOMAIN" \
+              --non-interactive --agree-tos -m "$EMAIL" \
+              --redirect --keep-until-expiring
+
+            # Replace our self-signed paths in the pgdp site with the LE ones.
+            LE_DIR="/etc/letsencrypt/live/$DOMAIN"
+            if [ -f "$LE_DIR/fullchain.pem" ]; then
+              sudo -n sed -i \
+                -e "s|/etc/ssl/pgdp/origin.crt|$LE_DIR/fullchain.pem|g" \
+                -e "s|/etc/ssl/pgdp/origin.key|$LE_DIR/privkey.pem|g" \
+                /etc/nginx/sites-available/pgdp
+              sudo -n nginx -t
+              sudo -n systemctl reload nginx
+            fi
+
+            sudo -n ls -la "/etc/letsencrypt/live/$DOMAIN/" || true
+            curl -sI https://localhost/ -o /dev/null -w "local 443 -> %{http_code}\n" || true
+            echo "==> LE done"
+            LE
+
   provision:
     if: ${{ inputs.subject == 'provision' }}
     runs-on: ubuntu-latest
