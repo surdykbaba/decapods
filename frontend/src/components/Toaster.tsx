@@ -17,18 +17,20 @@ function iconFor(t: ToastTone) {
 
 export function Toaster() {
   const items = useToasts();
+  // Top-centre, anchored under the page header — natural eye-line for confirmations.
+  // Drops down with a soft slide so it draws attention without being jarring.
   return (
-    <div className="fixed bottom-4 right-4 z-[1000] flex flex-col gap-2 max-w-[360px] pointer-events-none">
+    <div className="fixed top-5 left-1/2 -translate-x-1/2 z-[1100] flex flex-col gap-2 w-[min(440px,calc(100vw-2rem))] pointer-events-none">
       {items.map((t) => (
         <div
           key={t.id}
           role="status"
-          className={`pointer-events-auto bg-surface border rounded-xl shadow-card px-3.5 py-3 flex items-start gap-2.5 animate-[slide-in_180ms_ease-out] ${TONE_CLS[t.tone]}`}
+          className={`pointer-events-auto bg-surface border-2 rounded-xl shadow-card px-4 py-3 flex items-start gap-2.5 animate-[toast-drop_220ms_cubic-bezier(0.32,0.72,0,1)] ${TONE_CLS[t.tone]}`}
         >
           <div className="shrink-0 mt-0.5">{iconFor(t.tone)}</div>
           <div className="flex-1 min-w-0">
-            <div className="text-[13.5px] font-bold text-text leading-tight">{t.title}</div>
-            {t.body && <div className="text-[12px] text-muted mt-0.5 leading-snug">{t.body}</div>}
+            <div className="text-[14px] font-bold text-text leading-tight">{t.title}</div>
+            {t.body && <div className="text-[12.5px] text-muted mt-0.5 leading-snug">{t.body}</div>}
           </div>
           <button
             onClick={() => dismissToast(t.id)}

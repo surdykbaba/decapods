@@ -13,6 +13,8 @@ backend/*.test
 # Env
 .env
 .env.local
+.env.bak
+**/.env.bak
 **/.env
 !**/.env.example
 

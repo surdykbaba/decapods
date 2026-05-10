@@ -111,18 +111,8 @@ export function WorkforcePage() {
         </p>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-5">
-        {/* Left rail */}
-        <div className="space-y-5">
-          <CapacityHero
-            headcount={totals.headcount}
-            avgUtilization={totals.avg}
-            totalHours={totals.totalHours}
-          />
-          <StandupCard items={standupItems} />
-        </div>
-
-        {/* Main board */}
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5">
+        {/* Main board (left) */}
         <div>
           {isLoading ? (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -150,6 +140,16 @@ export function WorkforcePage() {
               ))}
             </div>
           )}
+        </div>
+
+        {/* Right rail */}
+        <div className="space-y-5">
+          <CapacityHero
+            headcount={totals.headcount}
+            avgUtilization={totals.avg}
+            totalHours={totals.totalHours}
+          />
+          <StandupCard items={standupItems} />
         </div>
       </div>
     </div>

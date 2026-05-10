@@ -4,9 +4,11 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
+import { confirmAction } from "@/lib/confirm";
 import {
   Receipt, Search, FolderKanban, ArrowLeft, Sparkles, FileText, X, Plus,
   ArrowDownToLine, Send, Ban, ChevronRight, AlertTriangle, Briefcase,
+  KeyRound, Edit3, Info,
 } from "lucide-react";
 
 type InvoiceStatus = "draft" | "issued" | "partially_paid" | "paid" | "void";
@@ -331,7 +333,15 @@ function RowActions({
       )}
       {invoice.status !== "void" && invoice.status !== "paid" && (
         <button
-          onClick={() => { if (confirm(`Void invoice ${invoice.number}? This can't be undone in the UI.`)) onStatus("void"); }}
+          onClick={async () => {
+            const ok = await confirmAction({
+              title: `Void invoice ${invoice.number}?`,
+              body: "Voiding marks the invoice as cancelled. It stays on file as audit history but is excluded from billed / outstanding totals. This can't be undone in the UI.",
+              confirmLabel: "Void invoice",
+              danger: true,
+            });
+            if (ok) onStatus("void");
+          }}
           className="text-muted hover:text-danger p-1"
           title="Void this invoice"
         >
@@ -344,6 +354,13 @@ function RowActions({
 
 /* ---------- Create-invoice dialog (from billable queue) ---------- */
 
+type IRNLookupResult =
+  | { state: "idle" }
+  | { state: "looking_up" }
+  | { state: "local_hit"; warning: string }
+  | { state: "no_external"; hint: string }
+  | { state: "error"; message: string };
+
 function CreateInvoiceDialog({
   billable, onClose, onCreated,
 }: {
@@ -351,6 +368,13 @@ function CreateInvoiceDialog({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  // Mode: enter everything yourself, or paste an IRN and let the system pull
+  // what it can from FIRS / e-Invoicing (currently falls back to using the IRN
+  // as the invoice number when the integration isn't configured).
+  const [mode, setMode] = useState<"manual" | "irn">("manual");
+  const [irn, setIrn] = useState("");
+  const [irnState, setIrnState] = useState<IRNLookupResult>({ state: "idle" });
+
   const [number, setNumber] = useState(`INV-${new Date().getFullYear()}-${String(Date.now()).slice(-4)}`);
   const [amount, setAmount] = useState<number>(Math.round(billable.suggested_amount));
   const [issued, setIssued] = useState(new Date().toISOString().slice(0, 10));
@@ -359,6 +383,40 @@ function CreateInvoiceDialog({
     return d.toISOString().slice(0, 10);
   });
   const [issueImmediately, setIssueImmediately] = useState(true);
+
+  // IRN lookup — local hit pre-fills, 501 with code:irn_lookup_unconfigured
+  // falls back to "use the IRN as the invoice number".
+  async function lookupIrn() {
+    const trimmed = irn.trim();
+    if (trimmed.length < 4) {
+      setIrnState({ state: "error", message: "IRN looks too short. Paste the full reference." });
+      return;
+    }
+    setIrnState({ state: "looking_up" });
+    try {
+      const body = await api<{ source?: string; number?: string; amount?: number; currency?: string;
+        issued_on?: string; due_on?: string; warning?: string }>("/api/v1/finance/invoices/lookup-irn", {
+        method: "POST",
+        body: JSON.stringify({ irn: trimmed }),
+      });
+      // Local hit — pre-fill from the existing invoice.
+      if (body.number) setNumber(body.number);
+      if (body.amount) setAmount(Number(body.amount));
+      if (body.issued_on) setIssued(String(body.issued_on).slice(0, 10));
+      if (body.due_on)    setDue(String(body.due_on).slice(0, 10));
+      setIrnState({ state: "local_hit", warning: body.warning ?? "Found a matching invoice already on file." });
+    } catch (e) {
+      // 501 with code:irn_lookup_unconfigured — graceful fallback.
+      if (e instanceof ApiError && (e.body as any)?.code === "irn_lookup_unconfigured") {
+        setNumber(trimmed);
+        const hint = (e.body as any)?.hint ?? "Saved as the invoice number. Fill in amount and dates manually.";
+        setIrnState({ state: "no_external", hint });
+        return;
+      }
+      const msg = e instanceof ApiError ? ((e.body as any)?.error ?? e.message) : (e as Error)?.message ?? "Lookup failed.";
+      setIrnState({ state: "error", message: msg });
+    }
+  }
 
   const create = useMutation({
     mutationFn: async () => {
@@ -372,9 +430,9 @@ function CreateInvoiceDialog({
           milestone_id: billable.kind === "milestone" ? billable.id : undefined,
           number, amount, currency: billable.currency,
           issued_on: issued, due_on: due,
+          irn: irn.trim() || undefined,
         }),
       });
-      // If the user wants it issued straight away, transition out of draft.
       if (issueImmediately) {
         await api(`/api/v1/finance/invoices/${inv.id}/status`, {
           method: "PATCH",
@@ -422,6 +480,84 @@ function CreateInvoiceDialog({
               Move this opportunity to <span className="font-mono">planning</span> stage first — that converts it to a project that invoices can attach to.
             </div>
           )}
+
+          {/* Mode toggle: type a number, or paste an IRN and let the system fill what it can */}
+          <div className="flex gap-1 p-1 bg-bg border border-border rounded-full w-fit">
+            <button
+              type="button"
+              onClick={() => setMode("manual")}
+              className={`text-[12px] font-semibold px-3 py-1.5 rounded-full inline-flex items-center gap-1.5 transition-colors ${
+                mode === "manual" ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+              }`}
+            >
+              <Edit3 size={11} /> Enter manually
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode("irn")}
+              className={`text-[12px] font-semibold px-3 py-1.5 rounded-full inline-flex items-center gap-1.5 transition-colors ${
+                mode === "irn" ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+              }`}
+            >
+              <KeyRound size={11} /> Pull from IRN
+            </button>
+          </div>
+
+          {mode === "irn" && (
+            <div className="bg-bg/40 border border-border rounded-xl p-3 space-y-2">
+              <label className="block">
+                <div className="label">Invoice Reference Number (IRN)</div>
+                <div className="flex gap-2">
+                  <input
+                    className="input font-mono flex-1"
+                    value={irn}
+                    onChange={(e) => { setIrn(e.target.value); setIrnState({ state: "idle" }); }}
+                    placeholder="paste the IRN from FIRS / your e-Invoicing portal"
+                    autoFocus
+                  />
+                  <SmartButton
+                    variant="outline"
+                    disabled={irn.trim().length < 4 || irnState.state === "looking_up"}
+                    loading={irnState.state === "looking_up"}
+                    loadingLabel="Looking up…"
+                    onClick={() => lookupIrn()}
+                  >
+                    Fetch
+                  </SmartButton>
+                </div>
+              </label>
+
+              {irnState.state === "local_hit" && (
+                <div className="rounded-md border border-warn/30 bg-warn/10 p-2.5 text-[12px] text-text">
+                  <div className="font-semibold inline-flex items-center gap-1.5 text-warn">
+                    <AlertTriangle size={12} /> Matching invoice on file
+                  </div>
+                  <p className="text-muted mt-0.5">{irnState.warning}</p>
+                </div>
+              )}
+              {irnState.state === "no_external" && (
+                <div className="rounded-md border border-accent/30 bg-accent-soft/40 p-2.5 text-[12px] text-text">
+                  <div className="font-semibold inline-flex items-center gap-1.5 text-accent">
+                    <Info size={12} /> IRN saved as the invoice number
+                  </div>
+                  <p className="text-muted mt-0.5">{irnState.hint}</p>
+                </div>
+              )}
+              {irnState.state === "error" && (
+                <div className="rounded-md border border-danger/30 bg-danger/10 p-2.5 text-[12px] text-danger">
+                  {irnState.message}
+                </div>
+              )}
+              {irnState.state === "idle" && (
+                <p className="text-[11px] text-muted leading-snug">
+                  Paste the IRN your e-Invoicing portal issued. We'll first check if it's already on file here, then
+                  attempt a lookup against FIRS once the integration credentials are wired. Until then, the IRN is
+                  saved as the invoice number and you fill the rest in.
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <div className="label">Invoice number *</div>

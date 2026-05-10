@@ -242,6 +242,19 @@ func (e *Engine) Notify(ctx context.Context, ev Event) int {
 		}
 
 		tier := e.resolveTier(ctx, userID, meta.Category, meta.DefaultTier)
+
+		// Critical-severity events bypass user "off" / digest preferences.
+		// Spec rule: blockers, overdue approvals, high risk, SLA breach,
+		// payment approvals always email immediately. The user can mute the
+		// rest of the category but not these.
+		severity := meta.Severity
+		if ev.Severity != "" {
+			severity = ev.Severity
+		}
+		if severity == "critical" {
+			tier = TierImmediate
+		}
+
 		if tier == TierOff {
 			continue
 		}
@@ -488,10 +501,13 @@ func (e *Engine) SetPref(ctx context.Context, userID uuid.UUID, cat Category, ti
 
 /* ---------------- Digest stubs (worker hooks) ---------------- */
 
-// DrainDigest collects pending outbox rows for a given tier and groups them
-// into one email per recipient. Designed to be called by a cron worker every
-// morning (daily) and once a week (weekly). Doesn't actually send yet — that's
-// the next-pass wiring once you stand up a scheduler.
+// DrainDigest collects pending outbox rows for a given tier, groups them by
+// recipient, renders one digest email per person, and stamps every row sent
+// in a single transaction. Designed for the cron worker (08:00 daily, Monday
+// weekly).
+//
+// Window: daily drains the last 24h, weekly the last 7d. Idempotent — already
+// sent rows (sent_at IS NOT NULL) are skipped.
 type DigestSummary struct {
 	Recipients int
 	Rows       int
@@ -501,25 +517,172 @@ func (e *Engine) DrainDigest(ctx context.Context, tier Tier) (DigestSummary, err
 	if tier != TierDigestDaily && tier != TierDigestWeekly {
 		return DigestSummary{}, fmt.Errorf("not a digest tier: %s", tier)
 	}
-	digestID := uuid.New()
-	_, err := e.db.Exec(ctx, `
-		UPDATE notification_outbox
-		SET digest_id = $1, sent_at = now(), delivered = true
-		WHERE tier = $2 AND sent_at IS NULL AND created_at > now() - interval '24 hours'`,
-		digestID, string(tier))
+	window := "24 hours"
+	if tier == TierDigestWeekly {
+		window = "7 days"
+	}
+
+	// 1. Pull all pending rows for the tier within the window, grouped by user.
+	rows, err := e.db.Query(ctx, `
+		SELECT id, user_id, email, event_kind, category, subject, payload, link, created_at
+		FROM notification_outbox
+		WHERE tier = $1 AND sent_at IS NULL
+		  AND created_at > now() - interval `+`'`+window+`'`+`
+		ORDER BY user_id, created_at DESC`,
+		string(tier))
 	if err != nil {
 		return DigestSummary{}, err
 	}
-	// TODO: render and send a per-recipient digest email summarising every
-	// row tagged with this digestID. Skeleton in place; renderer to land
-	// when the cron worker hooks this up.
-	var rows int
-	_ = e.db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM notification_outbox WHERE digest_id=$1`, digestID).Scan(&rows)
-	var people int
-	_ = e.db.QueryRow(ctx,
-		`SELECT COUNT(DISTINCT user_id) FROM notification_outbox WHERE digest_id=$1`, digestID).Scan(&people)
-	return DigestSummary{Recipients: people, Rows: rows}, nil
+	defer rows.Close()
+
+	byUser := map[uuid.UUID]struct {
+		Email string
+		Items []digestItem
+	}{}
+	for rows.Next() {
+		var (
+			id        uuid.UUID
+			userID    *uuid.UUID
+			email     string
+			kind, cat string
+			subject   string
+			payload   []byte
+			link      string
+			createdAt time.Time
+		)
+		if err := rows.Scan(&id, &userID, &email, &kind, &cat, &subject, &payload, &link, &createdAt); err != nil {
+			continue
+		}
+		if userID == nil {
+			continue // can't digest to a userless recipient
+		}
+		var p map[string]any
+		_ = json.Unmarshal(payload, &p)
+		entry := byUser[*userID]
+		entry.Email = email
+		entry.Items = append(entry.Items, digestItem{
+			ID: id, Kind: kind, Category: cat, Subject: subject,
+			Payload: p, Link: link, CreatedAt: createdAt,
+		})
+		byUser[*userID] = entry
+	}
+
+	// 2. For each recipient, render + send one digest, then stamp rows.
+	digestID := uuid.New()
+	totalRows := 0
+	for _, bundle := range byUser {
+		if len(bundle.Items) == 0 {
+			continue
+		}
+		subject, plain, html := renderDigest(tier, bundle.Items)
+		ids := make([]uuid.UUID, 0, len(bundle.Items))
+		for _, it := range bundle.Items {
+			ids = append(ids, it.ID)
+		}
+
+		var sendErr error
+		if e.mailer != nil && e.mailer.Configured() {
+			sendErr = e.mailer.Send(ctx, Email{
+				To: bundle.Email, Subject: subject, Plain: plain, HTML: html,
+			})
+		}
+		if sendErr != nil {
+			e.log.Warn("digest send failed", "to", bundle.Email, "err", sendErr)
+			_, _ = e.db.Exec(ctx, `
+				UPDATE notification_outbox
+				SET digest_id=$1, sent_at=now(), delivered=false, error=$2
+				WHERE id = ANY($3)`, digestID, sendErr.Error(), ids)
+			continue
+		}
+		_, _ = e.db.Exec(ctx, `
+			UPDATE notification_outbox
+			SET digest_id=$1, sent_at=now(), delivered=true
+			WHERE id = ANY($2)`, digestID, ids)
+		totalRows += len(ids)
+	}
+	return DigestSummary{Recipients: len(byUser), Rows: totalRows}, nil
+}
+
+type digestItem struct {
+	ID        uuid.UUID
+	Kind      string
+	Category  string
+	Subject   string
+	Payload   map[string]any
+	Link      string
+	CreatedAt time.Time
+}
+
+func renderDigest(tier Tier, items []digestItem) (subject, plain, html string) {
+	period := "today"
+	if tier == TierDigestWeekly {
+		period = "this week"
+	}
+	subject = fmt.Sprintf("D'Accubin · %d update%s %s",
+		len(items), pluralS(len(items)), period)
+
+	// Group by category for clean sectioning.
+	byCat := map[string][]struct {
+		Headline string
+		Link     string
+	}{}
+	for _, it := range items {
+		meta, ok := Catalog[EventKind(it.Kind)]
+		headline := it.Subject
+		if ok {
+			headline = renderTpl(meta.HeadlineTpl, it.Payload)
+		}
+		byCat[it.Category] = append(byCat[it.Category], struct {
+			Headline string
+			Link     string
+		}{Headline: headline, Link: it.Link})
+	}
+
+	// Plain text
+	var p strings.Builder
+	p.WriteString(subject + "\n\n")
+	for cat, list := range byCat {
+		p.WriteString(strings.ToUpper(cat) + " (" + fmt.Sprint(len(list)) + ")\n")
+		for _, h := range list {
+			p.WriteString("  • " + h.Headline)
+			if h.Link != "" {
+				p.WriteString("  " + h.Link)
+			}
+			p.WriteString("\n")
+		}
+		p.WriteString("\n")
+	}
+	p.WriteString("— D'Accubin\n")
+	plain = p.String()
+
+	// HTML — single column, sectioned per category, accent header strip
+	var b strings.Builder
+	b.WriteString(`<!doctype html><html><body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#faf7f1;color:#1f2937;line-height:1.5;padding:24px"><div style="max-width:560px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden"><div style="background:#0F7B97;height:4px"></div><div style="padding:24px">`)
+	b.WriteString(fmt.Sprintf(`<div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#0F7B97;font-weight:700">%s digest</div>`, period))
+	b.WriteString(fmt.Sprintf(`<h1 style="margin:6px 0 18px;font-size:22px;color:#0f172a">%s</h1>`, subject))
+
+	for cat, list := range byCat {
+		b.WriteString(fmt.Sprintf(`<div style="margin-bottom:18px"><div style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#64748b;font-weight:700;margin-bottom:8px">%s · %d</div><ul style="list-style:none;padding:0;margin:0">`,
+			strings.ReplaceAll(cat, "_", " "), len(list)))
+		for _, h := range list {
+			if h.Link != "" {
+				b.WriteString(fmt.Sprintf(`<li style="padding:6px 0;border-bottom:1px solid #f1f5f9"><a href="%s" style="color:#0f172a;text-decoration:none;font-size:13.5px">› %s</a></li>`, h.Link, h.Headline))
+			} else {
+				b.WriteString(fmt.Sprintf(`<li style="padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:13.5px;color:#0f172a">› %s</li>`, h.Headline))
+			}
+		}
+		b.WriteString(`</ul></div>`)
+	}
+	b.WriteString(`</div><div style="padding:14px 24px;background:#f8fafc;border-top:1px solid #e5e7eb;font-size:11px;color:#64748b">You're getting this because some of your notification preferences are set to digest. Adjust the cadence in your workspace settings.</div></div></body></html>`)
+	html = b.String()
+	return
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 /* ---------------- Helper: resolve recipients by role ---------------- */
