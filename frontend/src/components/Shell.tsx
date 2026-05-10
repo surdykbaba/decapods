@@ -23,7 +23,7 @@ export function Shell() {
   const nav2 = useNavigate();
 
   useEffect(() => {
-    if (!user) api("/api/v1/me").then(setUser).catch(() => {});
+    if (!user) api<any>("/api/v1/me").then(setUser).catch(() => {});
   }, [user, setUser]);
 
   return (
