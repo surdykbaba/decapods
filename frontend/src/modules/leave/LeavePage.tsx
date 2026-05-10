@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { SmartButton } from "@/components/SmartButton";
@@ -634,11 +634,15 @@ export function RequestLeaveDialog({ onClose, onCreated }: { onClose: () => void
   const [docFile, setDocFile] = useState<File | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // Default to annual once types load.
-  if (!typeID && types.length > 0) {
-    const annual = types.find((t) => t.code === "annual") ?? types[0];
-    if (annual) setTypeID(annual.id);
-  }
+  // Default to annual once types load. Has to be an effect (not a side-effect
+  // during render) so React doesn't drop the update in concurrent mode.
+  useEffect(() => {
+    if (!typeID && types.length > 0) {
+      const annual = types.find((t) => t.code === "annual") ?? types[0];
+      if (annual) setTypeID(annual.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [types.length]);
 
   // Half-day implies a single date — auto-mirror end → start when the user
   // flips to half. Saves a click and matches the screenshot's mental model.
@@ -740,7 +744,13 @@ export function RequestLeaveDialog({ onClose, onCreated }: { onClose: () => void
                 className="input"
                 value={typeID}
                 onChange={(e) => setTypeID(e.target.value)}
+                disabled={types.length === 0}
               >
+                {/* Placeholder option keeps the controlled value valid until */}
+                {/* the types load and the effect picks Annual as default. */}
+                <option value="" disabled>
+                  {types.length === 0 ? "Loading…" : "Select a leave type"}
+                </option>
                 {types.map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name}{!t.paid && " (unpaid)"}
