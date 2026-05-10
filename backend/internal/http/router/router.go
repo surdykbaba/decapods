@@ -6,6 +6,7 @@ import (
 
 	"github.com/decapods/pgdp/backend/internal/http/handlers"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
+	"github.com/decapods/pgdp/backend/internal/notifications"
 	"github.com/decapods/pgdp/backend/internal/platform/config"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -128,7 +129,8 @@ func New(d Deps) http.Handler {
 	api.GET("/agent-invite/:token",  agents.PublicGetInvite)
 	api.POST("/agent-invite/:token", agents.PublicAcceptInvite)
 
-	members := handlers.NewMembers(d.DB)
+	mailer := notifications.NewMailer(d.Cfg)
+	members := handlers.NewMembers(d.DB).WithMailer(mailer, d.Cfg)
 	authed.GET("/members",                   members.List)
 	authed.GET("/members/roles",             members.ListRoles)
 	authed.POST("/members",                  mw.RequirePermission("governance:write"), members.Create)
@@ -179,6 +181,7 @@ func New(d Deps) http.Handler {
 	authed.GET("/finance/summary",     mw.RequirePermission("invoice:read"), fin.Summary)
 	authed.GET("/finance/billable",    mw.RequirePermission("invoice:read"), fin.Billable)
 	authed.PATCH("/finance/invoices/:id/status", mw.RequirePermission("invoice:write"), fin.UpdateInvoiceStatus)
+	authed.POST("/finance/invoices/lookup-irn",  mw.RequirePermission("invoice:read"),  fin.LookupIRN)
 
 	gov := handlers.NewGovernance(d.DB)
 	authed.GET("/governance/policies", mw.RequirePermission("policy:read"), gov.ListPolicies)

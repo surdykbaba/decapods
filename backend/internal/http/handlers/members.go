@@ -1,14 +1,20 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
 	authpkg "github.com/decapods/pgdp/backend/internal/auth"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
+	"github.com/decapods/pgdp/backend/internal/notifications"
+	"github.com/decapods/pgdp/backend/internal/platform/config"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,9 +23,22 @@ import (
 // Members exposes the workspace's user roster — the people who can sign in to
 // the app, distinct from `stakeholders` (external contacts on opportunities)
 // and `agents` (introducers/PR partners). One tenant per row, role-gated writes.
-type Members struct{ db *pgxpool.Pool }
+type Members struct {
+	db     *pgxpool.Pool
+	mailer *notifications.Mailer
+	cfg    *config.Config
+}
 
 func NewMembers(db *pgxpool.Pool) *Members { return &Members{db: db} }
+
+// WithMailer attaches the SMTP mailer + config so CreateInvite can email the
+// invitee. Optional — without it, invites still mint tokens (the app's existing
+// "copy link" UX continues to work).
+func (h *Members) WithMailer(m *notifications.Mailer, cfg *config.Config) *Members {
+	h.mailer = m
+	h.cfg = cfg
+	return h
+}
 
 /* ---------------- List / Get / Create / Update / Disable / Enable ---------------- */
 
@@ -365,12 +384,104 @@ func (h *Members) CreateInvite(c *gin.Context) {
 		return
 	}
 
+	// Fire-and-forget invite email. The "copy link" flow on the frontend keeps
+	// working regardless of mailer state.
+	h.dispatchMemberInviteEmail(c.Request.Context(), tid, req.Email, req.Name, token, req.Message)
+
 	c.JSON(201, gin.H{
 		"token":      token,
 		"email":      req.Email,
 		"name":       req.Name,
 		"expires_at": expires,
 	})
+}
+
+func (h *Members) dispatchMemberInviteEmail(ctx context.Context, tid uuid.UUID, to, name, token, personalMsg string) {
+	if h.mailer == nil || !h.mailer.Configured() {
+		return
+	}
+	company := loadCompanyHeader(ctx, h.db, tid)
+	publicBase := publicBaseURL(h.cfg)
+	link := fmt.Sprintf("%s/member-invite/%s", publicBase, token)
+
+	subject := fmt.Sprintf("You're invited to %s", company.DisplayName())
+	plain := fmt.Sprintf(
+		"Hi %s,\n\n%s has invited you to join their workspace on D'Accubin.\n\nAccept the invite:\n%s\n\n%s\n\nThis link expires in 14 days.",
+		name, company.DisplayName(), link, strings.TrimSpace(personalMsg),
+	)
+	html := buildInviteHTML(company, name, link, personalMsg)
+
+	go func(em notifications.Email) {
+		if err := h.mailer.Send(context.Background(), em); err != nil {
+			slog.Warn("member invite email failed", "to", em.To, "err", err)
+		}
+	}(notifications.Email{To: to, Subject: subject, Plain: plain, HTML: html})
+}
+
+// ---- Small shared helpers (not coupled to Members) ----
+
+type companyHeader struct {
+	Name      string
+	LogoURL   string
+	WebsiteURL string
+}
+
+func (c companyHeader) DisplayName() string {
+	if strings.TrimSpace(c.Name) != "" {
+		return c.Name
+	}
+	return "your D'Accubin workspace"
+}
+
+func loadCompanyHeader(ctx context.Context, db *pgxpool.Pool, tid uuid.UUID) companyHeader {
+	out := companyHeader{}
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT settings FROM tenants WHERE id=$1`, tid).Scan(&raw); err != nil || len(raw) == 0 {
+		return out
+	}
+	var s map[string]any
+	_ = json.Unmarshal(raw, &s)
+	if v, ok := s["company_name"].(string); ok { out.Name = v }
+	if v, ok := s["logo_url"].(string); ok { out.LogoURL = v }
+	if v, ok := s["website_url"].(string); ok { out.WebsiteURL = v }
+	return out
+}
+
+func publicBaseURL(cfg *config.Config) string {
+	if cfg != nil && len(cfg.AllowedOrigins) > 0 {
+		o := strings.TrimSpace(cfg.AllowedOrigins[0])
+		o = strings.TrimSuffix(o, "/")
+		if o != "" && o != "*" {
+			return o
+		}
+	}
+	return "https://myaccubin.com"
+}
+
+func buildInviteHTML(co companyHeader, name, link, msg string) string {
+	logo := ""
+	if strings.TrimSpace(co.LogoURL) != "" {
+		logo = fmt.Sprintf(`<img src="%s" alt="" style="max-height:40px;margin-bottom:12px"/>`, co.LogoURL)
+	}
+	personal := ""
+	if strings.TrimSpace(msg) != "" {
+		personal = fmt.Sprintf(`<blockquote style="border-left:3px solid #e5e7eb;padding:6px 12px;margin:14px 0;color:#475569">%s</blockquote>`, htmlEscape(msg))
+	}
+	return fmt.Sprintf(`<!doctype html><html><body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1f2937">
+<div style="max-width:560px;margin:24px auto;padding:24px;border:1px solid #e5e7eb;border-radius:14px;background:#faf7f1">
+%s
+<h1 style="margin:0 0 8px;font-size:22px;color:#0f172a">You're invited to %s</h1>
+<p style="margin:0 0 14px">Hi %s — you've been invited to join the workspace on D'Accubin.</p>
+%s
+<p style="margin:0 0 18px"><a href="%s" style="background:#0F7B97;color:#fff;padding:10px 18px;border-radius:8px;text-decoration:none;font-weight:600">Accept the invite</a></p>
+<p style="font-size:12px;color:#64748b;margin:0">Or paste this URL into your browser:<br/><a href="%s">%s</a></p>
+<p style="font-size:11px;color:#94a3b8;margin-top:18px">This link expires in 14 days.</p>
+</div></body></html>`, logo, htmlEscape(co.DisplayName()), htmlEscape(name), personal, link, link, link)
+}
+
+func htmlEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
+	return r.Replace(s)
 }
 
 // ListInvites returns pending + recent invites, useful as a "people we've

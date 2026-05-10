@@ -33,6 +33,8 @@ type Config struct {
 
 	SMTPHost string
 	SMTPPort int
+	SMTPUser string
+	SMTPPass string
 	SMTPFrom string
 
 	GitHubAppID             string
@@ -79,6 +81,8 @@ func Load() (*Config, error) {
 		BlindIndexSalt:          v.GetString("BLIND_INDEX_SALT"),
 		SMTPHost:                v.GetString("SMTP_HOST"),
 		SMTPPort:                v.GetInt("SMTP_PORT"),
+		SMTPUser:                v.GetString("SMTP_USER"),
+		SMTPPass:                v.GetString("SMTP_PASS"),
 		SMTPFrom:                v.GetString("SMTP_FROM"),
 		GitHubAppID:             v.GetString("GITHUB_APP_ID"),
 		GitHubAppPrivateKeyPath: v.GetString("GITHUB_APP_PRIVATE_KEY_PATH"),
