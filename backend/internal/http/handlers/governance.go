@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"strconv"
+
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -81,22 +83,34 @@ func (h *Governance) DeletePolicy(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true})
 }
 
+// Audit returns the tenant's audit log, newest first. Joined against users so
+// the frontend can show a human actor name (and email) without a second round
+// trip. Optional filters: ?entity=<kind>, ?id=<entity_id>, ?q=<substring on
+// action>. Actor is nullable (system / public actions write NULL).
 func (h *Governance) Audit(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
-	entity := c.Query("entity")
-	id := c.Query("id")
-	q := `SELECT id, actor_id, action, entity, entity_id, diff, created_at
-	      FROM audit_log WHERE tenant_id=$1`
 	args := []any{tid}
-	if entity != "" {
+	q := `
+		SELECT a.id, a.actor_id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
+		       a.action, a.entity, a.entity_id, a.diff, a.created_at
+		FROM audit_log a
+		LEFT JOIN users u ON u.id = a.actor_id
+		WHERE a.tenant_id=$1`
+	if entity := c.Query("entity"); entity != "" {
 		args = append(args, entity)
-		q += ` AND entity=$2`
+		q += " AND a.entity=$" + strconv.Itoa(len(args))
 	}
-	if id != "" {
+	if id := c.Query("id"); id != "" {
 		args = append(args, id)
-		q += ` AND entity_id=$3`
+		q += " AND a.entity_id=$" + strconv.Itoa(len(args))
 	}
-	q += ` ORDER BY created_at DESC LIMIT 500`
+	if needle := c.Query("q"); needle != "" {
+		args = append(args, "%"+needle+"%")
+		n := strconv.Itoa(len(args))
+		q += " AND (a.action ILIKE $" + n + " OR u.full_name ILIKE $" + n + " OR u.email::text ILIKE $" + n + ")"
+	}
+	q += " ORDER BY a.created_at DESC LIMIT 500"
+
 	rows, err := h.db.Query(c, q, args...)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -106,15 +120,24 @@ func (h *Governance) Audit(c *gin.Context) {
 	out := []gin.H{}
 	for rows.Next() {
 		var (
-			id, actor, eid       uuid.UUID
-			action, ent          string
-			diff                 map[string]any
-			created              any
+			id, eid                       uuid.UUID
+			actor                         *uuid.UUID
+			actorName, actorEmail, action string
+			ent                           string
+			diff                          map[string]any
+			created                       any
 		)
-		if err := rows.Scan(&id, &actor, &action, &ent, &eid, &diff, &created); err == nil {
+		if err := rows.Scan(&id, &actor, &actorName, &actorEmail, &action, &ent, &eid, &diff, &created); err == nil {
 			out = append(out, gin.H{
-				"id": id, "actor_id": actor, "action": action,
-				"entity": ent, "entity_id": eid, "diff": diff, "created_at": created,
+				"id":          id,
+				"actor_id":    actor,
+				"actor_name":  actorName,
+				"actor_email": actorEmail,
+				"action":      action,
+				"entity":      ent,
+				"entity_id":   eid,
+				"diff":        diff,
+				"created_at":  created,
 			})
 		}
 	}

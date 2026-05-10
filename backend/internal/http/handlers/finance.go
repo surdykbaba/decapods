@@ -121,6 +121,70 @@ func (h *Finance) CreateInvoice(c *gin.Context) {
 	c.JSON(201, gin.H{"id": id})
 }
 
+// ListInvoicePayments returns every payment recorded against one invoice,
+// plus rolling totals (paid so far, outstanding) so the UI can render the
+// "you've collected X of Y" hint and disable over-payment.
+//
+// GET /finance/invoices/:id/payments
+func (h *Finance) ListInvoicePayments(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
+
+	// Verify invoice belongs to tenant and fetch totals in one shot.
+	var (
+		number, currency string
+		amount           float64
+		status           string
+	)
+	if err := h.db.QueryRow(c, `
+		SELECT number, amount, currency, status
+		FROM invoices
+		WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
+		id, tid).Scan(&number, &amount, &currency, &status); err != nil {
+		c.JSON(404, gin.H{"error": "invoice not found"})
+		return
+	}
+
+	rows, err := h.db.Query(c, `
+		SELECT id, amount, paid_on, COALESCE(method,''), COALESCE(reference,''), created_at
+		FROM payments
+		WHERE invoice_id = $1 AND tenant_id = $2
+		ORDER BY paid_on DESC, created_at DESC`, id, tid)
+	if err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }
+	defer rows.Close()
+
+	out := []gin.H{}
+	var paid float64
+	for rows.Next() {
+		var (
+			pid                uuid.UUID
+			amt                float64
+			paidOn, createdAt  time.Time
+			method, reference  string
+		)
+		if err := rows.Scan(&pid, &amt, &paidOn, &method, &reference, &createdAt); err == nil {
+			paid += amt
+			out = append(out, gin.H{
+				"id": pid, "amount": amt, "paid_on": paidOn,
+				"method": method, "reference": reference,
+				"created_at": createdAt,
+			})
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"invoice": gin.H{
+			"id": id, "number": number, "amount": amount,
+			"currency": currency, "status": status,
+		},
+		"payments":    out,
+		"paid_total":  paid,
+		"outstanding": amount - paid,
+		"count":       len(out),
+	})
+}
+
 // LookupIRN tries to resolve an Invoice Reference Number to invoice details.
 // Two layers:
 //   1. **Local hit** — if we've seen this IRN before in this tenant, return the
@@ -205,6 +269,61 @@ func (h *Finance) RecordPayment(c *gin.Context) {
 		return
 	}
 	defer tx.Rollback(c)
+
+	// Lock the invoice row + verify it accepts payments. This is the gate that
+	// prevents over-payment and refuses payments against draft/void invoices,
+	// regardless of what the UI sent. Concurrent partials are serialised by
+	// FOR UPDATE on the invoice.
+	var (
+		invAmount, alreadyPaid float64
+		invStatus              string
+	)
+	if err := tx.QueryRow(c, `
+		SELECT i.amount, i.status,
+		       COALESCE((SELECT SUM(amount) FROM payments WHERE invoice_id = i.id), 0)
+		FROM invoices i
+		WHERE i.id=$1 AND i.tenant_id=$2 AND i.deleted_at IS NULL
+		FOR UPDATE`, req.InvoiceID, tid).Scan(&invAmount, &invStatus, &alreadyPaid); err != nil {
+		c.JSON(404, gin.H{"error": "invoice not found"})
+		return
+	}
+	if invStatus == "draft" {
+		c.JSON(409, gin.H{
+			"error": "Issue the invoice before recording payments against it.",
+			"code":  "invoice_draft",
+		})
+		return
+	}
+	if invStatus == "void" {
+		c.JSON(409, gin.H{
+			"error": "This invoice is voided — payments can't be recorded against it.",
+			"code":  "invoice_void",
+		})
+		return
+	}
+	outstanding := invAmount - alreadyPaid
+	if outstanding <= 0 {
+		c.JSON(409, gin.H{
+			"error": "Invoice is already paid in full.",
+			"code":  "invoice_paid",
+		})
+		return
+	}
+	// Cap silently rather than erroring — better UX when finance enters a
+	// round figure that's a hair over. Difference of >1¢ is a real overpay
+	// and we should reject.
+	if req.Amount > outstanding+0.01 {
+		c.JSON(409, gin.H{
+			"error":       "Amount exceeds outstanding balance.",
+			"code":        "overpayment",
+			"outstanding": outstanding,
+		})
+		return
+	}
+	if req.Amount > outstanding {
+		req.Amount = outstanding
+	}
+
 	if _, err := tx.Exec(c, `INSERT INTO payments (id, tenant_id, invoice_id, amount, paid_on, method, reference)
 		VALUES ($1,$2,$3,$4, $5::date, $6, $7)`,
 		pid, tid, req.InvoiceID, req.Amount, req.PaidOn, req.Method, req.Reference); err != nil {

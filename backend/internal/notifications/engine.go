@@ -217,6 +217,10 @@ func (e *Engine) Notify(ctx context.Context, ev Event) int {
 	if link == "" && meta.DefaultLink != "" {
 		link = renderTpl(meta.DefaultLink, ev.Payload)
 	}
+	// Email clients can't resolve relative URLs — Gmail in particular renders
+	// them as the literal `[/path]label` text rather than an anchor. Turn any
+	// leading-slash path into an absolute URL using the app's public origin.
+	link = absoluteURL(e.cfg, link)
 	payloadJSON, _ := json.Marshal(ev.Payload)
 
 	queued := 0
@@ -283,7 +287,7 @@ func (e *Engine) Notify(ctx context.Context, ev Event) int {
 }
 
 func (e *Engine) send(rowID uuid.UUID, to, subject string, meta EventMeta, payload map[string]any, link string) {
-	html := renderImmediateHTML(meta, subject, payload, link)
+	html := renderImmediateHTML(meta, subject, payload, link, absoluteURL(e.cfg, "/my-work?tab=profile"))
 	plain := renderImmediatePlain(meta, subject, payload, link)
 	err := e.mailer.Send(context.Background(), Email{To: to, Subject: subject, Plain: plain, HTML: html})
 	if err != nil {
@@ -358,7 +362,7 @@ func renderImmediatePlain(meta EventMeta, subject string, fields map[string]any,
 	return b.String()
 }
 
-func renderImmediateHTML(meta EventMeta, subject string, fields map[string]any, link string) string {
+func renderImmediateHTML(meta EventMeta, subject string, fields map[string]any, link, settingsURL string) string {
 	headline := renderTpl(meta.HeadlineTpl, fields)
 	severity := meta.Severity
 	if severity == "" {
@@ -387,6 +391,9 @@ func renderImmediateHTML(meta EventMeta, subject string, fields map[string]any, 
 			`<tr><td style="padding:4px 12px 4px 0;color:#64748b;font-size:12px">%s</td><td style="font-size:13px;color:#0f172a">%v</td></tr>`,
 			k, v)
 	}
+	if settingsURL == "" {
+		settingsURL = "https://myaccubin.com/my-work?tab=profile"
+	}
 	return fmt.Sprintf(`<!doctype html>
 <html><body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#1f2937;line-height:1.5;background:#faf7f1;padding:24px">
   <div style="max-width:560px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:14px;overflow:hidden">
@@ -399,12 +406,40 @@ func renderImmediateHTML(meta EventMeta, subject string, fields map[string]any, 
       %s
     </div>
     <div style="padding:14px 24px;background:#f8fafc;border-top:1px solid #e5e7eb;font-size:11px;color:#64748b">
-      You're getting this because the <strong>%s</strong> notifications are set to immediate.
-      Manage what you receive in your <a href="https://example.com/my-work">workspace settings</a>.
+      You're getting this because your <strong>%s</strong> notifications are set to immediate.
+      Manage what you receive in your <a href="%s" style="color:#0F7B97">workspace settings</a>.
     </div>
   </div>
 </body></html>`,
-		bandColor, bandColor, strings.ToUpper(severity), headline, subject, rows, cta, meta.Category)
+		bandColor, bandColor, strings.ToUpper(severity), headline, subject, rows, cta, meta.Category, settingsURL)
+}
+
+// absoluteURL turns a "/some/path" into "https://app-host.com/some/path" so
+// email clients can render it as a real anchor. Absolute URLs pass through.
+// Empty strings stay empty. Used by both immediate and digest renderers.
+func absoluteURL(cfg *config.Config, link string) string {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return ""
+	}
+	if strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://") {
+		return link
+	}
+	base := ""
+	if cfg != nil && len(cfg.AllowedOrigins) > 0 {
+		first := strings.TrimSpace(cfg.AllowedOrigins[0])
+		first = strings.TrimSuffix(first, "/")
+		if first != "" && first != "*" {
+			base = first
+		}
+	}
+	if base == "" {
+		base = "https://myaccubin.com"
+	}
+	if !strings.HasPrefix(link, "/") {
+		link = "/" + link
+	}
+	return base + link
 }
 
 /* ---------------- Outbox / preferences read APIs ---------------- */
