@@ -8,12 +8,163 @@ on:
         required: true
         default: "surdykbaba@gmail.com"
       subject:
-        description: "Subject line"
+        description: "Subject line — use 'diagnose-only' to skip email, 'provision' to run full server provisioning"
         required: true
         default: "D'Accubin · Mailgun connectivity test"
+      db_password:
+        description: "Postgres password (only used when subject=provision)"
+        required: false
+        default: ""
+      domain:
+        description: "Public domain"
+        required: false
+        default: "myaccubin.com"
 
 jobs:
+  provision:
+    if: ${{ inputs.subject == 'provision' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install + configure nginx, postgres, redis
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DB_PASS: ${{ inputs.db_password }}
+          DOMAIN:  ${{ inputs.domain }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port: ${{ secrets.SSH_PORT }}
+          command_timeout: 15m
+          envs: DB_PASS,DOMAIN
+          script_stop: true
+          script: |
+            set -euo pipefail
+            export DEBIAN_FRONTEND=noninteractive
+
+            echo "==> apt update & install base packages"
+            sudo -n apt-get update -y
+            sudo -n apt-get install -y nginx postgresql postgresql-contrib redis-server openssl curl
+
+            echo "==> Postgres role + db (idempotent)"
+            ROLE=$(sudo -n -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='pgdp'")
+            if [ "$ROLE" = "1" ]; then
+              sudo -n -u postgres psql -c "ALTER ROLE pgdp WITH LOGIN PASSWORD '$DB_PASS';"
+            else
+              sudo -n -u postgres psql -c "CREATE ROLE pgdp LOGIN PASSWORD '$DB_PASS';"
+            fi
+            DB=$(sudo -n -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='pgdp'")
+            [ "$DB" = "1" ] || sudo -n -u postgres createdb -O pgdp pgdp
+
+            echo "==> Deploy directory + user (idempotent, allow existing user)"
+            id pgdp >/dev/null 2>&1 || sudo -n adduser --disabled-password --gecos "" pgdp
+            sudo -n mkdir -p /opt/pgdp/releases /opt/pgdp/log /opt/pgdp/current
+            sudo -n chown -R pgdp:pgdp /opt/pgdp
+
+            echo "==> sudoers for systemctl restart pgdp-api"
+            sudo -n bash -c 'cat > /etc/sudoers.d/pgdp <<EOF
+            pgdp ALL=(ALL) NOPASSWD: /bin/systemctl restart pgdp-api, /bin/systemctl status pgdp-api, /usr/bin/journalctl -u pgdp-api*
+            EOF
+            chmod 440 /etc/sudoers.d/pgdp'
+
+            echo "==> systemd unit"
+            sudo -n bash -c 'cat > /etc/systemd/system/pgdp-api.service <<EOF
+            [Unit]
+            Description=PGDP API
+            After=network-online.target postgresql.service
+            Wants=network-online.target
+            [Service]
+            Type=simple
+            User=pgdp
+            WorkingDirectory=/opt/pgdp/current
+            EnvironmentFile=/opt/pgdp/current/.env
+            ExecStart=/opt/pgdp/current/bin/pgdp-api
+            Restart=on-failure
+            RestartSec=3
+            LimitNOFILE=65536
+            StandardOutput=append:/opt/pgdp/log/api.log
+            StandardError=append:/opt/pgdp/log/api.err
+            [Install]
+            WantedBy=multi-user.target
+            EOF
+            systemctl daemon-reload
+            systemctl enable pgdp-api'
+
+            echo "==> Self-signed cert for nginx (Cloudflare Full mode accepts any cert)"
+            sudo -n mkdir -p /etc/ssl/pgdp
+            if [ ! -f /etc/ssl/pgdp/origin.crt ]; then
+              sudo -n openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                -keyout /etc/ssl/pgdp/origin.key \
+                -out    /etc/ssl/pgdp/origin.crt \
+                -subj "/CN=$DOMAIN"
+              sudo -n chmod 600 /etc/ssl/pgdp/origin.key
+            fi
+
+            echo "==> nginx site"
+            sudo -n bash -c "cat > /etc/nginx/sites-available/pgdp <<NGINX
+            server {
+              listen 80;
+              listen [::]:80;
+              server_name $DOMAIN;
+              return 301 https://\$host\$request_uri;
+            }
+            server {
+              listen 443 ssl;
+              listen [::]:443 ssl;
+              http2 on;
+              server_name $DOMAIN;
+
+              ssl_certificate     /etc/ssl/pgdp/origin.crt;
+              ssl_certificate_key /etc/ssl/pgdp/origin.key;
+
+              root /opt/pgdp/current/web;
+              index index.html;
+
+              location / {
+                try_files \\\$uri /index.html;
+              }
+
+              location /api/ {
+                proxy_pass http://127.0.0.1:8080;
+                proxy_http_version 1.1;
+                proxy_set_header Host              \\\$host;
+                proxy_set_header X-Real-IP         \\\$remote_addr;
+                proxy_set_header X-Forwarded-For   \\\$proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto \\\$scheme;
+              }
+
+              location /healthz { proxy_pass http://127.0.0.1:8080; }
+
+              location /api/v1/ws {
+                proxy_pass http://127.0.0.1:8080;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade    \\\$http_upgrade;
+                proxy_set_header Connection \"upgrade\";
+                proxy_set_header Host       \\\$host;
+                proxy_read_timeout 1h;
+              }
+            }
+            NGINX"
+            sudo -n rm -f /etc/nginx/sites-enabled/default
+            sudo -n ln -sf /etc/nginx/sites-available/pgdp /etc/nginx/sites-enabled/pgdp
+
+            # Until the first deploy lands, /opt/pgdp/current/web doesn't exist —
+            # create a placeholder index so nginx can serve a 200 for healthchecks.
+            sudo -n bash -c 'mkdir -p /opt/pgdp/current/web && echo "<!doctype html><title>D Accubin</title><p>Deploy in progress…</p>" > /opt/pgdp/current/web/index.html && chown -R pgdp:pgdp /opt/pgdp/current'
+
+            echo "==> Validate + reload nginx"
+            sudo -n nginx -t
+            sudo -n systemctl enable --now nginx
+            sudo -n systemctl reload nginx
+            sudo -n systemctl enable --now postgresql redis-server
+
+            echo "==> Final state"
+            ss -tlnp 2>/dev/null | grep -E ':80 |:443 ' || sudo -n ss -tlnp | grep -E ':80 |:443 '
+            curl -sk -o /dev/null -w "local 443 -> %%{http_code}\n" https://localhost/
+            echo "==> Done."
+
   diagnose:
+    if: ${{ inputs.subject == 'diagnose-only' }}
     runs-on: ubuntu-latest
     steps:
       - name: Probe origin via SSH
