@@ -125,8 +125,7 @@ export function LoginPage() {
       <div className="hidden lg:flex bg-accent relative overflow-hidden">
         <div className="absolute inset-6 bg-text rounded-3xl flex flex-col justify-between p-10 text-surface">
           <div className="flex items-center gap-2">
-            <img src="/brand/logo-dark.png" alt="" className="w-9 h-9 rounded-lg object-cover" />
-            <span className="text-lg font-extrabold tracking-tight">PGDP</span>
+            <img src="/brand/logo-dark.png" alt="" className="w-14 h-14 object-contain" />
           </div>
 
           <div>
@@ -186,9 +185,8 @@ function SocialButton({ onClick, children }: { onClick: () => void; children: Re
 
 function BrandMark() {
   return (
-    <div className="flex items-center gap-2.5">
-      <img src="/brand/logo-dark.png" alt="D'Accubin" className="w-10 h-10 rounded-lg object-cover" />
-      <span className="text-[1.4rem] font-extrabold tracking-tight text-text">D'Accubin</span>
+    <div className="flex items-center">
+      <img src="/brand/logo-dark.png" alt="D'Accubin" className="w-14 h-14 object-contain" />
     </div>
   );
 }

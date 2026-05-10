@@ -1,14 +1,14 @@
 import { useMemo, useState, useEffect } from "react";
 import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
-  Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, FileType2, Briefcase, LayoutGrid, Rows3,
+  Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
 } from "lucide-react";
 
 type TaskRow = {
@@ -87,9 +87,29 @@ const PRIORITY_LABEL = ["", "Lowest", "Low", "Medium", "High", "Highest"];
 
 type Tab = "dashboard" | "tasks" | "updates" | "timesheet" | "profile";
 
+const VALID_TABS: Tab[] = ["dashboard", "tasks", "updates", "timesheet", "profile"];
+
 export function MyWorkPage() {
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const [params, setParams] = useSearchParams();
+  const initialTab = (() => {
+    const q = params.get("tab");
+    return (VALID_TABS as string[]).includes(q ?? "") ? (q as Tab) : "dashboard";
+  })();
+  const [tab, setTab] = useState<Tab>(initialTab);
   const { user } = useAuth();
+
+  // Keep the URL ?tab in sync so deep-links from notifications land on the
+  // right pane; preserves the rest of the query string (e.g. ?new=1).
+  useEffect(() => {
+    const q = params.get("tab");
+    if (q !== tab) {
+      const next = new URLSearchParams(params);
+      if (tab === "dashboard") next.delete("tab");
+      else next.set("tab", tab);
+      setParams(next, { replace: true });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   const tabs: { key: Tab; label: string; icon: React.ComponentType<any> }[] = [
     { key: "dashboard", label: "Today",     icon: Zap },
@@ -261,6 +281,24 @@ function fileTypeFromName(name: string, objectKey: string): string {
 
 function isUrl(key: string): boolean {
   return /^https?:\/\//i.test(key);
+}
+
+// Image-extension detection — drives whether we render a thumbnail preview.
+function isImageExt(ext: string): boolean {
+  return ["png", "jpg", "jpeg", "gif", "webp", "svg", "avif"].includes(ext.toLowerCase());
+}
+
+// Pretty display name. Backend sometimes hands us UUIDs as `name`; if so, fall
+// back to the kind label + first 6 chars + extension.
+function displayName(file: FileRow): string {
+  const raw = (file.name || "").trim();
+  const looksLikeUuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(raw)
+    || /^[a-f0-9]{16,}$/i.test(raw);
+  if (raw && !looksLikeUuid) return raw;
+  const kindLabel = DOC_KIND_LABELS[file.kind] ?? file.kind;
+  const ext = fileTypeFromName(file.name, file.object_key);
+  if (ext === "FILE") return kindLabel;
+  return `${kindLabel}.${ext.toLowerCase()}`;
 }
 
 function relTimeShort(iso: string): string {
@@ -474,74 +512,16 @@ function FileLibraryCard() {
         <div className="text-sm text-muted py-4 text-center">No files match "{query}".</div>
       ) : view === "project" ? (
         <div className="space-y-3">
-          {(showAllProjects ? projectGroups : projectGroups.slice(0, PROJECT_PREVIEW)).map((g) => {
-            const isCollapsed = !!collapsed[g.key];
-            const targetUrl = g.isProject && g.projectId ? `/projects/${g.projectId}` : `/pipeline/${g.opportunityId}`;
-            return (
-              <div key={g.key} className="border border-border rounded-xl overflow-hidden bg-bg/30">
-                <div className="flex items-center gap-3 px-4 py-3 bg-surface border-b border-border">
-                  <button
-                    onClick={() => toggle(g.key)}
-                    className="text-muted hover:text-text shrink-0"
-                    aria-label={isCollapsed ? "Expand" : "Collapse"}
-                  >
-                    {isCollapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
-                  </button>
-                  <div className={`w-9 h-9 rounded-lg grid place-items-center shrink-0 ${
-                    g.isProject ? "bg-accent-soft text-accent" : "bg-warn/10 text-warn"
-                  }`}>
-                    {g.isProject ? <Briefcase size={16} /> : <FileText size={16} />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <div className="text-[14px] font-bold text-text truncate" title={g.projectName ?? g.opportunityTitle}>
-                        {g.projectName ?? g.opportunityTitle}
-                      </div>
-                      {!g.isProject && (
-                        <span className="text-[9.5px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-warn/15 text-warn">
-                          Pre-project
-                        </span>
-                      )}
-                    </div>
-                    <div className="text-[11px] text-muted truncate">
-                      {g.isProject && <>From: {g.opportunityTitle} · </>}
-                      {g.items.length} file{g.items.length === 1 ? "" : "s"} · {g.byKind.length} type{g.byKind.length === 1 ? "" : "s"} · updated {relTimeShort(g.lastUpdated)}
-                    </div>
-                  </div>
-                  <Link
-                    to={targetUrl}
-                    className="text-xs font-semibold text-accent hover:underline whitespace-nowrap shrink-0"
-                  >
-                    Open {g.isProject ? "project" : "lead"} →
-                  </Link>
-                </div>
-
-                {!isCollapsed && (
-                  <div className="p-3 space-y-3">
-                    {g.byKind.map((kg) => (
-                      <div key={kg.kind}>
-                        <div className="flex items-center gap-2 mb-1.5 px-1">
-                          <FileType2 size={11} className="text-muted" />
-                          <div className="text-[10.5px] uppercase tracking-wide font-bold text-muted">{kg.label}</div>
-                          <div className="px-1.5 py-px rounded-full bg-bg border border-border text-[9.5px] font-bold text-muted">
-                            {kg.items.length}
-                          </div>
-                          <div className="flex-1 h-px bg-border/60" />
-                        </div>
-                        <ul className={listCls}>
-                          {kg.items.map((f) => (
-                            <li key={f.id} className={itemCls}>
-                              <FileRowItem file={f} compact />
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {(showAllProjects ? projectGroups : projectGroups.slice(0, PROJECT_PREVIEW)).map((g) => (
+            <ProjectFileGroup
+              key={g.key}
+              group={g}
+              collapsed={!!collapsed[g.key]}
+              onToggle={() => toggle(g.key)}
+              listCls={listCls}
+              itemCls={itemCls}
+            />
+          ))}
           {projectGroups.length > PROJECT_PREVIEW && (
             <div className="flex justify-center pt-1">
               <button
@@ -569,7 +549,7 @@ function FileLibraryCard() {
               <ul className={listCls}>
                 {kg.items.map((f) => (
                   <li key={f.id} className={itemCls}>
-                    <FileRowItem file={f} />
+                    <FileCard file={f} />
                   </li>
                 ))}
               </ul>
@@ -582,7 +562,7 @@ function FileLibraryCard() {
             .sort((a, b) => +new Date(b.uploaded_at) - +new Date(a.uploaded_at))
             .map((f) => (
               <li key={f.id} className={itemCls}>
-                <FileRowItem file={f} />
+                <FileCard file={f} />
               </li>
             ))}
         </ul>
@@ -591,41 +571,187 @@ function FileLibraryCard() {
   );
 }
 
-function FileRowItem({ file, compact }: { file: FileRow; compact?: boolean }) {
-  const ext = fileTypeFromName(file.name, file.object_key);
-  const url = isUrl(file.object_key);
-  const colorCls = fileExtColor(ext, url);
+/* Project group — compact header, kind-filter chip row, then a single media
+ * grid of files matching the active kind. Replaces the noisy nested
+ * "PROCUREMENT 1 / NDA 1 / RFP 1" sub-section list. */
+function ProjectFileGroup({
+  group, collapsed, onToggle, listCls, itemCls,
+}: {
+  group: ProjectGroup;
+  collapsed: boolean;
+  onToggle: () => void;
+  listCls: string;
+  itemCls: string;
+}) {
+  const [activeKind, setActiveKind] = useState<string>("all");
+  const targetUrl = group.isProject && group.projectId
+    ? `/projects/${group.projectId}` : `/pipeline/${group.opportunityId}`;
+
+  const visible = activeKind === "all"
+    ? group.items
+    : group.items.filter((f) => f.kind === activeKind);
+
   return (
-    <div className="h-full flex items-center gap-3 bg-surface border border-border rounded-lg p-2.5 hover:border-accent transition-colors">
-      <div className={`w-9 h-9 rounded-md grid place-items-center text-[9.5px] font-extrabold shrink-0 border ${colorCls}`}>
-        {url ? <LinkIcon size={13} /> : ext.slice(0, 4)}
-      </div>
-      <div className="flex-1 min-w-0">
-        <div className="text-[13px] font-semibold text-text truncate" title={file.name}>{file.name}</div>
-        <div className="text-[11px] text-muted truncate">
-          {!compact && <>{DOC_KIND_LABELS[file.kind] ?? file.kind} · </>}
-          {!compact && file.project_name && <>{file.project_name} · </>}
-          {relTimeShort(file.uploaded_at)}
+    <div className="border border-border rounded-2xl overflow-hidden bg-bg/30">
+      {/* Header row */}
+      <div className="flex items-center gap-3 px-4 py-3 bg-surface">
+        <button
+          onClick={onToggle}
+          className="text-muted hover:text-text shrink-0"
+          aria-label={collapsed ? "Expand" : "Collapse"}
+        >
+          {collapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+        </button>
+        <div className={`w-9 h-9 rounded-xl grid place-items-center shrink-0 ${
+          group.isProject ? "bg-accent-soft text-accent" : "bg-warn/10 text-warn"
+        }`}>
+          {group.isProject ? <Briefcase size={15} /> : <FileText size={15} />}
         </div>
-      </div>
-      {url ? (
-        <a
-          href={file.object_key}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs font-semibold text-accent hover:underline whitespace-nowrap shrink-0"
-        >
-          Open ↗
-        </a>
-      ) : (
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[14px] font-bold text-text truncate" title={group.projectName ?? group.opportunityTitle}>
+              {group.projectName ?? group.opportunityTitle}
+            </span>
+            {!group.isProject && (
+              <span className="text-[9.5px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded bg-warn/15 text-warn">
+                Pre-project
+              </span>
+            )}
+          </div>
+          <div className="text-[11px] text-muted truncate">
+            {group.items.length} file{group.items.length === 1 ? "" : "s"} · updated {relTimeShort(group.lastUpdated)}
+          </div>
+        </div>
         <Link
-          to={`/pipeline/${file.opportunity_id}`}
+          to={targetUrl}
           className="text-xs font-semibold text-accent hover:underline whitespace-nowrap shrink-0"
         >
-          Open →
+          Open {group.isProject ? "project" : "lead"} →
         </Link>
+      </div>
+
+      {!collapsed && (
+        <>
+          {/* Kind filter chip row — only renders when there's more than one kind */}
+          {group.byKind.length > 1 && (
+            <div className="flex flex-wrap gap-1.5 px-4 pt-3">
+              <KindChip
+                label="All"
+                count={group.items.length}
+                active={activeKind === "all"}
+                onClick={() => setActiveKind("all")}
+              />
+              {group.byKind.map((kg) => (
+                <KindChip
+                  key={kg.kind}
+                  label={kg.label}
+                  count={kg.items.length}
+                  active={activeKind === kg.kind}
+                  onClick={() => setActiveKind(kg.kind)}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Media grid */}
+          <div className="p-3">
+            <ul className={listCls}>
+              {visible.map((f) => (
+                <li key={f.id} className={itemCls}>
+                  <FileCard file={f} />
+                </li>
+              ))}
+            </ul>
+          </div>
+        </>
       )}
     </div>
+  );
+}
+
+function KindChip({
+  label, count, active, onClick,
+}: { label: string; count: number; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border transition-colors inline-flex items-center gap-1.5 ${
+        active
+          ? "bg-accent text-white border-accent"
+          : "bg-surface text-muted border-border hover:text-text hover:border-accent/40"
+      }`}
+    >
+      {label}
+      <span className={active ? "opacity-75" : "opacity-60"}>{count}</span>
+    </button>
+  );
+}
+
+/* Compact, polished file card. Image previews when the object_key is an image
+ * URL; coloured extension badge otherwise. Smart filename so opaque UUID names
+ * don't pollute the UI. */
+function FileCard({ file }: { file: FileRow }) {
+  const ext = fileTypeFromName(file.name, file.object_key);
+  const url = isUrl(file.object_key);
+  const isImg = isImageExt(ext) && url;
+  const name = displayName(file);
+  const kindLabel = DOC_KIND_LABELS[file.kind] ?? file.kind;
+  const colorCls = fileExtColor(ext, url && !isImg);
+
+  const Body = (
+    <div className="h-full flex flex-col bg-surface border border-border rounded-xl overflow-hidden hover:border-accent hover:shadow-soft transition-all group">
+      {/* Top row — preview or extension badge */}
+      <div className="relative aspect-[16/9] bg-bg/40 border-b border-border overflow-hidden">
+        {isImg ? (
+          // eslint-disable-next-line jsx-a11y/img-redundant-alt
+          <img
+            src={file.object_key}
+            alt={name}
+            loading="lazy"
+            className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
+          />
+        ) : (
+          <div className="absolute inset-0 grid place-items-center">
+            <div className={`w-12 h-12 rounded-xl grid place-items-center text-[10.5px] font-extrabold border ${colorCls}`}>
+              {url ? <LinkIcon size={16} /> : ext.slice(0, 4)}
+            </div>
+          </div>
+        )}
+        {/* Extension chip (top-right) */}
+        <span className={`absolute top-1.5 right-1.5 text-[9.5px] uppercase tracking-wider font-extrabold px-1.5 py-0.5 rounded ${
+          isImg ? "bg-black/55 text-white backdrop-blur-sm" : "bg-surface/90 backdrop-blur-sm text-muted border border-border"
+        }`}>
+          {url && !isImg ? "URL" : ext}
+        </span>
+      </div>
+
+      {/* Body — name, kind chip, meta */}
+      <div className="flex flex-col flex-1 p-2.5 gap-1">
+        <div className="flex items-start justify-between gap-2 min-w-0">
+          <span className="text-[12.5px] font-semibold text-text leading-snug truncate" title={file.name || name}>
+            {name}
+          </span>
+        </div>
+        <div className="flex items-center justify-between gap-2 mt-auto pt-1">
+          <span className="text-[10px] uppercase tracking-wider font-bold px-1.5 py-px rounded bg-accent-soft text-accent truncate max-w-[60%]">
+            {kindLabel}
+          </span>
+          <span className="text-[10.5px] text-muted whitespace-nowrap">{relTimeShort(file.uploaded_at)}</span>
+        </div>
+      </div>
+    </div>
+  );
+
+  // URLs open in new tab; storage-keyed files route to the source so the user
+  // can preview from the opportunity page.
+  return url ? (
+    <a href={file.object_key} target="_blank" rel="noopener noreferrer" className="block h-full">
+      {Body}
+    </a>
+  ) : (
+    <Link to={`/pipeline/${file.opportunity_id}`} className="block h-full">
+      {Body}
+    </Link>
   );
 }
 
@@ -857,11 +983,24 @@ const UPDATE_KINDS: { key: UpdateRow["kind"]; label: string; tone: string }[] = 
 
 function UpdatesTab() {
   const qc = useQueryClient();
+  const [params, setParams] = useSearchParams();
   const [composeOpen, setComposeOpen] = useState(false);
   const { data, isLoading } = useQuery<{ items: UpdateRow[] }>({
     queryKey: ["me", "updates"], queryFn: () => api("/api/v1/me/updates"),
   });
   const items = data?.items ?? [];
+
+  // Deep-link: /my-work?tab=updates&new=1 (from the daily-update attention bell)
+  // auto-opens the composer once, then strips the flag from the URL.
+  useEffect(() => {
+    if (params.get("new") === "1") {
+      setComposeOpen(true);
+      const next = new URLSearchParams(params);
+      next.delete("new");
+      setParams(next, { replace: true });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -1153,7 +1292,104 @@ function ProfileTab() {
           <PerfRow label="Hours logged (last 30d)"      value={`${p.hours_last_30.toFixed(1)}h`} tone="neutral" />
         </ul>
       </section>
+
+      <div className="lg:col-span-3">
+        <NotificationPrefsCard />
+      </div>
     </div>
+  );
+}
+
+/* Notification preferences — per category × delivery tier matrix.
+ * Reads /me/notification-preferences (which returns the 10 categories with
+ * effective tier and an "is_default" flag), and lets the user override per
+ * category. Saves immediately on change. */
+type Tier = "immediate" | "digest_daily" | "digest_weekly" | "off";
+type PrefRow = { category: string; tier: Tier; is_default: boolean; description: string };
+
+const TIER_OPTIONS: { value: Tier; label: string; help: string }[] = [
+  { value: "immediate",     label: "Immediate", help: "Email as soon as the event happens." },
+  { value: "digest_daily",  label: "Daily",     help: "Roll up into one email each morning." },
+  { value: "digest_weekly", label: "Weekly",    help: "Roll up into one email each week." },
+  { value: "off",           label: "Off",       help: "Don't email me about this category." },
+];
+
+const CATEGORY_LABEL: Record<string, string> = {
+  account: "Account & access",
+  pipeline: "Pipeline & opportunities",
+  delivery: "Project delivery",
+  tasks: "Tasks & comments",
+  governance: "Governance & compliance",
+  risk: "Risk & escalation",
+  finance: "Finance",
+  vendor: "Vendor delivery",
+  relations: "Relationships & engagements",
+  exec_digest: "Executive digests",
+};
+
+function NotificationPrefsCard() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<{ preferences: PrefRow[] }>({
+    queryKey: ["me", "notification-prefs"],
+    queryFn: () => api("/api/v1/me/notification-preferences"),
+  });
+  const set = useMutation({
+    mutationFn: (b: { category: string; tier: Tier }) =>
+      api("/api/v1/me/notification-preferences", {
+        method: "PUT",
+        body: JSON.stringify(b),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["me", "notification-prefs"] });
+      toast.success("Saved");
+    },
+    onError: (e: Error) => toast.error("Could not save", e.message),
+  });
+
+  const rows = (data?.preferences ?? []).slice().sort((a, b) =>
+    (CATEGORY_LABEL[a.category] ?? a.category).localeCompare(CATEGORY_LABEL[b.category] ?? b.category),
+  );
+
+  return (
+    <section className="bg-surface border border-border rounded-2xl p-5">
+      <h2 className="h2 mb-1">Email notifications</h2>
+      <p className="text-xs text-muted mb-4">
+        Set the cadence for each category. Critical events (overdue, blockers, security) always send
+        immediately regardless of preference.
+      </p>
+      {isLoading ? (
+        <div className="text-sm text-muted">Loading…</div>
+      ) : (
+        <ul className="space-y-2">
+          {rows.map((r) => (
+            <li
+              key={r.category}
+              className="flex items-start justify-between gap-3 bg-bg/40 border border-border rounded-xl p-3"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-[13px] font-bold text-text">{CATEGORY_LABEL[r.category] ?? r.category}</div>
+                <div className="text-[11px] text-muted leading-snug">{r.description}</div>
+                {r.is_default && (
+                  <span className="text-[10px] uppercase tracking-wider font-bold text-muted/70 mt-1 inline-block">
+                    using default
+                  </span>
+                )}
+              </div>
+              <select
+                value={r.tier}
+                onChange={(e) => set.mutate({ category: r.category, tier: e.target.value as Tier })}
+                disabled={set.isPending}
+                className="bg-surface border border-border rounded-full text-[12.5px] font-semibold px-3 py-1.5 focus:outline-none focus:border-accent disabled:opacity-60"
+              >
+                {TIER_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

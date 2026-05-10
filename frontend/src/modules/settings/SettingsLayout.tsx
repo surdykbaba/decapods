@@ -20,6 +20,7 @@ const SECTIONS: Section[] = [
     group: "Workspace",
     items: [
       { to: "/settings",            label: "General",      icon: SlidersHorizontal, description: "Tenant, branding, and basics" },
+      { to: "/settings/roles",      label: "Roles & permissions", icon: ShieldCheck, description: "Which roles see which sections" },
       { to: "/settings/members",    label: "Members & roles", icon: Users,          description: "Who can do what" },
       { to: "/settings/notifications", label: "Notifications", icon: Bell,         description: "Channels and rules" },
     ],

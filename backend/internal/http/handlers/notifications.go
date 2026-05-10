@@ -186,7 +186,7 @@ func (h *Notifications) List(c *gin.Context) {
 			ID: "me:daily-update", Kind: "personal.daily_update_pending", Severity: "info",
 			Title: title,
 			Body:  "Drop a quick standup so the team has visibility.",
-			Link:  "/my-work",
+			Link:  "/my-work?tab=updates&new=1",
 			At:    now.Format(time.RFC3339),
 		})
 	}

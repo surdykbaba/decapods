@@ -24,6 +24,7 @@ import { GitHubPage } from "@/modules/integrations/GitHubPage";
 import { AdminUsersPage } from "@/modules/admin/UsersPage";
 import { WorkflowPage } from "@/modules/settings/WorkflowPage";
 import { TeamRatesPage } from "@/modules/settings/TeamRatesPage";
+import { RolesPermissionsPage } from "@/modules/settings/RolesPermissionsPage";
 import { MyWorkPage } from "@/modules/me/MyWorkPage";
 import { ArchivedProjectsPage } from "@/modules/settings/ArchivedProjectsPage";
 import { VendorsPage } from "@/modules/vendors/VendorsPage";
@@ -84,6 +85,7 @@ export function App() {
         {/* Unified settings */}
         <Route path="/settings" element={<SettingsLayout />}>
           <Route index element={<SettingsGeneralPage />} />
+          <Route path="roles"      element={<RolesPermissionsPage />} />
           <Route path="workflow"   element={<WorkflowPage />} />
           <Route path="team-rates" element={<TeamRatesPage />} />
           <Route path="governance" element={<GovernancePoliciesPage />} />

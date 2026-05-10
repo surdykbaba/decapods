@@ -6,7 +6,8 @@ import {
   Handshake, UsersRound, Network, UserCog,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useTheme, toggleTheme } from "@/lib/theme";
 import { useHeartbeat } from "@/lib/presence";
@@ -17,19 +18,20 @@ type NavItem = {
   to: string;
   label: string;
   icon: React.ComponentType<any>;
+  section: string;
 };
 
 const navTop: NavItem[] = [
-  { to: "/my-work",   label: "My Accubin", icon: UserCheck },
-  { to: "/pipeline",  label: "Pipeline",  icon: Briefcase },
-  { to: "/projects",  label: "Projects",  icon: FolderKanban },
-  { to: "/workforce",    label: "Workforce",    icon: Users },
-  { to: "/members",      label: "Members",      icon: UserCog },
-  { to: "/stakeholders", label: "Stakeholders", icon: UsersRound },
-  { to: "/vendors",      label: "Vendors",      icon: Handshake },
-  { to: "/agents",       label: "PR & Agents",  icon: Network },
-  { to: "/finance",      label: "Finance",      icon: Banknote },
-  { to: "/settings",     label: "Settings",     icon: Settings },
+  { section: "my_work",      to: "/my-work",      label: "My Accubin",   icon: UserCheck },
+  { section: "pipeline",     to: "/pipeline",     label: "Pipeline",     icon: Briefcase },
+  { section: "projects",     to: "/projects",     label: "Projects",     icon: FolderKanban },
+  { section: "workforce",    to: "/workforce",    label: "Workforce",    icon: Users },
+  { section: "members",      to: "/members",      label: "Members",      icon: UserCog },
+  { section: "stakeholders", to: "/stakeholders", label: "Stakeholders", icon: UsersRound },
+  { section: "vendors",      to: "/vendors",      label: "Vendors",      icon: Handshake },
+  { section: "agents",       to: "/agents",       label: "PR & Agents",  icon: Network },
+  { section: "finance",      to: "/finance",      label: "Finance",      icon: Banknote },
+  { section: "settings",     to: "/settings",     label: "Settings",     icon: Settings },
 ];
 
 export function Shell() {
@@ -43,6 +45,20 @@ export function Shell() {
   // /me/heartbeat every minute while the tab is visible so directory pages
   // can show "online / away / offline" with relative time.
   useHeartbeat();
+
+  // Sidebar role-visibility — server returns the section keys this user is
+  // allowed to see. We default to the full nav while loading so the UI doesn't
+  // flicker into an empty sidebar on slow connections.
+  const { data: vis } = useQuery<{ sections: string[] }>({
+    queryKey: ["me-visibility"],
+    queryFn: () => api("/api/v1/me/visibility"),
+    staleTime: 60_000,
+  });
+  const visibleNav = useMemo(() => {
+    if (!vis?.sections) return navTop;
+    const allow = new Set(vis.sections);
+    return navTop.filter((n) => allow.has(n.section));
+  }, [vis]);
 
   useEffect(() => {
     if (!user) api<any>("/api/v1/me").then(setUser).catch(() => {});
@@ -86,7 +102,7 @@ export function Shell() {
         </button>
 
         <nav className="mt-6 flex-1 overflow-y-auto space-y-1">
-          {navTop.map((n) => (
+          {visibleNav.map((n) => (
             <NavLink
               key={n.to}
               to={n.to}

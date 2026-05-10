@@ -85,6 +85,11 @@ func New(d Deps) http.Handler {
 	authed.GET("/settings/general", general.Get)
 	authed.PUT("/settings/general", mw.RequirePermission("governance:write"), general.Put)
 
+	rv := handlers.NewRoleVisibility(d.DB)
+	authed.GET("/settings/role-visibility", rv.Get)
+	authed.PUT("/settings/role-visibility", mw.RequirePermission("governance:write"), rv.Put)
+	authed.GET("/me/visibility",            rv.MeVisibility)
+
 	teamRates := handlers.NewTeamRates(d.DB)
 	authed.GET("/settings/team-rates", mw.RequirePermission("opportunity:read"), teamRates.List)
 	authed.PUT("/settings/team-rates", mw.RequirePermission("governance:write"), teamRates.Upsert)
@@ -143,6 +148,7 @@ func New(d Deps) http.Handler {
 	prefs := handlers.NewNotificationPrefs(earlyEngine)
 	authed.GET("/me/notification-preferences",  prefs.List)
 	authed.PUT("/me/notification-preferences",  prefs.Set)
+	authed.POST("/admin/digests/run",           mw.RequirePermission("governance:write"), prefs.RunDigest)
 
 	members := handlers.NewMembers(d.DB).WithMailer(earlyMailer, d.Cfg)
 	authed.GET("/members",                   members.List)
@@ -167,7 +173,7 @@ func New(d Deps) http.Handler {
 	authed.POST("/projects/:id/stakeholders", mw.RequirePermission("project:write"), stakeholders.AddProject)
 	authed.DELETE("/stakeholders/:id", mw.RequirePermission("opportunity:write"), stakeholders.Delete)
 
-	proj := handlers.NewProjects(d.DB)
+	proj := handlers.NewProjects(d.DB).WithEngine(earlyEngine)
 	authed.GET("/projects", mw.RequirePermission("project:read"), proj.List)
 	authed.POST("/projects", mw.RequirePermission("project:write"), proj.Create)
 	authed.GET("/projects/:id", mw.RequirePermission("project:read"), proj.Get)
@@ -188,7 +194,7 @@ func New(d Deps) http.Handler {
 	authed.GET("/workforce/burnout", mw.RequirePermission("workforce:read"), wf.Burnout)
 	authed.POST("/workforce/time-entries", mw.RequirePermission("time_entry:write"), wf.LogTime)
 
-	fin := handlers.NewFinance(d.DB)
+	fin := handlers.NewFinance(d.DB).WithEngine(earlyEngine)
 	authed.GET("/finance/invoices", mw.RequirePermission("invoice:read"), fin.ListInvoices)
 	authed.POST("/finance/invoices", mw.RequirePermission("invoice:write"), fin.CreateInvoice)
 	authed.POST("/finance/payments", mw.RequirePermission("payment:write"), fin.RecordPayment)
