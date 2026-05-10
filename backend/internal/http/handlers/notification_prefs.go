@@ -39,6 +39,24 @@ func (h *NotificationPrefs) List(c *gin.Context) {
 	c.JSON(200, gin.H{"preferences": rows, "events": cat})
 }
 
+// RunDigest manually drains pending outbox rows for a given tier and sends a
+// digest email to every recipient with queued items. Provided so the cron
+// worker has a concrete target and admins can fire one mid-day for testing.
+//
+// POST /admin/digests/run?tier=digest_daily   (governance:write)
+func (h *NotificationPrefs) RunDigest(c *gin.Context) {
+	t := c.Query("tier")
+	if t == "" {
+		t = "digest_daily"
+	}
+	sum, err := h.engine.DrainDigest(c, notifications.Tier(t))
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "tier": t, "recipients": sum.Recipients, "rows": sum.Rows})
+}
+
 func (h *NotificationPrefs) Set(c *gin.Context) {
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	var req struct {

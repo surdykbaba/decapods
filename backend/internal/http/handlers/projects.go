@@ -6,6 +6,7 @@ import (
 
 	"github.com/decapods/pgdp/backend/internal/auth"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
+	"github.com/decapods/pgdp/backend/internal/notifications"
 	"github.com/decapods/pgdp/backend/internal/projects"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -13,12 +14,19 @@ import (
 )
 
 type Projects struct {
-	db  *pgxpool.Pool
-	svc *projects.Service
+	db     *pgxpool.Pool
+	svc    *projects.Service
+	notify *notifications.Engine
 }
 
 func NewProjects(db *pgxpool.Pool) *Projects {
 	return &Projects{db: db, svc: projects.NewService(db)}
+}
+
+// WithEngine attaches the notification engine. Optional.
+func (h *Projects) WithEngine(engine *notifications.Engine) *Projects {
+	h.notify = engine
+	return h
 }
 
 func (h *Projects) List(c *gin.Context) {
@@ -95,6 +103,28 @@ func (h *Projects) AddTask(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Email the assignee if they're someone other than the creator. Don't ping
+	// people for tasks they made for themselves.
+	if h.notify != nil && req.AssigneeID != uuid.Nil && req.AssigneeID != req.CreatedBy {
+		tenantID := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+		var projectName string
+		_ = h.db.QueryRow(c, `SELECT name FROM projects WHERE id=$1`, id).Scan(&projectName)
+		assignee := req.AssigneeID
+		h.notify.Notify(c, notifications.Event{
+			Kind:       "task.assigned",
+			TenantID:   tenantID,
+			Recipients: []notifications.Recipient{{UserID: &assignee}},
+			Payload: map[string]any{
+				"Title":   req.Title,
+				"Project": projectName,
+				"DueOn":   req.DueOn,
+			},
+			Link:      "/my-work",
+			DedupeKey: "task.assigned:" + tid.String(),
+		})
+	}
+
 	c.JSON(201, gin.H{"id": tid})
 }
 

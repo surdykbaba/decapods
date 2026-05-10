@@ -1,18 +1,37 @@
 package handlers
 
 import (
+	"context"
 	"strings"
 	"time"
 
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
+	"github.com/decapods/pgdp/backend/internal/notifications"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Finance struct{ db *pgxpool.Pool }
+type Finance struct {
+	db     *pgxpool.Pool
+	notify *notifications.Engine
+}
 
 func NewFinance(db *pgxpool.Pool) *Finance { return &Finance{db: db} }
+
+// WithEngine attaches the notification engine. Optional — without it, finance
+// events still happen but no email goes out.
+func (h *Finance) WithEngine(engine *notifications.Engine) *Finance {
+	h.notify = engine
+	return h
+}
+
+// financeRecipients returns the user IDs of every member with the "finance"
+// or "super_admin" role — the people who care about money events.
+func (h *Finance) financeRecipients(ctx context.Context, tenantID uuid.UUID) []notifications.Recipient {
+	if h.notify == nil { return nil }
+	return h.notify.RecipientsByRole(ctx, tenantID, "finance", "super_admin", "ceo")
+}
 
 func (h *Finance) ListInvoices(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
@@ -81,6 +100,24 @@ func (h *Finance) CreateInvoice(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+
+	if h.notify != nil {
+		ccy := req.Currency
+		if ccy == "" { ccy = "USD" }
+		h.notify.Notify(c, notifications.Event{
+			Kind:       "finance.invoice_created",
+			TenantID:   tid,
+			Recipients: h.financeRecipients(c, tid),
+			Payload: map[string]any{
+				"Number":   req.Number,
+				"Amount":   req.Amount,
+				"Currency": ccy,
+			},
+			Link:      "/finance/invoices",
+			DedupeKey: "finance.invoice_created:" + id.String(),
+		})
+	}
+
 	c.JSON(201, gin.H{"id": id})
 }
 
@@ -187,6 +224,27 @@ func (h *Finance) RecordPayment(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+
+	if h.notify != nil {
+		// Look up invoice number + currency for the email payload (transaction is committed).
+		var invNumber, ccy string
+		_ = h.db.QueryRow(c,
+			`SELECT number, currency FROM invoices WHERE id=$1`, req.InvoiceID).Scan(&invNumber, &ccy)
+		h.notify.Notify(c, notifications.Event{
+			Kind:       "finance.payment_logged",
+			TenantID:   tid,
+			Recipients: h.financeRecipients(c, tid),
+			Payload: map[string]any{
+				"Number":   invNumber,
+				"Amount":   req.Amount,
+				"Currency": ccy,
+				"Method":   req.Method,
+			},
+			Link:      "/finance/invoices",
+			DedupeKey: "finance.payment_logged:" + pid.String(),
+		})
+	}
+
 	c.JSON(201, gin.H{"id": pid})
 }
 
@@ -503,6 +561,26 @@ func (h *Finance) UpdateInvoiceStatus(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Issuing an invoice is the email-worthy moment. Voiding silently — that's
+	// an internal cleanup action.
+	if req.Status == "issued" && h.notify != nil {
+		var number, currency string
+		_ = h.db.QueryRow(c,
+			`SELECT number, currency FROM invoices WHERE id=$1`, id).Scan(&number, &currency)
+		h.notify.Notify(c, notifications.Event{
+			Kind:       "finance.invoice_approved",
+			TenantID:   tid,
+			Recipients: h.financeRecipients(c, tid),
+			Payload: map[string]any{
+				"Number":   number,
+				"Currency": currency,
+			},
+			Link:      "/finance/invoices",
+			DedupeKey: "finance.invoice_approved:" + id.String(),
+		})
+	}
+
 	c.JSON(200, gin.H{"ok": true})
 }
 
