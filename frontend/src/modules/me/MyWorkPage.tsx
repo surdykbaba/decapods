@@ -10,7 +10,7 @@ import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
   Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
-  Sparkles,
+  Sparkles, Bell, XCircle,
 } from "lucide-react";
 
 type TaskRow = {
@@ -264,6 +264,10 @@ function DashboardTab() {
 
   return (
     <div className="space-y-5">
+      {/* Heads-up panel — recent unread workspace events that landed on this
+          user (leave decisions, kudos, milestone assignments, mentions). */}
+      <HeadsUpPanel />
+
       {/* Smart briefing — adaptive headline, health badge, briefing sentence */}
       <section className="bg-surface border border-border rounded-2xl p-5">
         <div className="flex items-start justify-between flex-wrap gap-3">
@@ -1553,6 +1557,131 @@ function PerfRow({ label, value, tone }: { label: string; value: React.ReactNode
     <li className="flex items-center justify-between text-sm">
       <span className="text-muted">{label}</span>
       <span className={`font-bold ${cls}`}>{value}</span>
+    </li>
+  );
+}
+
+/* ---------- Heads-up panel ----------
+ *
+ * Surfaces engine-dispatched events that landed on this user — leave decisions,
+ * mentions, milestone assignments, kudos, governance approvals. The bell
+ * already carries the same data, but the dashboard panel makes the high-
+ * severity ones (rejection, overdue) impossible to miss. Hides itself when
+ * there's nothing unread, so it never becomes wallpaper.
+ */
+
+type HeadsUpItem = {
+  id: string;
+  outbox_id?: string;
+  kind: string;
+  severity: "info" | "warn" | "danger" | "critical";
+  title: string;
+  body: string;
+  link: string;
+  at: string;
+  read?: boolean;
+  payload?: Record<string, any>;
+};
+
+function HeadsUpPanel() {
+  const qc = useQueryClient();
+  const { data } = useQuery<{ items: HeadsUpItem[]; unread: number }>({
+    queryKey: ["me", "headsup"],
+    queryFn: () => api("/api/v1/notifications"),
+    refetchInterval: 60_000,
+  });
+
+  const markRead = useMutation({
+    mutationFn: (id: string) => api(`/api/v1/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["me", "headsup"] }),
+  });
+  const markAll = useMutation({
+    mutationFn: () => api("/api/v1/notifications/read-all", { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["me", "headsup"] }),
+  });
+
+  // Only show real engine events (outbox-backed) that are unread. Synthetic
+  // items (overdue task, etc.) already render in the triage panel below — no
+  // need to double up.
+  const items = (data?.items ?? [])
+    .filter((it) => it.outbox_id && !it.read)
+    .sort((a, b) => severityRank(b.severity) - severityRank(a.severity))
+    .slice(0, 5);
+
+  if (items.length === 0) return null;
+
+  return (
+    <section className="bg-gradient-to-br from-accent-soft/40 via-surface to-warn/10 border border-accent/20 rounded-2xl p-5">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <Bell size={16} className="text-accent" />
+          <h2 className="text-sm font-bold text-text">Heads up</h2>
+          <span className="pill bg-accent-soft text-accent text-[11px]">{items.length} new</span>
+        </div>
+        <button
+          onClick={() => markAll.mutate()}
+          className="text-[11.5px] text-muted hover:text-text font-medium"
+        >
+          Mark all read
+        </button>
+      </div>
+      <ul className="space-y-2">
+        {items.map((it) => (
+          <HeadsUpRow
+            key={it.id}
+            item={it}
+            onDismiss={() => it.outbox_id && markRead.mutate(it.id)}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function severityRank(s: HeadsUpItem["severity"]): number {
+  return { critical: 4, danger: 3, warn: 2, info: 1 }[s] ?? 0;
+}
+
+function HeadsUpRow({ item, onDismiss }: { item: HeadsUpItem; onDismiss: () => void }) {
+  const tone = {
+    critical: { bg: "bg-danger/10 border-danger/30", fg: "text-danger", icon: <XCircle size={14} /> },
+    danger:   { bg: "bg-danger/10 border-danger/30", fg: "text-danger", icon: <XCircle size={14} /> },
+    warn:     { bg: "bg-warn/10 border-warn/30",     fg: "text-warn",   icon: <AlertTriangle size={14} /> },
+    info:     { bg: "bg-accent-soft border-accent/30", fg: "text-accent", icon: <Sparkles size={14} /> },
+  }[item.severity] ?? { bg: "bg-bg border-border", fg: "text-muted", icon: <Bell size={14} /> };
+
+  const at = new Date(item.at);
+  const sinceMin = Math.max(1, Math.round((Date.now() - at.getTime()) / 60_000));
+  const since = sinceMin < 60
+    ? `${sinceMin}m ago`
+    : sinceMin < 1440 ? `${Math.round(sinceMin / 60)}h ago`
+    : `${Math.round(sinceMin / 1440)}d ago`;
+
+  return (
+    <li className={`flex items-start gap-3 px-3 py-2.5 rounded-lg border ${tone.bg}`}>
+      <span className={`mt-0.5 shrink-0 ${tone.fg}`}>{tone.icon}</span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="text-[13px] font-bold text-text">{item.title}</span>
+          <span className="text-[10.5px] text-muted">{since}</span>
+        </div>
+        {item.body && <div className="text-[12px] text-muted mt-0.5">{item.body}</div>}
+        {item.link && (
+          <Link
+            to={item.link}
+            className="inline-flex items-center gap-1 mt-1 text-[11.5px] text-accent font-semibold hover:underline"
+          >
+            Open <ArrowRight size={11} />
+          </Link>
+        )}
+      </div>
+      <button
+        onClick={onDismiss}
+        className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg/60"
+        title="Dismiss"
+      >
+        <X size={13} />
+      </button>
     </li>
   );
 }

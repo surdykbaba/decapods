@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/decapods/pgdp/backend/internal/governance"
@@ -18,18 +20,21 @@ type Notifications struct {
 
 func NewNotifications(db *pgxpool.Pool) *Notifications { return &Notifications{db: db} }
 
-// item is the shape every row returned by the bell uses. These are derived live
-// from the current state — they aren't entries in a log, so they auto-clear as
-// soon as the underlying condition is resolved (task closed, doc attached,
-// opportunity approved, etc.).
+// item is the shape every row returned by the bell uses. Synthetic items
+// (overdue tasks, pending approvals) are derived live and auto-clear when
+// the underlying state changes. Real engine events come from notification_outbox
+// — those carry an outbox UUID so the frontend can mark them read.
 type item struct {
-	ID       string `json:"id"`
-	Kind     string `json:"kind"`
-	Severity string `json:"severity"` // info | warn | danger
-	Title    string `json:"title"`
-	Body     string `json:"body"`
-	Link     string `json:"link"`
-	At       string `json:"at"`
+	ID       string                 `json:"id"`
+	Kind     string                 `json:"kind"`
+	Severity string                 `json:"severity"` // info | warn | danger | critical
+	Title    string                 `json:"title"`
+	Body     string                 `json:"body"`
+	Link     string                 `json:"link"`
+	At       string                 `json:"at"`
+	OutboxID string                 `json:"outbox_id,omitempty"` // present for real engine events
+	Read     bool                   `json:"read,omitempty"`
+	Payload  map[string]any         `json:"payload,omitempty"`
 }
 
 // List returns *attention items* — tasks and approvals waiting on the
@@ -191,16 +196,153 @@ func (h *Notifications) List(c *gin.Context) {
 		})
 	}
 
+	// 4. Engine-dispatched events from the outbox (e.g. leave decisions,
+	//    mentions, kudos, milestone assignments). Last 30 days, unread first.
+	//    These carry an OutboxID so the frontend can mark them read explicitly.
+	outRows, _ := h.db.Query(c, `
+		SELECT id, event_kind, category, subject, payload, COALESCE(link,''),
+		       created_at, read_at IS NOT NULL AS is_read
+		FROM notification_outbox
+		WHERE user_id=$1 AND created_at > now() - interval '30 days'
+		ORDER BY (read_at IS NULL) DESC, created_at DESC
+		LIMIT 60`, uid)
+	if outRows != nil {
+		defer outRows.Close()
+		for outRows.Next() {
+			var (
+				oid                    uuid.UUID
+				kind, cat, subj, link  string
+				payloadRaw             []byte
+				created                time.Time
+				isRead                 bool
+			)
+			if err := outRows.Scan(&oid, &kind, &cat, &subj, &payloadRaw, &link, &created, &isRead); err != nil {
+				continue
+			}
+			payload := map[string]any{}
+			_ = json.Unmarshal(payloadRaw, &payload)
+			sev := outboxSeverity(kind)
+			body := outboxBody(kind, payload)
+			out = append(out, item{
+				ID:       "outbox:" + oid.String(),
+				OutboxID: oid.String(),
+				Kind:     kind,
+				Severity: sev,
+				Title:    subj,
+				Body:     body,
+				Link:     link,
+				At:       created.Format(time.RFC3339),
+				Read:     isRead,
+				Payload:  payload,
+			})
+		}
+	}
+
+	// Unread = synthetic items (always "unread") + unread outbox rows.
+	unread := 0
+	for _, it := range out {
+		if it.OutboxID == "" || !it.Read {
+			unread++
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"items":  out,
-		"unread": len(out), // every attention item is unread by definition
+		"unread": unread,
 	})
 }
 
-// MarkRead/MarkAllRead are kept for API compatibility but become no-ops:
-// derived attention items are auto-resolved when the underlying state changes.
-func (h *Notifications) MarkRead(c *gin.Context)    { c.JSON(200, gin.H{"ok": true}) }
-func (h *Notifications) MarkAllRead(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) }
+// outboxSeverity maps an event kind to a UI severity bucket. Falls back to
+// "info" when the kind isn't explicitly classified.
+func outboxSeverity(kind string) string {
+	switch {
+	case kind == "leave.rejected" || kind == "task.rejected" || kind == "governance.approval_rejected":
+		return "danger"
+	case kind == "leave.approved" || kind == "task.approved" || kind == "governance.approval_granted":
+		return "info"
+	case kind == "task.comment_mention":
+		return "info"
+	case kind == "milestone.created" || kind == "milestone.due_soon":
+		return "warn"
+	case kind == "milestone.overdue" || kind == "task.overdue":
+		return "danger"
+	default:
+		return "info"
+	}
+}
+
+// outboxBody pulls a human one-liner from the event payload, biased toward the
+// fields that actually carry context (Reason, Body, Description, Project, etc.)
+// so the bell row doesn't repeat the subject verbatim.
+func outboxBody(kind string, p map[string]any) string {
+	pick := func(keys ...string) string {
+		for _, k := range keys {
+			if v, ok := p[k].(string); ok && strings.TrimSpace(v) != "" {
+				return v
+			}
+		}
+		return ""
+	}
+	switch kind {
+	case "leave.rejected":
+		actor := pick("Actor")
+		reason := pick("Reason")
+		if actor != "" && reason != "" {
+			return actor + " · \"" + reason + "\""
+		}
+		return reason
+	case "leave.approved":
+		actor := pick("Actor")
+		if actor != "" {
+			return "Approved by " + actor
+		}
+		return ""
+	case "task.comment_mention":
+		body := pick("Body")
+		where := pick("Where", "Title")
+		if where != "" && body != "" {
+			return where + ": " + body
+		}
+		return body
+	case "milestone.created":
+		return pick("Project", "Title")
+	default:
+		// Generic — surface a "Project / Title" if present, otherwise stay quiet
+		// so the subject line carries the message.
+		if v := pick("Project", "Title", "Body"); v != "" {
+			return v
+		}
+		return ""
+	}
+}
+
+// MarkRead — POST /notifications/:id/read.
+// Stamps read_at on a single outbox row if the id is "outbox:<uuid>"; ignores
+// synthetic ids (their state lives in the underlying entity).
+func (h *Notifications) MarkRead(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	raw := c.Param("id")
+	if strings.HasPrefix(raw, "outbox:") {
+		id, err := uuid.Parse(strings.TrimPrefix(raw, "outbox:"))
+		if err == nil {
+			_, _ = h.db.Exec(c,
+				`UPDATE notification_outbox SET read_at=now()
+				 WHERE id=$1 AND user_id=$2 AND read_at IS NULL`, id, uid)
+		}
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// MarkAllRead — POST /notifications/read-all.
+// Single statement marks every unread outbox row for the caller. Synthetic
+// items continue to auto-clear as their underlying state changes.
+func (h *Notifications) MarkAllRead(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	_, _ = h.db.Exec(c,
+		`UPDATE notification_outbox SET read_at=now()
+		 WHERE user_id=$1 AND read_at IS NULL`, uid)
+	c.JSON(200, gin.H{"ok": true})
+}
 
 func sameDay(a, b time.Time) bool {
 	return a.Year() == b.Year() && a.YearDay() == b.YearDay()
