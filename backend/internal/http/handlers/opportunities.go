@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,12 +18,43 @@ import (
 )
 
 type Opportunities struct {
-	db  *pgxpool.Pool
-	gov *governance.Engine
+	db     *pgxpool.Pool
+	gov    *governance.Engine
+	notify *notifications.Engine
 }
 
 func NewOpportunities(db *pgxpool.Pool) *Opportunities {
 	return &Opportunities{db: db, gov: governance.New(db)}
+}
+
+// WithEngine attaches the email-sending notification engine. Optional —
+// without it, in-app notifications still fire and the API works fine.
+func (h *Opportunities) WithEngine(engine *notifications.Engine) *Opportunities {
+	h.notify = engine
+	return h
+}
+
+// opportunityStakeholderRecipients pulls the creator + business lead of an
+// opportunity. Used to email the people who care about a transition outcome
+// (approve/reject/convert) without spamming the whole tenant.
+func opportunityStakeholderRecipients(ctx context.Context, db *pgxpool.Pool, oppID uuid.UUID) []notifications.Recipient {
+	out := []notifications.Recipient{}
+	rows, err := db.Query(ctx, `
+		SELECT DISTINCT u.id
+		FROM opportunities o
+		JOIN users u ON u.id IN (o.created_by, o.business_lead_id)
+		WHERE o.id = $1 AND u.deleted_at IS NULL`, oppID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err == nil {
+			out = append(out, notifications.Recipient{UserID: &id})
+		}
+	}
+	return out
 }
 
 type createOppReq struct {
@@ -484,6 +516,19 @@ func (h *Opportunities) Submit(c *gin.Context) {
 		Link:  "/pipeline/" + id.String(),
 	})
 
+	// Email — engine respects per-user preferences.
+	if h.notify != nil {
+		emailRcpts := h.notify.RecipientsByRole(c, tid, "ceo", "compliance_officer", "super_admin")
+		h.notify.Notify(c, notifications.Event{
+			Kind:       "opportunity.review_requested",
+			TenantID:   tid,
+			Recipients: emailRcpts,
+			Payload:    map[string]any{"Title": oppTitle},
+			Link:       "/pipeline/" + id.String(),
+			DedupeKey:  "opportunity.review_requested:" + id.String(),
+		})
+	}
+
 	c.JSON(200, gin.H{"ok": true, "stage": "under_review"})
 }
 
@@ -576,6 +621,17 @@ func (h *Opportunities) Transition(c *gin.Context) {
 			Body:  body,
 			Link:  "/pipeline/" + id.String(),
 		})
+		// Email the lead's creator + business lead.
+		if h.notify != nil {
+			h.notify.Notify(c, notifications.Event{
+				Kind:       "opportunity.rejected",
+				TenantID:   tid,
+				Recipients: opportunityStakeholderRecipients(c, h.db, id),
+				Payload:    map[string]any{"Title": oppTitle, "Reason": req.Reason, "BackTo": req.To},
+				Link:       "/pipeline/" + id.String(),
+				DedupeKey:  "opportunity.rejected:" + id.String() + ":" + req.To,
+			})
+		}
 	} else if convertedProjectID != nil {
 		_ = notifications.Notify(c, h.db, tid, rcpts, notifications.N{
 			Kind:  "opportunity.converted",
@@ -583,6 +639,16 @@ func (h *Opportunities) Transition(c *gin.Context) {
 			Body:  oppTitle + " entered planning — a delivery project was created.",
 			Link:  "/projects/" + convertedProjectID.String(),
 		})
+		if h.notify != nil {
+			h.notify.Notify(c, notifications.Event{
+				Kind:       "opportunity.converted",
+				TenantID:   tid,
+				Recipients: opportunityStakeholderRecipients(c, h.db, id),
+				Payload:    map[string]any{"Title": oppTitle},
+				Link:       "/projects/" + convertedProjectID.String(),
+				DedupeKey:  "opportunity.converted:" + id.String(),
+			})
+		}
 	} else {
 		_ = notifications.Notify(c, h.db, tid, rcpts, notifications.N{
 			Kind:  "opportunity.transitioned",
@@ -590,6 +656,17 @@ func (h *Opportunities) Transition(c *gin.Context) {
 			Body:  oppTitle + " moved to " + req.To,
 			Link:  "/pipeline/" + id.String(),
 		})
+		// "Approved" is the canonical email-worthy moment when moving forward.
+		if req.To == "approved" && h.notify != nil {
+			h.notify.Notify(c, notifications.Event{
+				Kind:       "opportunity.approved",
+				TenantID:   tid,
+				Recipients: opportunityStakeholderRecipients(c, h.db, id),
+				Payload:    map[string]any{"Title": oppTitle},
+				Link:       "/pipeline/" + id.String(),
+				DedupeKey:  "opportunity.approved:" + id.String(),
+			})
+		}
 	}
 
 	resp := gin.H{"ok": true, "stage": req.To}
