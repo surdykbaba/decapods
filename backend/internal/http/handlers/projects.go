@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"net/http"
+	"time"
 
+	"github.com/decapods/pgdp/backend/internal/auth"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
 	"github.com/decapods/pgdp/backend/internal/projects"
 	"github.com/gin-gonic/gin"
@@ -94,6 +96,164 @@ func (h *Projects) AddTask(c *gin.Context) {
 		return
 	}
 	c.JSON(201, gin.H{"id": tid})
+}
+
+// AppendLog adds an entry to the project's metadata.{kind} array. Used for
+// risks, reports, and the audit_log timeline. Stamps id, at, by automatically.
+func (h *Projects) AppendLog(c *gin.Context) {
+	id, _ := uuid.Parse(c.Param("id"))
+	kind := c.Param("kind")
+	switch kind {
+	case "risks", "reports", "audit_log":
+	default:
+		c.JSON(400, gin.H{"error": "unknown log kind"})
+		return
+	}
+	var body map[string]any
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if body == nil {
+		body = map[string]any{}
+	}
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	body["id"] = uuid.New().String()
+	body["by"] = uid
+	body["at"] = time.Now().UTC().Format(time.RFC3339)
+	if err := h.svc.AppendLog(c, id, kind, body); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{"id": body["id"]})
+}
+
+// PatchLog patches a single item by id within a project's metadata.{kind}.
+func (h *Projects) PatchLog(c *gin.Context) {
+	id, _ := uuid.Parse(c.Param("id"))
+	kind := c.Param("kind")
+	itemID := c.Param("itemId")
+	var patch map[string]any
+	if err := c.ShouldBindJSON(&patch); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.svc.PatchLogItem(c, id, kind, itemID, patch); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// SetCheckpoints replaces metadata.checkpoints with a flat key→bool map.
+func (h *Projects) SetCheckpoints(c *gin.Context) {
+	id, _ := uuid.Parse(c.Param("id"))
+	var req map[string]bool
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.svc.SetMetaKey(c, id, "checkpoints", req); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func (h *Projects) UpdateLinks(c *gin.Context) {
+	id, _ := uuid.Parse(c.Param("id"))
+	var req struct {
+		Links []map[string]any `json:"links"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.svc.UpdateLinks(c, id, req.Links); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// Archive soft-deletes a project.
+func (h *Projects) Archive(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	if err := h.svc.Archive(c, id, tid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// ListArchived returns archived projects. Super-admin only.
+func (h *Projects) ListArchived(c *gin.Context) {
+	roles, _ := c.Get(mw.CtxRoles)
+	rs, _ := roles.([]string)
+	if !hasRole(rs, "super_admin") {
+		c.JSON(403, gin.H{"error": "super_admin only"})
+		return
+	}
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	items, err := h.svc.ListArchived(c, tid)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"items": items})
+}
+
+// Restore brings a soft-deleted project back. Requires super_admin role and
+// the user re-entering their password to confirm.
+func (h *Projects) Restore(c *gin.Context) {
+	roles, _ := c.Get(mw.CtxRoles)
+	rs, _ := roles.([]string)
+	if !hasRole(rs, "super_admin") {
+		c.JSON(403, gin.H{"error": "super_admin only"})
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	var req struct {
+		Password string `json:"password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	var hash string
+	if err := h.db.QueryRow(c, `SELECT password_hash FROM users WHERE id=$1`, uid).Scan(&hash); err != nil {
+		c.JSON(401, gin.H{"error": "auth check failed"})
+		return
+	}
+	if err := auth.VerifyPassword(req.Password, hash); err != nil {
+		c.JSON(401, gin.H{"error": "wrong password"})
+		return
+	}
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	if err := h.svc.Restore(c, id, tid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+func hasRole(have []string, role string) bool {
+	for _, r := range have {
+		if r == role {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Projects) RecalculateRisk(c *gin.Context) {
