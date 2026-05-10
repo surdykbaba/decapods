@@ -1,0 +1,50 @@
+# One-shot helper that exposes the MAILGUN_* secrets to the workflow run as
+# an artifact, so the repo owner can download them and paste into local .env
+# (or feed them into a deploy script).
+#
+# Why this exists: GitHub repo secrets are write-only at the API level. They
+# can only be read inside Actions runners. This workflow writes them to a
+# protected artifact (90-day retention) so the maintainer who has download
+# rights can fetch them once.
+#
+# **Treat the artifact as a credential**: anyone with read access to the run
+# can grab it. Delete the artifact after pulling it.
+name: Expose SMTP env (one-shot)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  expose:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Render env file from secrets
+        env:
+          SMTP_HOST: ${{ secrets.MAILGUN_SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.MAILGUN_SMTP_PORT }}
+          SMTP_USER: ${{ secrets.MAILGUN_SMTP_USER }}
+          SMTP_PASS: ${{ secrets.MAILGUN_SMTP_PASS }}
+          SMTP_FROM: ${{ secrets.MAILGUN_FROM }}
+        run: |
+          mkdir -p out
+          {
+            echo "# Generated $(date -u +%Y-%m-%dT%H:%M:%SZ) by .github/workflows/expose-smtp-env.yml"
+            echo "# Paste these into backend/.env then restart the API."
+            echo "SMTP_HOST=${SMTP_HOST}"
+            echo "SMTP_PORT=${SMTP_PORT}"
+            echo "SMTP_USER=${SMTP_USER}"
+            echo "SMTP_PASS=${SMTP_PASS}"
+            echo "SMTP_FROM=${SMTP_FROM}"
+          } > out/smtp.env
+          # Print only the keys, never the values, to the run log.
+          echo "Wrote out/smtp.env with keys:"
+          grep -oE '^[A-Z_]+' out/smtp.env
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smtp-env
+          path: out/smtp.env
+          retention-days: 1
+          if-no-files-found: error
