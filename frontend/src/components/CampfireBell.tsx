@@ -92,15 +92,22 @@ export function CampfireBell() {
 
   return (
     <div className="relative" ref={ref}>
+      {/* The Campfire entry point lives in the top bar as a brand-coloured pill
+          rather than a sidebar nav item. Animated flicker on the flame icon
+          telegraphs that this is a "live" surface; the unread count rides on
+          the right edge of the pill so it doesn't compete with the label. */}
       <button
         onClick={toggle}
-        className="relative p-2.5 hover:bg-bg rounded-full text-text"
+        className="group relative inline-flex items-center gap-2 pl-3 pr-3.5 py-1.5 rounded-full bg-gradient-to-br from-warn/15 via-accent-soft to-accent-soft hover:from-warn/20 hover:via-accent-soft hover:to-accent-soft border border-accent/30 text-text transition-all"
         aria-label={`Campfire${count ? ` (${count} unread)` : ""}`}
         title="Campfire"
       >
-        <Flame size={17} />
+        <span className="relative grid place-items-center">
+          <Flame size={16} className="text-warn animate-flicker" strokeWidth={2.5} />
+        </span>
+        <span className="text-[13px] font-bold tracking-tight text-accent">Campfire</span>
         {count > 0 && (
-          <span className="absolute top-0.5 right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-danger text-white text-[10px] font-bold grid place-items-center">
+          <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-danger text-white text-[10px] font-bold grid place-items-center ml-0.5">
             {count > 9 ? "9+" : count}
           </span>
         )}

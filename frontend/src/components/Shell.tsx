@@ -3,7 +3,7 @@ import {
  Briefcase, FolderKanban, Users, Banknote,
   Settings, LifeBuoy, Search, UserCheck,
   Sun, Moon, LogOut, ChevronDown,
-  Handshake, UsersRound, Network, UserCog, Folder, Plane, Flame,
+  Handshake, UsersRound, Network, UserCog, Folder, Plane,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useMemo, useState } from "react";
@@ -36,7 +36,8 @@ const navTop: NavItem[] = [
   { section: "finance",      to: "/finance",      label: "Finance",      icon: Banknote },
   { section: "files",        to: "/files",        label: "Files & media", icon: Folder },
   { section: "leave",        to: "/leave",        label: "Leave",        icon: Plane },
-  { section: "campfire",     to: "/campfire",     label: "Campfire",     icon: Flame },
+  // Campfire intentionally lives in the top-bar as an animated flame badge —
+  // not in the sidebar. The CampfireBell component is the only entry point.
   { section: "settings",     to: "/settings",     label: "Settings",     icon: Settings },
 ];
 

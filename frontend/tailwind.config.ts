@@ -28,6 +28,19 @@ export default {
         soft: "0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03)",
         card: "0 8px 28px rgba(15, 23, 42, 0.06)",
       },
+      // Campfire flame flicker — tiny scale + hue wobble. Keep amplitude low so
+      // it reads as "alive", not "loading spinner".
+      keyframes: {
+        flicker: {
+          "0%, 100%": { transform: "scale(1) rotate(-1deg)", filter: "drop-shadow(0 0 4px rgba(249,115,22,0.5))" },
+          "25%":      { transform: "scale(1.08) rotate(2deg)", filter: "drop-shadow(0 0 6px rgba(249,115,22,0.7))" },
+          "50%":      { transform: "scale(0.96) rotate(-2deg)", filter: "drop-shadow(0 0 3px rgba(234,88,12,0.6))" },
+          "75%":      { transform: "scale(1.04) rotate(1deg)", filter: "drop-shadow(0 0 5px rgba(249,115,22,0.65))" },
+        },
+      },
+      animation: {
+        flicker: "flicker 1.6s ease-in-out infinite",
+      },
     },
   },
   plugins: [],
