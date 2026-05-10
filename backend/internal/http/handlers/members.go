@@ -52,6 +52,7 @@ func (h *Members) List(c *gin.Context) {
 		SELECT u.id, u.email, COALESCE(u.full_name,''), u.status, u.mfa_enabled,
 		       u.last_login_at, u.created_at, u.last_seen_at,
 		       u.manual_status, u.manual_status_until,
+		       COALESCE(u.avatar_url, ''),
 		       COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
 		FROM users u
 		LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -82,7 +83,7 @@ func (h *Members) List(c *gin.Context) {
 	for rows.Next() {
 		var (
 			id                          uuid.UUID
-			email, name, status         string
+			email, name, status, avatar string
 			mfa                         bool
 			lastLogin, lastSeen         *time.Time
 			manual                      *string
@@ -91,7 +92,7 @@ func (h *Members) List(c *gin.Context) {
 			roles                       []string
 		)
 		if err := rows.Scan(&id, &email, &name, &status, &mfa, &lastLogin, &created, &lastSeen,
-			&manual, &manualUntil, &roles); err == nil {
+			&manual, &manualUntil, &avatar, &roles); err == nil {
 			// Single source of truth for presence — see derivePresence in me.go.
 			presence := derivePresence(manual, manualUntil, lastSeen)
 			var sinceSec int64 = -1
@@ -105,6 +106,7 @@ func (h *Members) List(c *gin.Context) {
 				"last_seen_at": lastSeen,
 				"presence":     presence,
 				"seconds_since": sinceSec,
+				"avatar_url":    avatar,
 			})
 		}
 	}

@@ -138,14 +138,16 @@ func (a *Auth) Me(c *gin.Context) {
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	roles, _ := c.Get(mw.CtxRoles)
-	var email, name string
-	_ = a.db.QueryRow(c, `SELECT email, full_name FROM users WHERE id = $1`, uid).Scan(&email, &name)
+	var email, name, avatar string
+	_ = a.db.QueryRow(c, `SELECT email, full_name, COALESCE(avatar_url, '') FROM users WHERE id = $1`, uid).
+		Scan(&email, &name, &avatar)
 	c.JSON(http.StatusOK, gin.H{
-		"id":        uid,
-		"tenant_id": tid,
-		"email":     email,
-		"name":      name,
-		"roles":     roles,
+		"id":         uid,
+		"tenant_id":  tid,
+		"email":      email,
+		"name":       name,
+		"roles":      roles,
+		"avatar_url": avatar,
 	})
 }
 

@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect } from "react";
 import { SmartButton } from "@/components/SmartButton";
+import { AvatarUploader } from "@/components/AvatarUploader";
 import { toast } from "@/lib/toast";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -66,6 +67,7 @@ type Profile = {
   email: string;
   name: string;
   github_username?: string;
+  avatar_url?: string;
   roles: string[];
   performance: {
     tasks_done: number;
@@ -1376,6 +1378,11 @@ function ProfileTab() {
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
       <section className="bg-surface border border-border rounded-2xl p-5 lg:col-span-2">
         <h2 className="h2 mb-4">Profile</h2>
+
+        <div className="mb-5 pb-5 border-b border-border">
+          <AvatarUploader name={data.name} email={data.email} src={data.avatar_url} />
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <label className="block">
             <div className="label">Display name</div>

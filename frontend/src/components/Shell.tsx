@@ -13,6 +13,7 @@ import { useTheme, toggleTheme } from "@/lib/theme";
 import { useHeartbeat } from "@/lib/presence";
 import { NotificationsBell } from "@/components/NotificationsBell";
 import { CampfireBell } from "@/components/CampfireBell";
+import { Avatar } from "@/components/Avatar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CommandPalette } from "@/components/CommandPalette";
 
@@ -88,7 +89,6 @@ export function Shell() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const initial = (user?.name ?? user?.email ?? "S")[0]?.toUpperCase();
   const displayName = user?.name?.trim() || user?.email?.split("@")[0] || "Signed in";
   const email = user?.email ?? "";
 
@@ -135,9 +135,7 @@ export function Shell() {
               identityOpen ? "bg-surface" : "hover:bg-surface"
             }`}
           >
-            <span className="w-9 h-9 rounded-full bg-accent-soft text-accent font-bold text-[14px] flex items-center justify-center shrink-0">
-              {initial}
-            </span>
+            <Avatar name={user?.name} email={email} src={user?.avatar_url} size={36} />
             <span className="text-left leading-tight min-w-0 flex-1">
               <div className="text-[13px] font-bold text-text truncate">{displayName}</div>
               <div className="text-[11px] text-muted truncate">{email}</div>
@@ -151,9 +149,7 @@ export function Shell() {
               <div className="absolute left-1 right-1 bottom-full mb-2 z-40 bg-surface border border-border rounded-xl shadow-card py-2 overflow-hidden">
                 <div className="px-4 py-3 border-b border-border">
                   <div className="flex items-center gap-3">
-                    <span className="w-10 h-10 rounded-full bg-accent-soft text-accent font-bold text-base grid place-items-center shrink-0">
-                      {initial}
-                    </span>
+                    <Avatar name={user?.name} email={email} src={user?.avatar_url} size={40} />
                     <div className="min-w-0">
                       <div className="text-sm font-bold text-text truncate">{displayName}</div>
                       <div className="text-xs text-muted truncate">{email}</div>

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import { SmartButton } from "@/components/SmartButton";
+import { Avatar } from "@/components/Avatar";
 import { toast } from "@/lib/toast";
 import {
   Users, Plus, Search, ShieldCheck, ShieldAlert, Mail, X, Pencil, Trash2,
@@ -24,6 +25,7 @@ type Member = {
   last_seen_at: string | null;
   presence: Presence;
   seconds_since: number;
+  avatar_url?: string;
 };
 
 type Role = {
@@ -334,15 +336,12 @@ function MemberTable({
           <tbody>
             {rows.map((m) => {
               const sm = STATUS_META[m.status];
-              const initial = (m.name || m.email)[0]?.toUpperCase() ?? "?";
               return (
                 <tr key={m.id} className="border-t border-border hover:bg-bg/40 transition-colors">
                   <td className="px-4 py-3 min-w-[260px]">
                     <div className="flex items-center gap-3">
                       <span className="relative shrink-0">
-                        <span className="w-8 h-8 rounded-full bg-accent-soft text-accent font-bold text-[13px] grid place-items-center">
-                          {initial}
-                        </span>
+                        <Avatar name={m.name} email={m.email} src={m.avatar_url} size={32} />
                         {/* Presence dot — green/yellow/grey ring matches the directory pill */}
                         <span
                           className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-surface ${PRESENCE_COLORS[m.presence].dot}`}

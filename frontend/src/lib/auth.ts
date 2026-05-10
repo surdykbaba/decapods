@@ -7,6 +7,7 @@ export type Me = {
   email: string;
   name: string;
   roles: string[];
+  avatar_url?: string;
 };
 
 type State = {
