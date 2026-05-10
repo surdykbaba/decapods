@@ -304,6 +304,148 @@ func (h *Finance) Summary(c *gin.Context) {
 	})
 }
 
+// Billable returns the things finance should action right now: opportunities
+// where the client has accepted but no invoice has gone out, plus project
+// milestones marked done that aren't yet billed. Powers the "Ready to invoice"
+// queue at the top of the invoices page.
+func (h *Finance) Billable(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	out := []gin.H{}
+
+	// 1. Opportunities at client_acceptance — handed over, contractually billable.
+	//    Use estimated_value as the suggested amount; client can override on the
+	//    invoice form.
+	orows, err := h.db.Query(c, `
+		SELECT o.id, o.title, o.estimated_value, COALESCE(o.currency,'NGN'),
+		       p.id, COALESCE(p.name,''), COALESCE(p.code,''),
+		       o.delivery_deadline,
+		       (SELECT COUNT(*) FROM invoices i
+		        WHERE i.tenant_id=o.tenant_id AND i.project_id=p.id AND i.deleted_at IS NULL) AS invoice_count
+		FROM opportunities o
+		LEFT JOIN projects p ON p.opportunity_id = o.id AND p.deleted_at IS NULL
+		WHERE o.tenant_id=$1 AND o.deleted_at IS NULL
+		  AND o.stage = 'client_acceptance'`, tid)
+	if err == nil {
+		for orows.Next() {
+			var (
+				oid                                  uuid.UUID
+				title, currency, projectName, code   string
+				value                                float64
+				projectID                            *uuid.UUID
+				deadline                             *time.Time
+				invCount                             int
+			)
+			if err := orows.Scan(&oid, &title, &value, &currency, &projectID, &projectName, &code, &deadline, &invCount); err == nil {
+				out = append(out, gin.H{
+					"kind":           "opportunity",
+					"id":             oid,
+					"title":          title,
+					"suggested_amount": value,
+					"currency":       currency,
+					"project_id":     projectID,
+					"project_name":   projectName,
+					"project_code":   code,
+					"due_on":         deadline,
+					"reason":         "Client accepted — invoice when ready",
+					"existing_invoices": invCount,
+				})
+			}
+		}
+		orows.Close()
+	}
+
+	// 2. Completed milestones with no invoice attached.
+	mrows, err := h.db.Query(c, `
+		SELECT m.id, m.title, m.due_on, m.project_id,
+		       COALESCE(p.name,''), COALESCE(p.code,''),
+		       COALESCE(o.estimated_value, 0), COALESCE(o.currency,'NGN'),
+		       (SELECT COUNT(*) FROM milestones mm WHERE mm.project_id=p.id) AS milestone_count
+		FROM milestones m
+		JOIN projects p ON p.id = m.project_id AND p.deleted_at IS NULL AND p.tenant_id=$1
+		LEFT JOIN opportunities o ON o.id = p.opportunity_id
+		WHERE m.status IN ('done','completed','complete')
+		  AND NOT EXISTS (
+		      SELECT 1 FROM invoices i
+		      WHERE i.milestone_id = m.id AND i.tenant_id=$1 AND i.deleted_at IS NULL
+		  )
+		ORDER BY m.due_on NULLS LAST LIMIT 50`, tid)
+	if err == nil {
+		for mrows.Next() {
+			var (
+				mid, projectID                  uuid.UUID
+				title, projectName, code, ccy   string
+				dueOn                           *time.Time
+				oppValue                        float64
+				milestoneCount                  int
+			)
+			if err := mrows.Scan(&mid, &title, &dueOn, &projectID, &projectName, &code, &oppValue, &ccy, &milestoneCount); err == nil {
+				// Suggest a per-milestone slice of the opportunity value.
+				suggested := 0.0
+				if milestoneCount > 0 { suggested = oppValue / float64(milestoneCount) }
+				out = append(out, gin.H{
+					"kind":             "milestone",
+					"id":               mid,
+					"title":            title,
+					"suggested_amount": suggested,
+					"currency":         ccy,
+					"project_id":       projectID,
+					"project_name":     projectName,
+					"project_code":     code,
+					"due_on":           dueOn,
+					"reason":           "Milestone delivered — bill it",
+					"existing_invoices": 0,
+				})
+			}
+		}
+		mrows.Close()
+	}
+
+	c.JSON(200, gin.H{"items": out})
+}
+
+// UpdateInvoiceStatus moves an invoice between draft / issued / void.
+// Status transitions to 'paid' / 'partially_paid' happen via RecordPayment.
+func (h *Finance) UpdateInvoiceStatus(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
+	var req struct {
+		Status   string `json:"status" binding:"required"`
+		IssuedOn string `json:"issued_on"`
+		DueOn    string `json:"due_on"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil { c.JSON(400, gin.H{"error": err.Error()}); return }
+
+	// Hard-allow only manual transitions. Paid statuses are derived from payments.
+	if req.Status != "draft" && req.Status != "issued" && req.Status != "void" {
+		c.JSON(400, gin.H{"error": "status must be draft, issued or void"})
+		return
+	}
+	// When issuing, default issued_on to today if not supplied.
+	args := []any{req.Status, id, tid}
+	q := "UPDATE invoices SET status=$1, updated_at=now()"
+	if req.Status == "issued" {
+		q = "UPDATE invoices SET status=$1, updated_at=now(), issued_on=COALESCE(issued_on, current_date)"
+		if req.DueOn != "" {
+			args = []any{req.Status, req.DueOn, id, tid}
+			q = "UPDATE invoices SET status=$1, due_on=NULLIF($2,'')::date, updated_at=now(), issued_on=COALESCE(issued_on, current_date)"
+		}
+	}
+	q += " WHERE id=$" + strconvItoa(len(args)-1) + " AND tenant_id=$" + strconvItoa(len(args)) + " AND deleted_at IS NULL"
+	if _, err := h.db.Exec(c, q, args...); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// strconvItoa is a tiny shim so we don't have to import strconv just for $N.
+func strconvItoa(n int) string {
+	if n < 10 { return string(rune('0' + n)) }
+	if n < 100 { return string(rune('0'+n/10)) + string(rune('0'+n%10)) }
+	return ""
+}
+
 func (h *Finance) Receivables(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	rows, err := h.db.Query(c, `
