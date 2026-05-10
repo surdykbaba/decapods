@@ -521,6 +521,57 @@ func (h *Members) ListInvites(c *gin.Context) {
 }
 
 // RevokeInvite cancels a pending invite so its link can no longer be used.
+// ResendInvite re-fires the invite email for an existing pending invitation.
+// Same token, same link — just dispatches the email again. Extends the expiry
+// to a fresh 14 days so a near-stale invite becomes useful again. 410 if the
+// invite is already accepted or revoked.
+func (h *Members) ResendInvite(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	invID, err := uuid.Parse(c.Param("inviteId"))
+	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
+
+	var (
+		token, email, name, msg string
+		expires                 time.Time
+		accepted, revoked       *time.Time
+	)
+	err = h.db.QueryRow(c, `
+		SELECT token, email::text, full_name, COALESCE(message,''), expires_at, accepted_at, revoked_at
+		FROM member_invitations
+		WHERE id=$1 AND tenant_id=$2`, invID, tid).Scan(
+		&token, &email, &name, &msg, &expires, &accepted, &revoked,
+	)
+	if err != nil {
+		c.JSON(404, gin.H{"error": "invitation not found"})
+		return
+	}
+	switch {
+	case revoked != nil:
+		c.JSON(410, gin.H{"error": "Invitation has been revoked. Issue a fresh invite instead.", "code": "revoked"}); return
+	case accepted != nil:
+		c.JSON(410, gin.H{"error": "Invitation already accepted — they have an account.", "code": "accepted"}); return
+	}
+
+	// Refresh expiry so the resend isn't pointless.
+	newExpiry := time.Now().Add(memberInviteTTL)
+	if _, err := h.db.Exec(c,
+		`UPDATE member_invitations SET expires_at=$1 WHERE id=$2 AND tenant_id=$3`,
+		newExpiry, invID, tid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Dispatch the email again. Same token, fresh window.
+	h.dispatchMemberInviteEmail(c.Request.Context(), tid, email, name, token, msg)
+
+	c.JSON(200, gin.H{
+		"ok":         true,
+		"email":      email,
+		"expires_at": newExpiry,
+		"sent":       h.mailer != nil && h.mailer.Configured(),
+	})
+}
+
 func (h *Members) RevokeInvite(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	invID, err := uuid.Parse(c.Param("inviteId"))
