@@ -1,0 +1,73 @@
+openapi: 3.1.0
+info:
+  title: Project Governance & Delivery Portal API
+  version: 0.1.0
+  description: |
+    REST + WebSocket API for PGDP. See ARCHITECTURE.md for design.
+servers:
+  - url: http://localhost:8080
+    description: dev
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/auth/login:
+    post:
+      summary: Password login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: {type: string, format: email}
+                password: {type: string, minLength: 8}
+      responses:
+        "200": {description: OK}
+  /api/v1/auth/mfa/verify:
+    post:
+      summary: Verify MFA TOTP
+      security: []
+      responses: {"200": {description: OK}}
+  /api/v1/auth/refresh:
+    post:
+      summary: Refresh tokens
+      security: []
+      responses: {"200": {description: OK}}
+  /api/v1/me:
+    get:
+      summary: Current user
+      responses: {"200": {description: OK}}
+  /api/v1/opportunities:
+    get: {summary: List opportunities, responses: {"200": {description: OK}}}
+    post: {summary: Create opportunity, responses: {"201": {description: Created}}}
+  /api/v1/opportunities/{id}/submit:
+    post:
+      summary: Submit opportunity (governance gate)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses: {"200": {description: OK}, "422": {description: Governance violations}}
+  /api/v1/opportunities/{id}/transition:
+    post:
+      summary: Transition opportunity stage
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {"200": {description: OK}}
+  /api/v1/projects: {get: {summary: List, responses: {"200": {description: OK}}}, post: {summary: Create, responses: {"201": {description: Created}}}}
+  /api/v1/projects/{id}/board: {get: {summary: Kanban board, parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}], responses: {"200": {description: OK}}}}
+  /api/v1/projects/{id}/risk/recalculate: {post: {summary: Recalc risk, parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}], responses: {"200": {description: OK}}}}
+  /api/v1/workforce/load: {get: {summary: Utilization heatmap, responses: {"200": {description: OK}}}}
+  /api/v1/workforce/burnout: {get: {summary: Burnout watchlist, responses: {"200": {description: OK}}}}
+  /api/v1/finance/invoices: {get: {summary: List invoices, responses: {"200": {description: OK}}}, post: {summary: Create, responses: {"201": {description: Created}}}}
+  /api/v1/finance/payments: {post: {summary: Record payment, responses: {"201": {description: Created}}}}
+  /api/v1/finance/receivables: {get: {summary: AR aging, responses: {"200": {description: OK}}}}
+  /api/v1/governance/policies: {get: {summary: List policies, responses: {"200": {description: OK}}}, post: {summary: Upsert policy, responses: {"200": {description: OK}}}}
+  /api/v1/audit: {get: {summary: Audit log, responses: {"200": {description: OK}}}}
+  /api/v1/analytics/executive: {get: {summary: Executive KPIs, responses: {"200": {description: OK}}}}
+  /api/v1/analytics/portfolio-health: {get: {summary: Portfolio health, responses: {"200": {description: OK}}}}
+  /api/v1/integrations/github/link: {post: {summary: Link repo to project, responses: {"201": {description: Created}}}}
+  /api/v1/integrations/github/webhook: {post: {summary: GitHub webhook, security: [], responses: {"202": {description: Accepted}}}}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}

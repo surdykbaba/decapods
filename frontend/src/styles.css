@@ -1,0 +1,42 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: 11 18 32;
+  --surface: 17 25 40;
+  --border: 32 42 64;
+  --muted: 120 132 158;
+  --text: 226 232 240;
+  --accent: 99 179 237;
+  --success: 52 211 153;
+  --warn: 251 191 36;
+  --danger: 248 113 113;
+}
+
+:root.light {
+  --bg: 248 250 252;
+  --surface: 255 255 255;
+  --border: 226 232 240;
+  --muted: 100 116 139;
+  --text: 15 23 42;
+  --accent: 37 99 235;
+  --success: 5 150 105;
+  --warn: 217 119 6;
+  --danger: 220 38 38;
+}
+
+html, body, #root { height: 100%; }
+body { font-family: InterVariable, Inter, system-ui, sans-serif; }
+
+@layer components {
+  .card { @apply bg-surface border border-border rounded-xl; }
+  .btn  { @apply inline-flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition; }
+  .btn-primary { @apply btn bg-accent text-white hover:opacity-90; }
+  .btn-ghost   { @apply btn hover:bg-border/40 text-text; }
+  .pill { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs; }
+  .input { @apply w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-accent; }
+  .label { @apply text-xs uppercase tracking-wide text-muted mb-1 block; }
+  .h1 { @apply text-2xl font-semibold tracking-tight; }
+  .h2 { @apply text-lg font-semibold tracking-tight; }
+}

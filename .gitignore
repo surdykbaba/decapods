@@ -1,0 +1,23 @@
+# Node
+node_modules/
+dist/
+.vite/
+
+# Go
+backend/bin/
+backend/*.test
+
+# Env
+.env
+.env.local
+**/.env
+!**/.env.example
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Logs
+*.log

@@ -1,0 +1,26 @@
+name: cd
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+jobs:
+  deploy-staging:
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure kubectl
+        run: echo "${{ secrets.KUBECONFIG_STAGING }}" > $HOME/.kube/config
+      - name: Roll out
+        run: |
+          kubectl -n pgdp set image deploy/api api=ghcr.io/${{ github.repository }}/api:${{ github.sha }}
+          kubectl -n pgdp set image deploy/web web=ghcr.io/${{ github.repository }}/web:${{ github.sha }}
+          kubectl -n pgdp rollout status deploy/api --timeout=180s
+
+  deploy-prod:
+    needs: deploy-staging
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - run: echo "Production rollout via canary controlled by Argo Rollouts."
