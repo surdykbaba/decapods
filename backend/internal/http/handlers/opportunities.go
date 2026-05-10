@@ -409,6 +409,57 @@ func (h *Opportunities) Update(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true, "changes": changes})
 }
 
+// Delete soft-deletes an opportunity. Refuses if the lifecycle has reached the
+// terminal "closed" stage (closed work is preserved as audit history) or if a
+// live project has been spawned from it (would orphan the project lookup).
+// Anything still in pre-delivery / delivery / invoiced is fair game.
+func (h *Opportunities) Delete(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+
+	// Look up current state — must exist, not already deleted, not closed.
+	var stage string
+	err = h.db.QueryRow(c,
+		`SELECT stage FROM opportunities WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
+		id, tid).Scan(&stage)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "opportunity not found"})
+		return
+	}
+	if stage == "closed" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "Closed opportunities cannot be deleted — they are kept as completion history.",
+			"code":  "stage_closed",
+		})
+		return
+	}
+
+	// Block if there's a live project spun off from this opportunity.
+	var projectID uuid.UUID
+	if err := h.db.QueryRow(c,
+		`SELECT id FROM projects WHERE opportunity_id=$1 AND deleted_at IS NULL LIMIT 1`,
+		id).Scan(&projectID); err == nil {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "A project has already been spawned from this opportunity. Archive the project first.",
+			"code":  "project_exists",
+			"project_id": projectID.String(),
+		})
+		return
+	}
+
+	if _, err := h.db.Exec(c,
+		`UPDATE opportunities SET deleted_at=now(), updated_at=now()
+		 WHERE id=$1 AND tenant_id=$2`, id, tid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 func (h *Opportunities) Submit(c *gin.Context) {
 	id, _ := uuid.Parse(c.Param("id"))
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)

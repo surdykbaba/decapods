@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Pill } from "@/components/ui";
 import { api, ApiError } from "@/lib/api";
-import { Check, Building2, FileText, Wallet, ShieldAlert, Eye, ArrowLeft, ArrowRight, Sparkles, AlertTriangle, X, Plus, Trash2, Users as UsersIcon, ExternalLink, Search } from "lucide-react";
+import { Check, Building2, FileText, Wallet, ShieldAlert, Eye, ArrowLeft, ArrowRight, Sparkles, AlertTriangle, X, Plus, Trash2, Users as UsersIcon, ExternalLink, Search, Wand2 } from "lucide-react";
 
 type LeadType = "government" | "private" | "foreign" | "ngo" | "internal";
 type Risk = "low" | "medium" | "high";
@@ -23,6 +23,120 @@ const UNIT_DAYS: Record<DurationUnit, number> = { days: 1, months: 30, years: 36
 
 function toDays(value: number, unit: DurationUnit): number {
   return Math.max(0, Math.round(value * UNIT_DAYS[unit]));
+}
+
+/* ----------- Intelligent team-composition suggestions -----------
+ * Given the lead type, scope text, manpower target and known rates, derive a
+ * starter team. Pure function — no React, no network. Used by the wizard and
+ * any other surface that needs a "what would a typical team look like?" call.
+ *
+ * Returns roles ordered by importance, each with a recommended head count and
+ * the human-readable reasons that triggered the role (so the UI can explain
+ * itself when surfacing the picks).
+ */
+type SuggestedRole = {
+  rate: TeamRate;
+  suggestedCount: number;
+  reasons: string[];
+};
+
+const ROLE_KEYWORD_HINTS: { match: RegExp; roleHints: string[]; reason: string }[] = [
+  { match: /\b(engineer|developer|coding|build|implement|backend|frontend|api|integration|system|software|platform|microservice|service)\b/i,
+    roleHints: ["engineer", "senior engineer"], reason: "scope mentions engineering work" },
+  { match: /\b(design|ui|ux|wireframe|mock(up)?|figma|brand|visual|prototype)\b/i,
+    roleHints: ["designer"], reason: "scope mentions design / UX" },
+  { match: /\b(qa|test(ing)?|quality|uat|regression)\b/i,
+    roleHints: ["qa"], reason: "scope mentions testing / QA" },
+  { match: /\b(compliance|regulator|regulation|audit|policy|kyc|aml|gdpr|ndpr|bpp)\b/i,
+    roleHints: ["compliance officer"], reason: "scope touches compliance / regulation" },
+  { match: /\b(security|secure|vulnerab|pen[\s-]?test|penetration|threat|encrypt)\b/i,
+    roleHints: ["senior engineer", "subject matter expert"], reason: "security-sensitive scope" },
+  { match: /\b(devops|infrastructure|cloud|aws|azure|kubernetes|deploy|sre|cicd)\b/i,
+    roleHints: ["senior engineer"], reason: "infrastructure / DevOps work" },
+  { match: /\b(research|feasibility|assessment|study|advisory|consult)\b/i,
+    roleHints: ["subject matter expert"], reason: "advisory / research scope" },
+  { match: /\b(deliver|launch|rollout|go[\s-]?live|programme|program manage)\b/i,
+    roleHints: ["delivery manager"], reason: "delivery-heavy programme" },
+];
+
+function findRate(rates: TeamRate[], hint: string): TeamRate | undefined {
+  const h = hint.toLowerCase();
+  // Exact-ish match first, then loose contains
+  return rates.find((r) => r.name.toLowerCase() === h)
+      ?? rates.find((r) => r.name.toLowerCase().includes(h))
+      ?? rates.find((r) => h.includes(r.name.toLowerCase()));
+}
+
+function suggestTeam(
+  rates: TeamRate[],
+  ctx: {
+    lead_type: LeadType;
+    title: string;
+    technical_scope: string;
+    proposal_summary: string;
+    expected_manpower: number;
+  },
+): SuggestedRole[] {
+  if (rates.length === 0) return [];
+  const text = `${ctx.title} ${ctx.technical_scope} ${ctx.proposal_summary}`;
+  const picked = new Map<string, SuggestedRole>(); // key = rate.name lowercased
+
+  const add = (rate: TeamRate, reason: string, count = 1) => {
+    const key = rate.name.toLowerCase();
+    const existing = picked.get(key);
+    if (existing) {
+      if (!existing.reasons.includes(reason)) existing.reasons.push(reason);
+      existing.suggestedCount = Math.max(existing.suggestedCount, count);
+    } else {
+      picked.set(key, { rate, suggestedCount: count, reasons: [reason] });
+    }
+  };
+
+  // 1. Baseline roles every project needs.
+  const pm = findRate(rates, "project manager");
+  if (pm) add(pm, "Every project needs a single accountable PM", 1);
+
+  // 2. Lead-type driven additions.
+  if (ctx.lead_type === "government") {
+    const co = findRate(rates, "compliance officer");
+    if (co) add(co, "Government lead — BPP / regulatory oversight required", 1);
+  }
+  if (ctx.lead_type === "foreign") {
+    const sme = findRate(rates, "subject matter expert");
+    if (sme) add(sme, "Foreign engagement — cross-border / domain SME advised", 1);
+  }
+  if (ctx.lead_type === "internal") {
+    // internal jobs typically don't need external SMEs, skip them
+  }
+
+  // 3. Keyword-driven additions from the scope text.
+  ROLE_KEYWORD_HINTS.forEach(({ match, roleHints, reason }) => {
+    if (!match.test(text)) return;
+    for (const hint of roleHints) {
+      const r = findRate(rates, hint);
+      if (r) { add(r, reason, 1); break; } // first matching hint wins
+    }
+  });
+
+  // 4. Sensible default of an engineer + QA if nothing technical matched yet.
+  if (picked.size <= 1) {
+    const eng = findRate(rates, "engineer");
+    if (eng) add(eng, "Default delivery role", Math.max(1, Math.floor(ctx.expected_manpower / 2)));
+    const qa = findRate(rates, "qa");
+    if (qa) add(qa, "Independent QA on every delivery", 1);
+  }
+
+  // 5. Scale engineer count by expected manpower (cap to avoid runaway suggestions).
+  const eng = picked.get("engineer");
+  if (eng && ctx.expected_manpower > 2) {
+    eng.suggestedCount = Math.min(8, Math.max(eng.suggestedCount, ctx.expected_manpower - 2));
+  }
+
+  // 6. Prefer internal roles first, then external — easier to staff.
+  return Array.from(picked.values()).sort((a, b) => {
+    if (a.rate.kind !== b.rate.kind) return a.rate.kind === "internal" ? -1 : 1;
+    return a.rate.name.localeCompare(b.rate.name);
+  });
 }
 
 type Form = {
@@ -47,6 +161,39 @@ type Form = {
 };
 
 type TeamRate = { id: string; name: string; kind: "internal" | "external"; daily_rate: number; currency: string };
+
+/**
+ * Title-case a client name while preserving acronyms (NDLEA, CBN, FIRS).
+ * - First and last word always capitalised.
+ * - Tokens already in ALL CAPS and longer than one char stay as-is.
+ * - Common short connectors (of, and, the, for, in, at, by, on, to, with)
+ *   stay lower-case in the middle of the name.
+ */
+const TITLE_CASE_LOWER = new Set([
+  "of", "and", "the", "for", "in", "at", "on", "to", "by", "with", "a", "an", "or",
+]);
+function toTitleCase(input: string): string {
+  if (!input) return input;
+  // Preserve trailing space the user just typed so the next word can start fresh.
+  const tokens = input.split(/(\s+)/);
+  let wordIndex = 0;
+  const wordCount = tokens.filter((t) => t.trim().length > 0).length;
+  return tokens
+    .map((tok) => {
+      if (!tok.trim()) return tok;
+      const i = wordIndex++;
+      // Acronym pass-through: 2+ chars, already uppercase letters/digits.
+      if (tok.length >= 2 && /^[A-Z0-9.&-]+$/.test(tok)) return tok;
+      const lower = tok.toLowerCase();
+      const isMiddleWord = i > 0 && i < wordCount - 1;
+      if (isMiddleWord && TITLE_CASE_LOWER.has(lower)) return lower;
+      // Capitalise first letter; keep the rest as the user typed it (handles
+      // mixed-case names like "McDonald" or "iCONIC" gracefully if they
+      // explicitly typed it that way).
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join("");
+}
 
 function fmtCurrencyIn(n: number, ccy: string): string {
   if (!n && n !== 0) return "—";
@@ -254,6 +401,39 @@ export function OpportunityWizard() {
   [form.team_composition]);
   const totalHeadcount = form.team_composition.reduce((s, l) => s + (l.count || 0), 0);
 
+  // Smart team suggestions — recompute as the user fills lead type / scope / manpower.
+  // Filter out roles already on the team; surface only what's still missing.
+  const suggestions = useMemo<SuggestedRole[]>(() => {
+    const all = suggestTeam(rates, {
+      lead_type: form.lead_type,
+      title: form.title,
+      technical_scope: form.technical_scope,
+      proposal_summary: form.proposal_summary,
+      expected_manpower: form.expected_manpower,
+    });
+    const picked = new Set(form.team_composition.map((l) => l.name));
+    return all.filter((s) => !picked.has(s.rate.name));
+  }, [rates, form.lead_type, form.title, form.technical_scope, form.proposal_summary, form.expected_manpower, form.team_composition]);
+
+  function applySuggestion(s: SuggestedRole) {
+    set("team_composition", [...form.team_composition, {
+      name: s.rate.name, kind: s.rate.kind, daily_rate: s.rate.daily_rate,
+      count: s.suggestedCount,
+      duration_value: 1, duration_unit: "months", days: 30,
+    }]);
+  }
+  function applyAllSuggestions() {
+    if (suggestions.length === 0) return;
+    set("team_composition", [
+      ...form.team_composition,
+      ...suggestions.map((s) => ({
+        name: s.rate.name, kind: s.rate.kind, daily_rate: s.rate.daily_rate,
+        count: s.suggestedCount,
+        duration_value: 1, duration_unit: "months" as DurationUnit, days: 30,
+      })),
+    ]);
+  }
+
   function set<K extends keyof Form>(k: K, v: Form[K]) {
     setForm((f) => ({ ...f, [k]: v }));
   }
@@ -350,7 +530,9 @@ export function OpportunityWizard() {
                 value={form.client_name}
                 placeholder="e.g. Federal Ministry of Finance"
                 autoFocus
-                onChange={(e) => set("client_name", e.target.value)}
+                autoCapitalize="words"
+                onChange={(e) => set("client_name", toTitleCase(e.target.value))}
+                onBlur={(e) => set("client_name", toTitleCase(e.target.value.trim()))}
               />
             </Field>
 
@@ -504,19 +686,34 @@ export function OpportunityWizard() {
                     </div>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setRatesEditorOpen(true)}
-                  className="text-xs text-accent hover:underline inline-flex items-center gap-1"
-                  title="Manage team rates without leaving the wizard"
-                >
-                  Edit rates <ExternalLink size={11} />
-                </button>
+                <div className="flex items-center gap-3">
+                  {suggestions.length > 0 && form.team_composition.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={applyAllSuggestions}
+                      className="text-xs text-accent hover:underline inline-flex items-center gap-1"
+                      title={`Add ${suggestions.length} suggested role${suggestions.length === 1 ? "" : "s"} based on the scope`}
+                    >
+                      <Wand2 size={12} /> Suggest {suggestions.length} more
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setRatesEditorOpen(true)}
+                    className="text-xs text-accent hover:underline inline-flex items-center gap-1"
+                    title="Manage team rates without leaving the wizard"
+                  >
+                    Edit rates <ExternalLink size={11} />
+                  </button>
+                </div>
               </div>
               {form.team_composition.length === 0 ? (
-                <div className="p-6 text-center text-sm text-muted">
-                  No team yet — add a role below to compute the budget automatically.
-                </div>
+                <SmartTeamEmptyState
+                  suggestions={suggestions}
+                  currency={form.currency}
+                  onAdd={applySuggestion}
+                  onAddAll={applyAllSuggestions}
+                />
               ) : (
                 <table className="w-full text-sm">
                   <thead className="text-xs text-muted">
@@ -947,6 +1144,82 @@ function CurrencyInput({ value, onChange, autoFocus, ccy = "USD" }: { value: num
           onChange(isFinite(v) ? Math.round(v * 100) / 100 : 0);
         }}
       />
+    </div>
+  );
+}
+
+/* Empty-state for the team table — pitches the intelligent suggestions instead
+ * of an empty void. If we have no suggestions yet (rates not loaded, scope is
+ * still blank), falls back to a gentle prompt. */
+function SmartTeamEmptyState({
+  suggestions, currency, onAdd, onAddAll,
+}: {
+  suggestions: SuggestedRole[];
+  currency: string;
+  onAdd: (s: SuggestedRole) => void;
+  onAddAll: () => void;
+}) {
+  if (suggestions.length === 0) {
+    return (
+      <div className="p-6 text-center text-sm text-muted">
+        Fill in the lead type and technical scope above and we'll suggest a starter team for you.
+        You can also add roles manually below.
+      </div>
+    );
+  }
+  return (
+    <div className="p-4">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex items-start gap-2">
+          <div className="w-8 h-8 rounded-lg bg-accent-soft text-accent grid place-items-center shrink-0 mt-0.5">
+            <Wand2 size={15} />
+          </div>
+          <div>
+            <div className="text-sm font-bold text-text">Suggested team for this scope</div>
+            <p className="text-xs text-muted mt-0.5 max-w-md">
+              Auto-derived from the lead type, scope keywords, and your team rates.
+              Click any role to add it, or add all at once.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onAddAll}
+          className="btn-primary shrink-0"
+          style={{ padding: "0.4rem 0.9rem", fontSize: "12.5px" }}
+        >
+          <Plus size={13} /> Add all {suggestions.length}
+        </button>
+      </div>
+      <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        {suggestions.map((s) => (
+          <li key={s.rate.name}>
+            <button
+              type="button"
+              onClick={() => onAdd(s)}
+              className="w-full text-left bg-surface border border-border rounded-lg p-3 hover:border-accent hover:bg-bg/40 transition-colors group"
+            >
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-sm font-semibold text-text truncate">{s.rate.name}</span>
+                  {s.rate.kind === "external" && (
+                    <span className="pill bg-warn/15 text-warn shrink-0">external</span>
+                  )}
+                </div>
+                <span className="text-[11px] text-muted whitespace-nowrap">
+                  ×{s.suggestedCount} · {fmtCurrencyIn(s.rate.daily_rate, currency)}/day
+                </span>
+              </div>
+              <div className="text-[11px] text-muted leading-snug">
+                {s.reasons.slice(0, 2).join(" · ")}
+              </div>
+              <div className="text-[11px] font-semibold text-accent mt-1.5 opacity-0 group-hover:opacity-100 transition-opacity inline-flex items-center gap-1">
+                <Plus size={10} /> Add to team
+              </div>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

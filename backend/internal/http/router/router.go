@@ -60,6 +60,7 @@ func New(d Deps) http.Handler {
 	authed.POST("/opportunities", mw.RequirePermission("opportunity:write"), opp.Create)
 	authed.GET("/opportunities/:id", mw.RequirePermission("opportunity:read"), opp.Get)
 	authed.PATCH("/opportunities/:id", mw.RequirePermission("opportunity:write"), opp.Update)
+	authed.DELETE("/opportunities/:id", mw.RequirePermission("opportunity:write"), opp.Delete)
 	authed.POST("/opportunities/:id/submit", mw.RequirePermission("opportunity:write"), opp.Submit)
 	authed.POST("/opportunities/:id/transition", mw.RequirePermission("opportunity:write"), opp.Transition)
 	authed.POST("/opportunities/:id/documents", mw.RequirePermission("document:write"), opp.AttachDocument)
@@ -88,6 +89,7 @@ func New(d Deps) http.Handler {
 	authed.GET("/me/updates",     me.Updates)
 	authed.POST("/me/updates",    me.AddUpdate)
 	authed.GET("/me/timesheet",   me.Timesheet)
+	authed.GET("/me/files",       me.Files)
 	authed.GET("/me/profile",     me.Profile)
 	authed.PUT("/me/profile",     me.PutProfile)
 

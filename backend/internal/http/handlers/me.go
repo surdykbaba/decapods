@@ -422,6 +422,67 @@ func (h *Me) Timesheet(c *gin.Context) {
 	})
 }
 
+/* ---------- Files / documents ---------- */
+
+// Files returns the documents visible to the current user — anything attached
+// to opportunities they created OR opportunities tied to projects they're a
+// member of. The result is grouped to support a per-project drill-down.
+func (h *Me) Files(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+
+	rows, err := h.db.Query(c, `
+		SELECT d.id, d.kind, d.name, COALESCE(d.object_key,''), d.uploaded_at,
+		       o.id, o.title,
+		       p.id, p.name
+		FROM opportunity_documents d
+		JOIN opportunities o ON o.id = d.opportunity_id
+		LEFT JOIN projects p ON p.opportunity_id = o.id AND p.deleted_at IS NULL
+		WHERE o.tenant_id = $1 AND o.deleted_at IS NULL
+		  AND (
+		        o.created_by = $2
+		     OR EXISTS (
+		          SELECT 1 FROM project_members pm
+		          WHERE pm.user_id = $2 AND pm.removed_at IS NULL AND pm.project_id = p.id
+		        )
+		      )
+		ORDER BY d.uploaded_at DESC
+		LIMIT 200`, tid, uid)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()}); return
+	}
+	defer rows.Close()
+
+	out := []gin.H{}
+	for rows.Next() {
+		var (
+			did                          uuid.UUID
+			kind, name, objKey           string
+			uploaded                     time.Time
+			oid                          uuid.UUID
+			oppTitle                     string
+			pid                          *uuid.UUID
+			projectName                  *string
+		)
+		if err := rows.Scan(&did, &kind, &name, &objKey, &uploaded, &oid, &oppTitle, &pid, &projectName); err != nil {
+			continue
+		}
+		row := gin.H{
+			"id":           did,
+			"kind":         kind,
+			"name":         name,
+			"object_key":   objKey,
+			"uploaded_at":  uploaded,
+			"opportunity_id":    oid,
+			"opportunity_title": oppTitle,
+		}
+		if pid != nil { row["project_id"] = *pid }
+		if projectName != nil { row["project_name"] = *projectName }
+		out = append(out, row)
+	}
+	c.JSON(200, gin.H{"items": out})
+}
+
 /* ---------- Profile ---------- */
 
 func (h *Me) Profile(c *gin.Context) {

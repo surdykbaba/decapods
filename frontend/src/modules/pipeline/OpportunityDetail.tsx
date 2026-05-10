@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import { Card, Pill } from "@/components/ui";
+import { SmartButton } from "@/components/SmartButton";
+import { toast } from "@/lib/toast";
 import {
   AlertTriangle, Check, FileText, Upload, X, Shield, ArrowRight, Link as LinkIcon,
-  ThumbsUp, RotateCcw, GitBranch, Eye, Download, ExternalLink, Clock, Pencil, Save,
+  ThumbsUp, RotateCcw, GitBranch, Eye, Download, ExternalLink, Clock, Pencil, Save, Trash2,
 } from "lucide-react";
 
 type NextStage = { from: string; to: string; label?: string; roles?: string[] };
@@ -154,6 +156,34 @@ export function OpportunityDetail() {
 
   const [rejectOpen, setRejectOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const nav = useNavigate();
+
+  // Hard rule from the backend: closed opps and opps that already spawned a
+  // project are protected. We mirror the gate in the UI so the trash icon
+  // doesn't even appear when deletion would 409.
+  const canDelete = !!data && data.stage !== "closed" && !data.project_id;
+  const blockedReason = !data ? ""
+    : data.stage === "closed"
+      ? "Closed opportunities are kept as completion history and can't be deleted."
+      : data.project_id
+        ? "A project has already been spawned from this opportunity. Archive the project first."
+        : "";
+
+  const deleteOpp = useMutation({
+    mutationFn: () => api(`/api/v1/opportunities/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast.success("Opportunity deleted", "It has been removed from the pipeline.");
+      qc.invalidateQueries({ queryKey: ["opps"] });
+      nav("/pipeline");
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof ApiError
+        ? ((err.body as { error?: string })?.error ?? err.message)
+        : (err as Error)?.message ?? "Delete failed";
+      toast.error("Could not delete", msg);
+    },
+  });
 
   const updateOpp = useMutation({
     mutationFn: (patch: Record<string, unknown>) =>
@@ -191,6 +221,22 @@ export function OpportunityDetail() {
             >
               <Pencil size={12} /> Edit details
             </button>
+            {canDelete ? (
+              <button
+                onClick={() => setDeleteOpen(true)}
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted hover:text-danger hover:bg-danger/10 px-2 py-1 rounded-full"
+                title="Delete this opportunity"
+              >
+                <Trash2 size={12} /> Delete
+              </button>
+            ) : blockedReason ? (
+              <span
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted/60 px-2 py-1 rounded-full cursor-help"
+                title={blockedReason}
+              >
+                <Trash2 size={12} /> Delete locked
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="flex flex-col items-end gap-1">
@@ -458,6 +504,15 @@ export function OpportunityDetail() {
         />
       )}
 
+      {deleteOpen && (
+        <DeleteOpportunityDialog
+          title={data.title}
+          stage={data.stage}
+          onClose={() => setDeleteOpen(false)}
+          onConfirm={() => deleteOpp.mutateAsync()}
+        />
+      )}
+
       {editOpen && (
         <EditOpportunityDialog
           data={data}
@@ -487,6 +542,79 @@ export function OpportunityDetail() {
       <aside className="lg:sticky lg:top-4 lg:self-start">
         <ActivityRail data={data} currency={data.currency || "NGN"} />
       </aside>
+    </div>
+  );
+}
+
+/* Hard-confirm dialog for deleting an opportunity. Mirrors the GitHub-style
+ * "type the name to confirm" pattern so an accidental click on the trash icon
+ * doesn't wipe a real lead. */
+function DeleteOpportunityDialog({
+  title, stage, onClose, onConfirm,
+}: {
+  title: string;
+  stage: string;
+  onClose: () => void;
+  onConfirm: () => Promise<unknown>;
+}) {
+  const [typed, setTyped] = useState("");
+  const matches = typed.trim() === title.trim();
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-md bg-surface border border-border rounded-2xl shadow-card overflow-hidden"
+      >
+        <header className="flex items-center gap-3 p-5 border-b border-border">
+          <div className="w-9 h-9 rounded-full bg-danger/15 text-danger grid place-items-center shrink-0">
+            <Trash2 size={16} />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-text">Delete this opportunity?</h2>
+            <p className="text-xs text-muted mt-0.5">
+              Currently in <span className="font-semibold">{prettyStage(stage)}</span>. This soft-deletes the lead — it disappears from the pipeline immediately.
+            </p>
+          </div>
+        </header>
+        <div className="p-5 space-y-3">
+          <div className="text-sm text-text">
+            What gets removed:
+            <ul className="list-disc list-inside text-xs text-muted mt-1 space-y-0.5">
+              <li>The opportunity card and its stage history</li>
+              <li>Attached documents stay in storage but are no longer surfaced here</li>
+              <li>Any pending approvals for this lead are cancelled</li>
+            </ul>
+          </div>
+          <label className="block">
+            <div className="text-xs text-muted mb-1.5">
+              Type <span className="font-mono font-bold text-text">{title}</span> to confirm:
+            </div>
+            <input
+              autoFocus
+              className="input"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              placeholder={title}
+            />
+          </label>
+        </div>
+        <footer className="flex items-center justify-end gap-2 p-4 border-t border-border bg-bg">
+          <button onClick={onClose} className="btn-ghost">Cancel</button>
+          <SmartButton
+            variant="danger"
+            disabled={!matches}
+            onClick={async () => {
+              await onConfirm();
+              onClose();
+            }}
+            loadingLabel="Deleting…"
+            successLabel="Deleted"
+            icon={<Trash2 size={13} />}
+          >
+            Delete opportunity
+          </SmartButton>
+        </footer>
+      </div>
     </div>
   );
 }

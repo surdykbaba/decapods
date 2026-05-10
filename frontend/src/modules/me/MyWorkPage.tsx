@@ -1,4 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { SmartButton } from "@/components/SmartButton";
+import { toast } from "@/lib/toast";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -6,7 +8,7 @@ import { useAuth } from "@/lib/auth";
 import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Loader, Calendar, Activity, Zap, X,
-  Folder, Share2, ChevronLeft, ChevronRight,
+  Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, FileType2, Briefcase, LayoutGrid, Rows3,
 } from "lucide-react";
 
 type TaskRow = {
@@ -211,7 +213,7 @@ function DashboardTab() {
       </div>
 
       {/* File & media library */}
-      <FileLibraryCard projects={data.projects} />
+      <FileLibraryCard />
 
       {c.pending_updates > 0 && (
         <div className="rounded-2xl bg-accent-soft border border-accent/20 px-4 py-3 flex items-center gap-3">
@@ -226,111 +228,400 @@ function DashboardTab() {
   );
 }
 
-function FileLibraryCard({ projects }: { projects: ProjectRow[] }) {
-  const [idx, setIdx] = useState(0);
-  if (projects.length === 0) {
-    return (
-      <section className="bg-surface border border-border rounded-2xl p-5">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="h2 flex items-center gap-2"><Folder size={16} className="text-accent" /> File &amp; media library</h2>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
-          <div className="md:col-span-1 aspect-[16/9] rounded-2xl bg-lime-soft/60 border border-lime/40 grid place-items-center">
-            <Folder size={48} className="text-success/70" fill="currentColor" />
-          </div>
-          <div className="md:col-span-2">
-            <div className="text-base font-bold text-text">Nothing in your vault yet</div>
-            <p className="text-sm text-muted leading-relaxed mt-1">
-              Once you're assigned to a project, its document vault — briefs, designs, contracts —
-              shows up here for quick access.
-            </p>
-            <Link
-              to="/projects"
-              className="inline-flex items-center gap-1.5 mt-3 text-sm font-semibold text-accent hover:underline"
-            >
-              Browse all projects <ArrowRight size={13} />
-            </Link>
-          </div>
-        </div>
-      </section>
+type FileRow = {
+  id: string;
+  kind: string;
+  name: string;
+  object_key: string;
+  uploaded_at: string;
+  project_id?: string;
+  project_name?: string;
+  opportunity_id: string;
+  opportunity_title: string;
+};
+
+const DOC_KIND_LABELS: Record<string, string> = {
+  NDA: "NDA",
+  TechnicalProposal: "Technical proposal",
+  ScopeDocument: "Scope",
+  RFP: "RFP",
+  ComplianceForm: "Compliance",
+  ProcurementApproval: "Procurement",
+  MSA: "MSA",
+  Contract: "Contract",
+  ExportComplianceForm: "Export form",
+  FXApproval: "FX approval",
+  GrantAgreement: "Grant",
+};
+
+function fileTypeFromName(name: string, objectKey: string): string {
+  const m = (name + " " + objectKey).toLowerCase().match(/\.([a-z0-9]{2,5})(\?|$|\b)/);
+  return m ? m[1].toUpperCase() : "FILE";
+}
+
+function isUrl(key: string): boolean {
+  return /^https?:\/\//i.test(key);
+}
+
+function relTimeShort(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  const ms = Date.now() - d.getTime();
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return m <= 1 ? "just now" : `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const day = Math.floor(h / 24);
+  if (day < 7) return `${day}d ago`;
+  return d.toLocaleDateString("en-US", { day: "numeric", month: "short" });
+}
+
+type ProjectGroup = {
+  key: string;
+  projectId?: string;
+  projectName?: string;
+  opportunityId: string;
+  opportunityTitle: string;
+  isProject: boolean; // true if linked to a project, false if opportunity-only
+  items: FileRow[];
+  lastUpdated: string;
+  byKind: { kind: string; label: string; items: FileRow[] }[];
+};
+
+function fileExtColor(ext: string, isLink: boolean): string {
+  if (isLink) return "bg-accent-soft text-accent border-accent/20";
+  const e = ext.toLowerCase();
+  if (["pdf"].includes(e)) return "bg-rose-50 text-rose-600 border-rose-100";
+  if (["doc","docx","rtf","txt"].includes(e)) return "bg-sky-50 text-sky-600 border-sky-100";
+  if (["xls","xlsx","csv"].includes(e)) return "bg-emerald-50 text-emerald-600 border-emerald-100";
+  if (["png","jpg","jpeg","gif","webp","svg"].includes(e)) return "bg-violet-50 text-violet-600 border-violet-100";
+  if (["zip","rar","7z","tar","gz"].includes(e)) return "bg-amber-50 text-amber-600 border-amber-100";
+  return "bg-bg text-muted border-border";
+}
+
+function FileLibraryCard() {
+  const { data, isLoading } = useQuery<{ items: FileRow[] }>({
+    queryKey: ["me", "files"], queryFn: () => api("/api/v1/me/files"),
+  });
+  const [view, setView] = useState<"project" | "kind" | "flat">("project");
+  const [layout, setLayout] = useState<"scroll" | "grid">("grid");
+  const [query, setQuery] = useState("");
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [showAllProjects, setShowAllProjects] = useState(false);
+  const PROJECT_PREVIEW = 3;
+
+  // Layout classes shared by every file list inside a section.
+  // - scroll: horizontal strip; card widths are 25% (4 fit) but never narrower than 240px → scrolls when overflow.
+  // - grid:   2-col on small, 3 on lg, 4 on xl; wraps as needed.
+  const listCls = layout === "scroll"
+    ? "flex gap-2 overflow-x-auto snap-x snap-mandatory pb-1 -mx-1 px-1 [scrollbar-width:thin]"
+    : "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2";
+  const itemCls = layout === "scroll"
+    ? "snap-start shrink-0 min-w-[240px] w-[calc(25%-6px)]"
+    : "";
+
+  const items = data?.items ?? [];
+
+  const filtered = useMemo(() => {
+    if (!query.trim()) return items;
+    const q = query.toLowerCase();
+    return items.filter((f) =>
+      f.name.toLowerCase().includes(q) ||
+      (DOC_KIND_LABELS[f.kind] ?? f.kind).toLowerCase().includes(q) ||
+      (f.project_name ?? "").toLowerCase().includes(q) ||
+      (f.opportunity_title ?? "").toLowerCase().includes(q),
     );
-  }
-  const p = projects[idx % projects.length];
+  }, [items, query]);
+
+  // Build project-first grouping, with sub-grouping by kind inside each project
+  const projectGroups = useMemo<ProjectGroup[]>(() => {
+    const map = new Map<string, ProjectGroup>();
+    filtered.forEach((f) => {
+      const key = f.project_id ?? `opp:${f.opportunity_id}`;
+      let g = map.get(key);
+      if (!g) {
+        g = {
+          key,
+          projectId: f.project_id,
+          projectName: f.project_name,
+          opportunityId: f.opportunity_id,
+          opportunityTitle: f.opportunity_title,
+          isProject: !!f.project_id,
+          items: [],
+          lastUpdated: f.uploaded_at,
+          byKind: [],
+        };
+        map.set(key, g);
+      }
+      g.items.push(f);
+      if (new Date(f.uploaded_at).getTime() > new Date(g.lastUpdated).getTime()) {
+        g.lastUpdated = f.uploaded_at;
+      }
+    });
+    // Sub-group by kind inside each project
+    map.forEach((g) => {
+      const k = new Map<string, FileRow[]>();
+      g.items.forEach((f) => {
+        const arr = k.get(f.kind) ?? [];
+        arr.push(f); k.set(f.kind, arr);
+      });
+      g.byKind = Array.from(k.entries())
+        .map(([kind, arr]) => ({
+          kind,
+          label: DOC_KIND_LABELS[kind] ?? kind,
+          items: arr.sort((a, b) => +new Date(b.uploaded_at) - +new Date(a.uploaded_at)),
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+    });
+    return Array.from(map.values()).sort((a, b) => {
+      // Projects first, then opportunity-only; within, most recently updated first
+      if (a.isProject !== b.isProject) return a.isProject ? -1 : 1;
+      return +new Date(b.lastUpdated) - +new Date(a.lastUpdated);
+    });
+  }, [filtered]);
+
+  const kindGroups = useMemo(() => {
+    const map = new Map<string, FileRow[]>();
+    filtered.forEach((f) => {
+      const arr = map.get(f.kind) ?? [];
+      arr.push(f); map.set(f.kind, arr);
+    });
+    return Array.from(map.entries())
+      .map(([kind, arr]) => ({
+        kind,
+        label: DOC_KIND_LABELS[kind] ?? kind,
+        items: arr.sort((a, b) => +new Date(b.uploaded_at) - +new Date(a.uploaded_at)),
+      }))
+      .sort((a, b) => b.items.length - a.items.length);
+  }, [filtered]);
+
+  const toggle = (k: string) => setCollapsed((s) => ({ ...s, [k]: !s[k] }));
+
   return (
     <section className="bg-surface border border-border rounded-2xl p-5">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="h2 flex items-center gap-2"><Folder size={16} className="text-accent" /> File &amp; media library</h2>
-        <div className="flex gap-1">
-          <button
-            type="button"
-            onClick={() => alert("Hook this up to project file storage when ready.")}
-            className="w-7 h-7 rounded-full bg-bg border border-border grid place-items-center text-muted hover:text-text"
-            aria-label="Add file"
-          >
-            <Plus size={12} />
-          </button>
-          <button
-            type="button"
-            onClick={() => navigator.clipboard?.writeText(window.location.origin + `/projects/${p.id}`)}
-            className="w-7 h-7 rounded-full bg-bg border border-border grid place-items-center text-muted hover:text-text"
-            aria-label="Share folder"
-          >
-            <Share2 size={12} />
-          </button>
+      <div className="flex items-start justify-between mb-4 gap-3 flex-wrap">
+        <div>
+          <h2 className="h2 flex items-center gap-2"><Folder size={16} className="text-accent" /> File &amp; media library</h2>
+          <p className="text-xs text-muted mt-0.5">
+            {isLoading
+              ? "Loading…"
+              : `${items.length} document${items.length === 1 ? "" : "s"} across ${projectGroups.filter((g) => g.isProject).length} project${projectGroups.filter((g) => g.isProject).length === 1 ? "" : "s"}`}
+          </p>
         </div>
+        {items.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search files…"
+                className="pl-7 pr-2 py-1.5 text-[12px] bg-bg border border-border rounded-full w-[180px] focus:outline-none focus:border-accent"
+              />
+            </div>
+            <div className="flex gap-1 p-1 bg-bg border border-border rounded-full">
+              {(["project","kind","flat"] as const).map((g) => (
+                <button
+                  key={g}
+                  onClick={() => setView(g)}
+                  className={`text-[11px] font-semibold px-2.5 py-1 rounded-full capitalize transition-colors ${
+                    view === g ? "bg-surface shadow-sm text-text" : "text-muted hover:text-text"
+                  }`}
+                >
+                  {g === "flat" ? "Flat" : `By ${g}`}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-1 p-1 bg-bg border border-border rounded-full" title="Toggle layout">
+              <button
+                onClick={() => { setLayout("grid"); setCollapsed({}); }}
+                className={`grid place-items-center w-7 h-7 rounded-full transition-colors ${
+                  layout === "grid" ? "bg-surface shadow-sm text-text" : "text-muted hover:text-text"
+                }`}
+                aria-label="Grid"
+                title="Grid layout"
+              >
+                <LayoutGrid size={13} />
+              </button>
+              <button
+                onClick={() => { setLayout("scroll"); setCollapsed({}); }}
+                className={`grid place-items-center w-7 h-7 rounded-full transition-colors ${
+                  layout === "scroll" ? "bg-surface shadow-sm text-text" : "text-muted hover:text-text"
+                }`}
+                aria-label="Scrollable strip"
+                title="Scrollable strip"
+              >
+                <Rows3 size={13} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-stretch">
-        <div className="md:col-span-2 flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => setIdx((i) => (i - 1 + projects.length) % projects.length)}
-            disabled={projects.length <= 1}
-            className="w-9 h-9 rounded-full bg-bg border border-border grid place-items-center text-muted hover:text-text disabled:opacity-40"
-            aria-label="Previous project"
-          >
-            <ChevronLeft size={14} />
-          </button>
-          <Link
-            to={`/projects/${p.id}`}
-            className="flex-1 aspect-[16/9] rounded-2xl bg-lime-soft border border-lime/40 grid place-items-center relative overflow-hidden hover:border-lime transition-colors"
-          >
-            <Folder size={56} className="text-success" fill="currentColor" />
-            <div className="absolute top-3 right-3 bg-surface text-text font-bold text-xs px-2 py-1 rounded-full">
-              {p.code} · vault
-            </div>
-          </Link>
-          <button
-            type="button"
-            onClick={() => setIdx((i) => (i + 1) % projects.length)}
-            disabled={projects.length <= 1}
-            className="w-9 h-9 rounded-full bg-bg border border-border grid place-items-center text-muted hover:text-text disabled:opacity-40"
-            aria-label="Next project"
-          >
-            <ChevronRight size={14} />
-          </button>
-        </div>
+      {isLoading ? (
+        <div className="text-sm text-muted py-4">Loading documents…</div>
+      ) : items.length === 0 ? (
+        <EmptyHint
+          icon={<Folder size={22} className="text-muted" />}
+          title="No documents yet"
+          body="Documents you attach to opportunities and projects show up here. Open a project to attach a file or paste a link."
+        />
+      ) : filtered.length === 0 ? (
+        <div className="text-sm text-muted py-4 text-center">No files match "{query}".</div>
+      ) : view === "project" ? (
+        <div className="space-y-3">
+          {(showAllProjects ? projectGroups : projectGroups.slice(0, PROJECT_PREVIEW)).map((g) => {
+            const isCollapsed = !!collapsed[g.key];
+            const targetUrl = g.isProject && g.projectId ? `/projects/${g.projectId}` : `/pipeline/${g.opportunityId}`;
+            return (
+              <div key={g.key} className="border border-border rounded-xl overflow-hidden bg-bg/30">
+                <div className="flex items-center gap-3 px-4 py-3 bg-surface border-b border-border">
+                  <button
+                    onClick={() => toggle(g.key)}
+                    className="text-muted hover:text-text shrink-0"
+                    aria-label={isCollapsed ? "Expand" : "Collapse"}
+                  >
+                    {isCollapsed ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
+                  </button>
+                  <div className={`w-9 h-9 rounded-lg grid place-items-center shrink-0 ${
+                    g.isProject ? "bg-accent-soft text-accent" : "bg-warn/10 text-warn"
+                  }`}>
+                    {g.isProject ? <Briefcase size={16} /> : <FileText size={16} />}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="text-[14px] font-bold text-text truncate" title={g.projectName ?? g.opportunityTitle}>
+                        {g.projectName ?? g.opportunityTitle}
+                      </div>
+                      {!g.isProject && (
+                        <span className="text-[9.5px] uppercase tracking-wide font-bold px-1.5 py-0.5 rounded bg-warn/15 text-warn">
+                          Pre-project
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-muted truncate">
+                      {g.isProject && <>From: {g.opportunityTitle} · </>}
+                      {g.items.length} file{g.items.length === 1 ? "" : "s"} · {g.byKind.length} type{g.byKind.length === 1 ? "" : "s"} · updated {relTimeShort(g.lastUpdated)}
+                    </div>
+                  </div>
+                  <Link
+                    to={targetUrl}
+                    className="text-xs font-semibold text-accent hover:underline whitespace-nowrap shrink-0"
+                  >
+                    Open {g.isProject ? "project" : "lead"} →
+                  </Link>
+                </div>
 
-        <div className="flex flex-col">
-          <div className="text-base font-bold text-text leading-tight">{p.name}</div>
-          <p className="text-xs text-muted leading-relaxed mt-1.5">
-            A curated vault for this engagement — briefs, designs, contracts, and references.
-            Open the project to manage attached documents.
-          </p>
-          <Link
-            to={`/projects/${p.id}`}
-            className="mt-auto inline-flex items-center justify-center gap-1.5 bg-success text-white rounded-full py-2.5 text-sm font-semibold hover:opacity-90"
-          >
-            Open the folder <ArrowRight size={13} />
-          </Link>
-          {projects.length > 1 && (
-            <div className="mt-2 text-[11px] text-muted text-center">
-              {idx + 1} / {projects.length}
+                {!isCollapsed && (
+                  <div className="p-3 space-y-3">
+                    {g.byKind.map((kg) => (
+                      <div key={kg.kind}>
+                        <div className="flex items-center gap-2 mb-1.5 px-1">
+                          <FileType2 size={11} className="text-muted" />
+                          <div className="text-[10.5px] uppercase tracking-wide font-bold text-muted">{kg.label}</div>
+                          <div className="px-1.5 py-px rounded-full bg-bg border border-border text-[9.5px] font-bold text-muted">
+                            {kg.items.length}
+                          </div>
+                          <div className="flex-1 h-px bg-border/60" />
+                        </div>
+                        <ul className={listCls}>
+                          {kg.items.map((f) => (
+                            <li key={f.id} className={itemCls}>
+                              <FileRowItem file={f} compact />
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {projectGroups.length > PROJECT_PREVIEW && (
+            <div className="flex justify-center pt-1">
+              <button
+                onClick={() => setShowAllProjects((v) => !v)}
+                className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-accent hover:underline px-3 py-1.5 rounded-full border border-border bg-surface hover:bg-bg transition-colors"
+              >
+                {showAllProjects
+                  ? <>Show fewer projects <ChevronDown size={13} className="rotate-180" /></>
+                  : <>View {projectGroups.length - PROJECT_PREVIEW} more project{projectGroups.length - PROJECT_PREVIEW === 1 ? "" : "s"} <ChevronDown size={13} /></>}
+              </button>
             </div>
           )}
         </div>
-      </div>
+      ) : view === "kind" ? (
+        <div className="space-y-4">
+          {kindGroups.map((kg) => (
+            <div key={kg.kind}>
+              <div className="flex items-center gap-2 mb-2">
+                <div className="text-[11px] uppercase tracking-wide font-bold text-muted">{kg.label}</div>
+                <div className="px-1.5 py-px rounded-full bg-bg border border-border text-[10px] font-bold text-muted">
+                  {kg.items.length}
+                </div>
+                <div className="flex-1 h-px bg-border" />
+              </div>
+              <ul className={listCls}>
+                {kg.items.map((f) => (
+                  <li key={f.id} className={itemCls}>
+                    <FileRowItem file={f} />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <ul className={listCls}>
+          {[...filtered]
+            .sort((a, b) => +new Date(b.uploaded_at) - +new Date(a.uploaded_at))
+            .map((f) => (
+              <li key={f.id} className={itemCls}>
+                <FileRowItem file={f} />
+              </li>
+            ))}
+        </ul>
+      )}
     </section>
+  );
+}
+
+function FileRowItem({ file, compact }: { file: FileRow; compact?: boolean }) {
+  const ext = fileTypeFromName(file.name, file.object_key);
+  const url = isUrl(file.object_key);
+  const colorCls = fileExtColor(ext, url);
+  return (
+    <div className="h-full flex items-center gap-3 bg-surface border border-border rounded-lg p-2.5 hover:border-accent transition-colors">
+      <div className={`w-9 h-9 rounded-md grid place-items-center text-[9.5px] font-extrabold shrink-0 border ${colorCls}`}>
+        {url ? <LinkIcon size={13} /> : ext.slice(0, 4)}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-[13px] font-semibold text-text truncate" title={file.name}>{file.name}</div>
+        <div className="text-[11px] text-muted truncate">
+          {!compact && <>{DOC_KIND_LABELS[file.kind] ?? file.kind} · </>}
+          {!compact && file.project_name && <>{file.project_name} · </>}
+          {relTimeShort(file.uploaded_at)}
+        </div>
+      </div>
+      {url ? (
+        <a
+          href={file.object_key}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs font-semibold text-accent hover:underline whitespace-nowrap shrink-0"
+        >
+          Open ↗
+        </a>
+      ) : (
+        <Link
+          to={`/pipeline/${file.opportunity_id}`}
+          className="text-xs font-semibold text-accent hover:underline whitespace-nowrap shrink-0"
+        >
+          Open →
+        </Link>
+      )}
+    </div>
   );
 }
 
@@ -751,16 +1042,22 @@ function ProfileTab() {
   });
   const [name, setName] = useState("");
   const [github, setGithub] = useState("");
-  const [savedAt, setSavedAt] = useState<number | null>(null);
 
-  // Hydrate locally when data arrives
-  useMemo(() => {
+  // Hydrate locally when data arrives — useEffect, not useMemo (the previous version
+  // was also re-resetting the inputs on every refetch, clobbering pending edits).
+  useEffect(() => {
     if (data) {
       setName(data.name ?? "");
       setGithub(data.github_username ?? "");
     }
-    return null;
-  }, [data]);
+    // Only on initial load — refetches shouldn't blow away the user's typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.email]);
+
+  const dirty = !!data && (
+    (data.name ?? "") !== name ||
+    (data.github_username ?? "") !== github
+  );
 
   const save = useMutation({
     mutationFn: () => api("/api/v1/me/profile", {
@@ -768,8 +1065,13 @@ function ProfileTab() {
       body: JSON.stringify({ name, github_username: github }),
     }),
     onSuccess: () => {
-      setSavedAt(Date.now());
+      toast.success("Profile updated", "Your changes have been saved.");
       qc.invalidateQueries({ queryKey: ["me", "profile"] });
+      qc.invalidateQueries({ queryKey: ["me"] });
+    },
+    onError: (e: unknown) => {
+      const msg = (e as { message?: string })?.message ?? "Could not save your profile.";
+      toast.error("Save failed", msg);
     },
   });
 
@@ -814,11 +1116,19 @@ function ProfileTab() {
             </div>
           </div>
         </div>
-        <div className="mt-5 flex items-center justify-end gap-2">
-          {savedAt && <span className="text-xs text-success font-semibold">Saved ✓</span>}
-          <button onClick={() => save.mutate()} disabled={save.isPending} className="btn-primary">
-            {save.isPending ? "Saving…" : "Save changes"}
-          </button>
+        <div className="mt-5 flex items-center justify-end gap-3">
+          {!dirty && !save.isPending && (
+            <span className="text-xs text-muted">No changes yet</span>
+          )}
+          <SmartButton
+            variant="primary"
+            disabled={!dirty}
+            onClick={() => save.mutateAsync()}
+            loadingLabel="Saving…"
+            successLabel="Saved"
+          >
+            Save changes
+          </SmartButton>
         </div>
       </section>
 

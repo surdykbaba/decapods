@@ -238,7 +238,7 @@ export function ProjectOperationalOverview({
   return (
     <div className="space-y-6">
       {/* ========== 1. Operational meta strip ========== */}
-      <div className="-mx-8 -mt-2 px-8 pt-2 pb-4 border-b border-border bg-bg/40 sticky top-0 z-30">
+      <div className="-mx-8 -mt-2 px-8 pt-3 pb-4 border-b border-border bg-surface relative z-10">
         {/* Eyebrow line: project code · client · source opp */}
         <div className="flex items-center gap-2 text-[12px] text-muted">
           <span className="font-mono font-semibold text-text">{project.code}</span>
