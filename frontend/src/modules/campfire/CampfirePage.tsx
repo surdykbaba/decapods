@@ -232,8 +232,11 @@ export function CampfirePage() {
         </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5 mt-2">
-        {/* Main column */}
+      {/* Single-column layout. The "Most engaging this week" hero at the top
+          of the feed already carries the workspace pulse cues we used to
+          duplicate on the right; the side rail (PulseHero + RecentActivity)
+          was redundant noise. Removed both — feed gets the full width. */}
+      <div className="mt-2">
         <div>
           <div className="flex items-center gap-1 mb-4 p-1 bg-surface/70 backdrop-blur border border-border rounded-full overflow-x-auto w-fit shadow-soft">
             {tabs.filter((t) => !t.admin || isAdmin).map((t) => {
@@ -264,149 +267,17 @@ export function CampfirePage() {
             {tab === "insights" && isAdmin && <Insights />}
           </div>
         </div>
-
-        {/* Right rail — workspace pulse + activity, sticky on lg+ */}
-        <aside className="space-y-5 lg:sticky lg:top-4 lg:self-start">
-          <PulseHero />
-          <RecentActivityCard />
-        </aside>
       </div>
       </div>{/* close: relative z-10 content layer */}
     </div>
   );
 }
 
-/* ─────────────────────────────────────────────────────────────────────────
- * Right-rail cards — workspace pulse hero + recent activity. These replace
- * the full-width PresenceBar. Same data, denser layout, fixed sidebar width
- * so the main feed gets a consistent reading rhythm regardless of activity.
- * ───────────────────────────────────────────────────────────────────────── */
-
-function PulseHero() {
-  const { data } = useQuery<PresenceResponse>({
-    queryKey: ["campfire", "presence"],
-    queryFn: () => api("/api/v1/campfire/presence"),
-    refetchInterval: 30_000,
-  });
-
-  const online   = data?.online?.length   ?? 0;
-  const away     = data?.away?.length     ?? 0;
-  const focus    = data?.focus?.length    ?? 0;
-  const busy     = data?.busy?.length     ?? 0;
-  const onLeave  = data?.on_leave?.length ?? 0;
-  const offline  = data?.offline?.length  ?? 0;
-  const total    = online + away + focus + busy + onLeave + offline;
-  const activePct = total === 0 ? 0 : Math.round(((online + away + focus + busy) / total) * 100);
-
-  // Pull the first 6 online faces — the visual cue that the room is "busy"
-  // beats raw numbers most of the time.
-  const faces = (data?.online ?? []).slice(0, 6);
-
-  return (
-    <div className="rounded-2xl bg-accent text-white p-5 relative overflow-hidden">
-      <div className="absolute -right-6 -top-6 w-32 h-32 rounded-full bg-white/10" />
-      <div className="absolute -right-2 bottom-0 w-20 h-20 rounded-full bg-white/5" />
-
-      <div className="relative">
-        <div className="inline-flex items-center gap-1.5 text-[12px] uppercase tracking-wider font-bold text-white/80">
-          <Flame size={12} className="animate-flicker" /> Workspace pulse
-        </div>
-        <h2 className="text-[1.5rem] font-extrabold leading-tight mt-1">Around the fire</h2>
-
-        <div className="mt-5 flex items-end gap-2">
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-white/70 font-bold">Online now</div>
-            <div className="text-3xl font-extrabold leading-none mt-1">{online}</div>
-          </div>
-          <div className="flex-1" />
-          <div className="text-right">
-            <div className="text-[10px] uppercase tracking-wider text-white/70 font-bold">Active</div>
-            <div className="text-2xl font-bold leading-none mt-1">{activePct}%</div>
-          </div>
-        </div>
-
-        <div className="mt-4 h-1.5 bg-white/20 rounded-full overflow-hidden">
-          <div className="h-full bg-white" style={{ width: `${activePct}%` }} />
-        </div>
-
-        <div className="mt-4 text-[12.5px] text-white/85 flex flex-wrap gap-x-3 gap-y-1">
-          {away    > 0 && <span><strong className="text-white">{away}</strong> away</span>}
-          {focus   > 0 && <span><strong className="text-white">{focus}</strong> focus</span>}
-          {busy    > 0 && <span><strong className="text-white">{busy}</strong> busy</span>}
-          {onLeave > 0 && <span><strong className="text-white">{onLeave}</strong> on leave</span>}
-          {offline > 0 && <span className="text-white/70">{offline} offline</span>}
-        </div>
-
-        {faces.length > 0 && (
-          <div className="mt-4 flex -space-x-2">
-            {faces.map((p) => (
-              <span
-                key={p.id}
-                title={p.name || p.email}
-                className="w-7 h-7 rounded-full bg-white/15 ring-2 ring-accent text-white text-[11px] font-bold grid place-items-center"
-              >
-                {(p.name || p.email)[0]?.toUpperCase()}
-              </span>
-            ))}
-            {(data?.online?.length ?? 0) > faces.length && (
-              <span className="w-7 h-7 rounded-full bg-white/15 ring-2 ring-accent text-white text-[10px] font-bold grid place-items-center">
-                +{(data?.online?.length ?? 0) - faces.length}
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function RecentActivityCard() {
-  const { data } = useQuery<{ items: Post[] }>({
-    queryKey: ["campfire", "posts-rail"],
-    queryFn: () => api("/api/v1/campfire/posts?limit=4"),
-    refetchInterval: 60_000,
-  });
-  const items = (data?.items ?? []).slice(0, 4);
-
-  return (
-    <div className="rounded-2xl bg-lime-soft border border-lime/30 p-5">
-      <div className="flex items-center gap-2 mb-4">
-        <div className="w-8 h-8 rounded-full bg-text/10 grid place-items-center text-text">
-          <MessageCircle size={15} />
-        </div>
-        <h3 className="text-[15px] font-bold text-text">Latest activity</h3>
-      </div>
-
-      {items.length === 0 ? (
-        <div className="text-sm text-muted">Nothing posted yet. Start the thread.</div>
-      ) : (
-        <ul className="space-y-3">
-          {items.map((p) => {
-            const meta = POST_KINDS[p.kind] ?? POST_KINDS.note;
-            return (
-              <li key={p.id} className="flex items-start gap-3">
-                <span className={`w-9 h-9 rounded-full ${meta.tint} grid place-items-center shrink-0 text-[13px] font-bold`}>
-                  {(p.author_name || p.author_email || "?")[0]?.toUpperCase()}
-                </span>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[14px] font-bold text-text truncate">
-                      {p.author_name || p.author_email || "Someone"}
-                    </span>
-                    <span className="text-[11px] text-text/70 shrink-0">{relativeTime(p.created_at)}</span>
-                  </div>
-                  <p className="text-[12.5px] text-text/80 leading-relaxed line-clamp-2">
-                    {p.title || p.body}
-                  </p>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
-  );
-}
+/* The right-rail "Workspace Pulse" hero + "Latest activity" cards used to
+ * sit here. They were good on their own but duplicated the signal the new
+ * full-width "Most engaging this week" carousel already carries, so they
+ * were dropped to give the feed the whole page width. If we ever want them
+ * back (e.g. an admin insights dashboard) the git history has them. */
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Presence bar (legacy, kept for reference)
