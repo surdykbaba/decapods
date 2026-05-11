@@ -348,6 +348,7 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
   const posts = data?.items ?? [];
 
   const [composerOpen, setComposerOpen] = useState(false);
+  const [composerKind, setComposerKind] = useState<string>("update");
 
   const togglePin = useMutation({
     mutationFn: ({ id, pinned }: { id: string; pinned: boolean }) =>
@@ -369,17 +370,58 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
       <HeroBanner />
       <SpotlightCard />
 
-      <button
-        onClick={() => setComposerOpen(true)}
-        className="w-full bg-surface/90 backdrop-blur border border-border/70 rounded-3xl px-5 py-4 flex items-center gap-3 hover:border-accent/40 hover:shadow-soft transition-all text-left shadow-soft"
-      >
-        <Avatar name={user?.name ?? ""} email={user?.email ?? ""} size={36} />
-        <span className="text-sm text-muted flex-1">Share something with the workspace…</span>
-        <span className="text-[11px] text-accent font-semibold">New post</span>
-      </button>
+      {/* Post composer trigger — loud on purpose. The old subtle "Share
+          something…" pill read like search and nobody clicked it. Now it's
+          a coloured CTA card with quick-prompt chips below so the user sees
+          *exactly* what they can drop in. */}
+      <div className="rounded-3xl border border-accent/30 bg-gradient-to-br from-accent-soft via-accent-soft/70 to-warn/10 p-4 shadow-soft">
+        <button
+          onClick={() => setComposerOpen(true)}
+          className="w-full bg-surface rounded-2xl px-4 py-3.5 flex items-center gap-3 hover:bg-bg/40 border border-border/60 hover:border-accent transition-all text-left"
+          aria-label="Share something with the workspace"
+        >
+          <Avatar name={user?.name ?? ""} email={user?.email ?? ""} size={40} />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-bold text-text">
+              Share something with the workspace
+            </div>
+            <div className="text-[11.5px] text-muted">
+              Announcements, wins, kudos, mood — keep the team in the loop.
+            </div>
+          </div>
+          <span className="inline-flex items-center gap-1.5 bg-accent text-white text-[12px] font-bold px-3.5 py-2 rounded-full shadow-soft shrink-0">
+            <Plus size={13} /> New post
+          </span>
+        </button>
+
+        {/* Quick-kind chips — one click opens the composer with that kind
+            preselected. Lowers the activation cost from "pick a label" to
+            "say the thing". */}
+        <div className="flex flex-wrap gap-1.5 mt-3 px-1">
+          {([
+            { kind: "announcement", label: "Announcement", icon: Megaphone, tint: "text-accent" },
+            { kind: "win",          label: "Project win",  icon: Trophy,    tint: "text-success" },
+            { kind: "celebration",  label: "Celebrate",    icon: PartyPopper, tint: "text-warn" },
+            { kind: "update",       label: "Quick update", icon: Newspaper, tint: "text-muted" },
+            { kind: "note",         label: "Note",         icon: StickyNote, tint: "text-accent" },
+          ] as { kind: string; label: string; icon: React.ComponentType<any>; tint: string }[]).map((q) => {
+            const Icon = q.icon;
+            return (
+              <button
+                key={q.kind}
+                onClick={() => { setComposerKind(q.kind); setComposerOpen(true); }}
+                className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold px-2.5 py-1.5 rounded-full bg-surface/80 border border-border/60 hover:border-accent/40 hover:bg-surface transition-colors"
+              >
+                <Icon size={11} className={q.tint} /> {q.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       {composerOpen && (
         <PostComposer
+          initialKind={composerKind}
           onClose={() => setComposerOpen(false)}
           onCreated={() => {
             setComposerOpen(false);
@@ -811,8 +853,8 @@ function ComposerHints({ value, onChange }: { value: string; onChange: (v: strin
   );
 }
 
-function PostComposer({ onClose, onCreated, allowPin }: { onClose: () => void; onCreated: () => void; allowPin: boolean }) {
-  const [kind, setKind] = useState("update");
+function PostComposer({ initialKind, onClose, onCreated, allowPin }: { initialKind?: string; onClose: () => void; onCreated: () => void; allowPin: boolean }) {
+  const [kind, setKind] = useState(initialKind ?? "update");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [pinned, setPinned] = useState(false);
