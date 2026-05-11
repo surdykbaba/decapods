@@ -239,7 +239,7 @@ export function CampfirePage() {
       {/* Single column, capped at 1054px for comfortable reading on wide
           monitors. Side rail was removed — the placeholder was creating
           visual noise when the spotlight had nothing to show. */}
-      <div className="mt-2 mx-auto max-w-[1054px]">
+      <div className="mt-2 max-w-[1054px]">
         <div className="flex items-center gap-1 mb-4 p-1 bg-surface/70 backdrop-blur border border-border rounded-full overflow-x-auto w-fit shadow-soft">
           {tabs.filter((t) => !t.admin || isAdmin).map((t) => {
             const Icon = t.icon;
