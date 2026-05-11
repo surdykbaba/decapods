@@ -1338,10 +1338,152 @@ func (h *Campfire) Spotlight(c *gin.Context) {
 		}
 	}
 
+	// Top kudos receiver in the last 7 days — celebrates the person the
+	// workspace is rallying around.
+	var topKudo gin.H
+	{
+		var (
+			uid              uuid.UUID
+			name, email      string
+			count            int
+			badge, lastMsg   string
+		)
+		err := h.db.QueryRow(ctx, `
+			SELECT u.id, COALESCE(u.full_name,''), u.email::text, k.cnt::int,
+			       COALESCE(k.last_badge, ''),  COALESCE(k.last_message, '')
+			FROM (
+			  SELECT to_user_id,
+			         COUNT(*)                                      AS cnt,
+			         (ARRAY_AGG(badge   ORDER BY created_at DESC))[1] AS last_badge,
+			         (ARRAY_AGG(message ORDER BY created_at DESC))[1] AS last_message
+			    FROM campfire_kudos
+			   WHERE tenant_id=$1 AND created_at > now() - interval '7 days'
+			   GROUP BY to_user_id
+			   ORDER BY cnt DESC
+			   LIMIT 1
+			) k
+			JOIN users u ON u.id = k.to_user_id`, tid).
+			Scan(&uid, &name, &email, &count, &badge, &lastMsg)
+		if err == nil && count > 0 {
+			topKudo = gin.H{
+				"id":        uid,
+				"name":      name,
+				"email":     email,
+				"count":     count,
+				"badge":     badge,
+				"last_note": lastMsg,
+			}
+		}
+	}
+
+	// Most engaging member — sum of posts authored, comments left, kudos
+	// given, and reactions placed in the last 7 days. A weighted heuristic
+	// gives more credit to authoring than passively reacting.
+	var topEngager gin.H
+	{
+		var (
+			uid              uuid.UUID
+			name, email      string
+			score            int
+		)
+		err := h.db.QueryRow(ctx, `
+			SELECT u.id, COALESCE(u.full_name,''), u.email::text, e.score::int
+			FROM (
+			  SELECT actor_id AS user_id, SUM(weight) AS score FROM (
+			    SELECT author_id   AS actor_id, 3 AS weight FROM campfire_posts    WHERE tenant_id=$1 AND created_at > now() - interval '7 days' AND author_id   IS NOT NULL
+			    UNION ALL
+			    SELECT author_id   AS actor_id, 2 AS weight FROM campfire_comments WHERE tenant_id=$1 AND created_at > now() - interval '7 days' AND author_id   IS NOT NULL
+			    UNION ALL
+			    SELECT from_user_id AS actor_id, 2 AS weight FROM campfire_kudos   WHERE tenant_id=$1 AND created_at > now() - interval '7 days'
+			    UNION ALL
+			    SELECT user_id     AS actor_id, 1 AS weight FROM campfire_reactions WHERE tenant_id=$1 AND created_at > now() - interval '7 days'
+			  ) acts
+			  GROUP BY actor_id
+			  ORDER BY score DESC
+			  LIMIT 1
+			) e
+			JOIN users u ON u.id = e.user_id`, tid).
+			Scan(&uid, &name, &email, &score)
+		if err == nil && score > 0 {
+			topEngager = gin.H{
+				"id": uid, "name": name, "email": email, "score": score,
+			}
+		}
+	}
+
+	// Work anniversaries in the next 14 days — uses users.created_at as the
+	// proxy hire date. Only matches when they've been with the team at least
+	// one full year (no one wants "0-year anniversary" pings on day 1).
+	anniversaries := []gin.H{}
+	if rows, err := h.db.Query(ctx, `
+		SELECT id, COALESCE(full_name,''), email::text, created_at,
+		       date_part('year', age(CURRENT_DATE, created_at))::int AS years
+		  FROM users
+		 WHERE tenant_id=$1 AND deleted_at IS NULL AND status='active'
+		   AND created_at <= CURRENT_DATE - interval '1 year'
+		   AND (
+		     (date_part('month', created_at) = date_part('month', CURRENT_DATE) AND
+		      date_part('day',   created_at) BETWEEN date_part('day', CURRENT_DATE)
+		                                         AND date_part('day', CURRENT_DATE) + 13)
+		     OR
+		     (date_part('month', created_at) = date_part('month', CURRENT_DATE + interval '14 days') AND
+		      date_part('day',   created_at) <= date_part('day', CURRENT_DATE + interval '14 days'))
+		   )
+		 ORDER BY date_part('month', created_at), date_part('day', created_at)
+		 LIMIT 4`, tid); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			var name, email string
+			var hireDate time.Time
+			var years int
+			if err := rows.Scan(&id, &name, &email, &hireDate, &years); err == nil {
+				anniversaries = append(anniversaries, gin.H{
+					"id": id, "name": name, "email": email,
+					"hire_date": hireDate, "years": years,
+				})
+			}
+		}
+	}
+
+	// Recent celebration / win posts from the last 7 days — pure feel-good.
+	celebrations := []gin.H{}
+	if rows, err := h.db.Query(ctx, `
+		SELECT p.id, COALESCE(u.full_name,''), u.email::text,
+		       p.kind, COALESCE(p.title,''), p.body, p.created_at
+		FROM campfire_posts p
+		LEFT JOIN users u ON u.id = p.author_id
+		WHERE p.tenant_id=$1
+		  AND p.kind IN ('win','celebration','anniversary','birthday')
+		  AND p.created_at > now() - interval '7 days'
+		ORDER BY p.created_at DESC LIMIT 3`, tid); err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			var name, email, kind, title, body string
+			var created time.Time
+			if err := rows.Scan(&id, &name, &email, &kind, &title, &body, &created); err == nil {
+				celebrations = append(celebrations, gin.H{
+					"id":           id,
+					"author_name":  name,
+					"author_email": email,
+					"kind":         kind,
+					"title":        title,
+					"body":         body,
+					"created_at":   created,
+				})
+			}
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
-		"new_joiners": joiners,
-		"on_leave":    onLeave,
-		"trending":    trending,
+		"new_joiners":   joiners,
+		"on_leave":      onLeave,
+		"trending":      trending,
+		"top_kudo":      topKudo,
+		"top_engager":   topEngager,
+		"anniversaries": anniversaries,
+		"celebrations":  celebrations,
 	})
 }
 

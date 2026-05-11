@@ -348,6 +348,7 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <div className="space-y-4">
+      <HeroBanner />
       <SpotlightCard />
 
       <button
@@ -428,6 +429,248 @@ function groupByDay(posts: Post[]): { label: string; posts: Post[] }[] {
     push(label, p);
   }
   return order.map((label) => ({ label, posts: out[label] }));
+}
+
+/* ───────────── HeroBanner ─────────────
+ *
+ * A rotating "look at this nice thing" banner that sits at the very top of
+ * the Pulse feed. Each slide picks one signal from the Spotlight payload —
+ * top kudos receiver, most engaging member, work anniversary, recent
+ * celebration post — and renders it with a big avatar, headline, body and a
+ * matching gradient. Auto-advances every 7s; arrows + dot indicators let you
+ * pause and step through manually. Hides itself entirely when nothing's
+ * worth showing.
+ */
+
+type HeroSlide = {
+  key: string;
+  tone: "warn" | "success" | "accent" | "magenta";
+  emoji: string;
+  eyebrow: string;
+  headline: React.ReactNode;
+  body: React.ReactNode;
+  avatar?: { name: string; email: string };
+};
+
+const HERO_GRADIENT: Record<HeroSlide["tone"], string> = {
+  warn:    "from-warn/30 via-warn/15 to-accent-soft",
+  success: "from-success/25 via-success/10 to-accent-soft",
+  accent:  "from-accent-soft via-accent-soft/60 to-warn/15",
+  magenta: "from-warn/25 via-accent-soft/70 to-success/10",
+};
+
+const HERO_BADGE_CLASS = "absolute -bottom-2 -right-2 w-9 h-9 rounded-full grid place-items-center text-lg shadow-card";
+
+function HeroBanner() {
+  type HeroData = {
+    new_joiners?: { id: string; name: string; email: string; joined_at: string }[];
+    top_kudo?:    { id: string; name: string; email: string; count: number; badge: string; last_note: string };
+    top_engager?: { id: string; name: string; email: string; score: number };
+    anniversaries?: { id: string; name: string; email: string; hire_date: string; years: number }[];
+    celebrations?: { id: string; author_name: string; author_email: string; kind: string; title: string; body: string }[];
+    trending?: { id: string; author_name: string; author_email: string; kind: string; title: string; body: string; reactions: number };
+  };
+  const { data } = useQuery<HeroData>({
+    queryKey: ["campfire", "spotlight"],
+    queryFn: () => api("/api/v1/campfire/spotlight"),
+    refetchInterval: 5 * 60_000,
+  });
+
+  // Build the slide deck from whatever signals we have. Empty arrays / missing
+  // fields just don't produce a slide.
+  const slides = useMemo<HeroSlide[]>(() => {
+    if (!data) return [];
+    const out: HeroSlide[] = [];
+
+    if (data.top_kudo && data.top_kudo.count > 0) {
+      const k = data.top_kudo;
+      out.push({
+        key: "kudo-" + k.id,
+        tone: "magenta",
+        emoji: "🏆",
+        eyebrow: "Kudos magnet · this week",
+        headline: <><span className="text-warn">{k.name || k.email}</span> got {k.count} {k.count === 1 ? "kudos" : "kudos"} this week</>,
+        body: k.last_note
+          ? <em>"{truncate(k.last_note, 140)}"</em>
+          : <>Latest badge: {prettyBadge(k.badge)}. Drop them a thank-you in Recognition.</>,
+        avatar: { name: k.name, email: k.email },
+      });
+    }
+
+    if (data.top_engager && data.top_engager.score >= 5) {
+      const e = data.top_engager;
+      out.push({
+        key: "engager-" + e.id,
+        tone: "accent",
+        emoji: "✨",
+        eyebrow: "Most engaging this week",
+        headline: <><span className="text-accent">{e.name || e.email}</span> is keeping the campfire warm</>,
+        body: <>Posts, comments, kudos and reactions add up to <strong>{e.score}</strong> engagement points in the last 7 days.</>,
+        avatar: { name: e.name, email: e.email },
+      });
+    }
+
+    (data.anniversaries ?? []).slice(0, 2).forEach((a) => {
+      out.push({
+        key: "anniv-" + a.id,
+        tone: "success",
+        emoji: "🎂",
+        eyebrow: `Work anniversary · ${a.years} year${a.years === 1 ? "" : "s"}`,
+        headline: <><span className="text-success">{a.name || a.email}</span> has been with us {a.years} year{a.years === 1 ? "" : "s"}</>,
+        body: <>Marked since {new Date(a.hire_date).toLocaleDateString(undefined, { day: "numeric", month: "long" })}. Send some appreciation 👏</>,
+        avatar: { name: a.name, email: a.email },
+      });
+    });
+
+    (data.new_joiners ?? []).slice(0, 2).forEach((j) => {
+      out.push({
+        key: "joiner-" + j.id,
+        tone: "accent",
+        emoji: "🎉",
+        eyebrow: "New joiner",
+        headline: <>Welcome <span className="text-accent">{j.name || j.email}</span> to the team</>,
+        body: <>Joined {new Date(j.joined_at).toLocaleDateString(undefined, { day: "numeric", month: "long" })}. Say hi in <strong>#general</strong>.</>,
+        avatar: { name: j.name, email: j.email },
+      });
+    });
+
+    (data.celebrations ?? []).slice(0, 2).forEach((c) => {
+      out.push({
+        key: "celeb-" + c.id,
+        tone: "warn",
+        emoji: kindEmoji(c.kind),
+        eyebrow: prettyKind(c.kind),
+        headline: c.title || c.body.slice(0, 80),
+        body: c.title && c.body ? truncate(c.body, 140) : <>From <strong>{c.author_name || c.author_email}</strong></>,
+        avatar: { name: c.author_name, email: c.author_email },
+      });
+    });
+
+    if (data.trending && data.trending.reactions >= 3) {
+      const t = data.trending;
+      out.push({
+        key: "trending-" + t.id,
+        tone: "warn",
+        emoji: "🔥",
+        eyebrow: "Trending right now",
+        headline: t.title || truncate(t.body, 80),
+        body: <><strong>{t.reactions}</strong> reaction{t.reactions === 1 ? "" : "s"} on {t.author_name || t.author_email}'s post.</>,
+        avatar: { name: t.author_name, email: t.author_email },
+      });
+    }
+
+    return out;
+  }, [data]);
+
+  const [idx, setIdx] = useState(0);
+  const [paused, setPaused] = useState(false);
+
+  // Reset if the deck shrinks below the active index.
+  useEffect(() => { if (idx >= slides.length && slides.length > 0) setIdx(0); }, [idx, slides.length]);
+
+  // Auto-rotate every 7s while not paused. The hover-pause lets people read
+  // a slide without it sliding out from under them.
+  useEffect(() => {
+    if (paused || slides.length <= 1) return;
+    const t = setInterval(() => setIdx((i) => (i + 1) % slides.length), 7000);
+    return () => clearInterval(t);
+  }, [paused, slides.length]);
+
+  if (slides.length === 0) return null;
+  const s = slides[Math.min(idx, slides.length - 1)];
+
+  return (
+    <div
+      className={`relative overflow-hidden rounded-3xl border border-accent/30 shadow-card bg-gradient-to-br ${HERO_GRADIENT[s.tone]}`}
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+    >
+      {/* Soft radial glows for that party-mood depth. */}
+      <div aria-hidden className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-warn/25 blur-3xl pointer-events-none" />
+      <div aria-hidden className="absolute -bottom-16 -left-12 w-56 h-56 rounded-full bg-accent/15 blur-3xl pointer-events-none" />
+
+      <div className="relative px-5 py-6 sm:px-8 sm:py-8 flex items-center gap-5 sm:gap-7">
+        {/* Big avatar tile with emoji badge — reads as the "subject" of the slide */}
+        {s.avatar && (
+          <div className="relative shrink-0">
+            <Avatar name={s.avatar.name} email={s.avatar.email} size={80} />
+            <span className={`${HERO_BADGE_CLASS} bg-surface border border-border/60`}>{s.emoji}</span>
+          </div>
+        )}
+
+        <div className="min-w-0 flex-1">
+          <div className="text-[10.5px] uppercase tracking-[0.14em] font-bold text-text/70">
+            {s.eyebrow}
+          </div>
+          <div className="text-xl sm:text-2xl font-extrabold text-text leading-tight mt-1">
+            {s.headline}
+          </div>
+          <div className="text-[13.5px] text-text/80 mt-1.5 max-w-2xl leading-snug">
+            {s.body}
+          </div>
+        </div>
+      </div>
+
+      {/* Nav controls — only render when there's more than one slide. */}
+      {slides.length > 1 && (
+        <>
+          <div className="absolute bottom-3 right-4 flex items-center gap-2">
+            {slides.map((sl, i) => (
+              <button
+                key={sl.key}
+                onClick={() => setIdx(i)}
+                aria-label={`Slide ${i + 1}`}
+                className={`h-1.5 rounded-full transition-all ${
+                  i === idx ? "w-6 bg-accent" : "w-1.5 bg-text/30 hover:bg-text/50"
+                }`}
+              />
+            ))}
+          </div>
+          <button
+            onClick={() => setIdx((i) => (i - 1 + slides.length) % slides.length)}
+            aria-label="Previous"
+            className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-surface/70 hover:bg-surface text-text grid place-items-center shadow-soft"
+          >
+            ‹
+          </button>
+          <button
+            onClick={() => setIdx((i) => (i + 1) % slides.length)}
+            aria-label="Next"
+            className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-surface/70 hover:bg-surface text-text grid place-items-center shadow-soft"
+          >
+            ›
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Tiny helpers used only by the hero banner.
+function truncate(s: string, n: number): string {
+  s = (s || "").trim();
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+function prettyBadge(b: string): string {
+  return b.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+}
+function prettyKind(k: string): string {
+  switch (k) {
+    case "win":         return "Project win";
+    case "celebration": return "Team celebration";
+    case "anniversary": return "Anniversary post";
+    case "birthday":    return "Birthday";
+    default:            return "From the feed";
+  }
+}
+function kindEmoji(k: string): string {
+  switch (k) {
+    case "win":         return "🏅";
+    case "celebration": return "🎉";
+    case "anniversary": return "🥂";
+    case "birthday":    return "🎂";
+    default:            return "🔥";
+  }
 }
 
 // SpotlightCard — sits above the composer and surfaces who joined, who's out,
