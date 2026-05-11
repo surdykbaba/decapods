@@ -1662,45 +1662,42 @@ function ProfileTab() {
       : p.tasks_overdue > 2 || p.blocked_now > 1
         ? { tone: "bad", label: "Needs attention", hint: `${p.tasks_overdue} overdue · ${p.blocked_now} blocked.` }
         : { tone: "warn", label: "A few loose ends", hint: `${p.tasks_overdue} overdue · ${p.blocked_now} blocked.` };
-  const healthChip = {
-    good: "bg-success/10 text-success border-success/30",
-    warn: "bg-warn/10 text-warn border-warn/30",
-    bad:  "bg-danger/10 text-danger border-danger/30",
-  }[workloadHealth.tone];
-
   return (
     <div className="space-y-4">
       {/* ============ Identity hero ============ */}
-      <section className="relative overflow-hidden bg-gradient-to-br from-accent-soft/40 via-surface to-warn/10 border border-border rounded-2xl p-5 sm:p-6">
-        <div className="absolute -top-16 -right-12 w-56 h-56 bg-accent/10 rounded-full blur-3xl pointer-events-none" />
+      <section
+        className="relative overflow-hidden rounded-2xl p-5 sm:p-6 text-white"
+        style={{ background: "#107B97" }}
+      >
+        <div className="absolute -top-16 -right-12 w-56 h-56 bg-white/10 rounded-full blur-3xl pointer-events-none" />
         <div className="relative flex flex-col sm:flex-row sm:items-center gap-5">
           <div className="shrink-0">
             <AvatarUploader name={data.name} email={data.email} src={data.avatar_url} />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-[1.4rem] sm:text-[1.6rem] font-extrabold tracking-tight text-text leading-tight truncate">
+              <h2 className="text-[1.4rem] sm:text-[1.6rem] font-extrabold tracking-tight leading-tight truncate">
                 {data.name || "—"}
               </h2>
-              <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${healthChip}`}>
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border border-white/30 bg-white/10 text-white">
                 <Activity size={11} /> {workloadHealth.label}
               </span>
             </div>
-            <div className="text-sm text-muted mt-0.5 truncate">{data.email}</div>
+            <div className="text-sm text-white/80 mt-0.5 truncate">{data.email}</div>
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
               {data.roles.map((r) => (
-                <span key={r} className="pill bg-accent-soft text-accent">{r}</span>
+                <span key={r} className="pill bg-white/15 text-white border border-white/20">{r}</span>
               ))}
               {data.roles.length === 0 && (
-                <span className="text-xs text-muted">No roles assigned.</span>
+                <span className="text-xs text-white/75">No roles assigned.</span>
               )}
               {data.mfa_enabled && (
-                <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/30">
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/15 text-white border border-white/25">
                   <Sparkles size={10} /> MFA on
                 </span>
               )}
               {!data.mfa_enabled && data.mfa_required && (
-                <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-warn/10 text-warn border border-warn/30">
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/15 text-white border border-white/25">
                   <AlertTriangle size={10} /> MFA required
                 </span>
               )}
@@ -1709,17 +1706,17 @@ function ProfileTab() {
                   href={`https://github.com/${data.github_username}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-bg text-muted border border-border hover:text-text"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/15 text-white border border-white/25 hover:bg-white/25"
                 >
                   <Github size={10} /> {data.github_username}
                 </a>
               )}
             </div>
-            <div className="text-xs text-muted mt-2">{workloadHealth.hint}</div>
+            <div className="text-xs text-white/80 mt-2">{workloadHealth.hint}</div>
           </div>
           <Link
             to={`/members/${data.id}`}
-            className="shrink-0 inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-accent hover:underline self-start"
+            className="shrink-0 inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-white hover:underline self-start"
           >
             View public profile <ArrowRight size={13} />
           </Link>
@@ -2250,16 +2247,16 @@ function HeadsUpPanel() {
   if (items.length === 0) return null;
 
   return (
-    <section className="bg-gradient-to-br from-accent-soft/40 via-surface to-warn/10 border border-accent/20 rounded-2xl p-5">
+    <section className="rounded-2xl p-5 text-white" style={{ background: "#107B97" }}>
       <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <div className="flex items-center gap-2">
-          <Bell size={16} className="text-accent" />
-          <h2 className="text-sm font-bold text-text">Heads up</h2>
-          <span className="pill bg-accent-soft text-accent text-[11px]">{items.length} new</span>
+          <Bell size={16} className="text-white" />
+          <h2 className="text-sm font-bold text-white">Heads up</h2>
+          <span className="pill bg-white/15 text-white border border-white/25 text-[11px]">{items.length} new</span>
         </div>
         <button
           onClick={() => markAll.mutate()}
-          className="text-[11.5px] text-muted hover:text-text font-medium"
+          className="text-[11.5px] text-white/80 hover:text-white font-medium"
         >
           Mark all read
         </button>

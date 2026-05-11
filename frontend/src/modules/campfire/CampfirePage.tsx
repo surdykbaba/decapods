@@ -220,8 +220,8 @@ export function CampfirePage() {
 
       <header className="flex items-end justify-between flex-wrap gap-4 mb-6">
         <div className="flex items-center gap-3">
-          <div className="relative w-14 h-14 rounded-2xl bg-gradient-to-br from-warn/30 via-warn/15 to-accent-soft border border-warn/30 grid place-items-center shadow-soft">
-            <Flame className="text-warn animate-flicker" size={28} strokeWidth={2.4} />
+          <div className="relative w-14 h-14 rounded-2xl border border-white/20 grid place-items-center shadow-soft" style={{ background: "#107B97" }}>
+            <Flame className="text-white animate-flicker" size={28} strokeWidth={2.4} />
           </div>
           <div>
             <h1 className="text-3xl font-extrabold tracking-tight text-text leading-none">Campfire</h1>
@@ -384,7 +384,7 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
           something…" pill read like search and nobody clicked it. Now it's
           a coloured CTA card with quick-prompt chips below so the user sees
           *exactly* what they can drop in. */}
-      <div className="rounded-3xl border border-accent/30 bg-gradient-to-br from-accent-soft via-accent-soft/70 to-warn/10 p-4 shadow-soft">
+      <div className="rounded-3xl border border-white/15 p-4 shadow-soft" style={{ background: "#107B97" }}>
         <button
           onClick={() => setComposerOpen(true)}
           className="w-full bg-surface rounded-2xl px-4 py-3.5 flex items-center gap-3 hover:bg-bg/40 border border-border/60 hover:border-accent transition-all text-left"
@@ -520,13 +520,6 @@ type HeroSlide = {
   headline: React.ReactNode;
   body: React.ReactNode;
   avatar?: { name: string; email: string };
-};
-
-const HERO_GRADIENT: Record<HeroSlide["tone"], string> = {
-  warn:    "from-warn/30 via-warn/15 to-accent-soft",
-  success: "from-success/25 via-success/10 to-accent-soft",
-  accent:  "from-accent-soft via-accent-soft/60 to-warn/15",
-  magenta: "from-warn/25 via-accent-soft/70 to-success/10",
 };
 
 const HERO_BADGE_CLASS = "absolute -bottom-2 -right-2 w-9 h-9 rounded-full grid place-items-center text-lg shadow-card";
@@ -675,10 +668,8 @@ function HeroBanner({ compact = false }: { compact?: boolean } = {}) {
   // banner reads horizontally with a big avatar tile beside the text; that
   // layout dies at narrow widths, so we restack avatar-on-top and shrink the
   // typography. Same data, same rotation, just laid out for a rail.
-  // Compact rail variant uses the brand solid (#107B97) so it reads as a
-  // consistent workspace identity element rather than another decorative
-  // gradient. The wide hero keeps the gradient — it sits inline with feed
-  // posts and needs the visual lift to stand out.
+  // Both variants use the brand solid (#107B97) — we dropped the rotating
+  // gradient deck in favour of one consistent workspace identity colour.
   return compact ? (
     <div
       className="relative overflow-hidden rounded-3xl shadow-card text-white"
@@ -729,31 +720,32 @@ function HeroBanner({ compact = false }: { compact?: boolean } = {}) {
     </div>
   ) : (
     <div
-      className={`relative overflow-hidden rounded-3xl border border-accent/30 shadow-card bg-gradient-to-br ${HERO_GRADIENT[s.tone]}`}
+      className="relative overflow-hidden rounded-3xl shadow-card text-white"
+      style={{ background: "#107B97" }}
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
     >
-      {/* Soft radial glows for that party-mood depth. */}
-      <div aria-hidden className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-warn/25 blur-3xl pointer-events-none" />
-      <div aria-hidden className="absolute -bottom-16 -left-12 w-56 h-56 rounded-full bg-accent/15 blur-3xl pointer-events-none" />
+      <div aria-hidden className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-white/10 pointer-events-none" />
+      <div aria-hidden className="absolute -bottom-16 -left-12 w-56 h-56 rounded-full bg-white/5 pointer-events-none" />
 
       <div className="relative px-5 py-6 sm:px-8 sm:py-8 flex items-center gap-5 sm:gap-7">
-        {/* Big avatar tile with emoji badge — reads as the "subject" of the slide */}
         {s.avatar && (
           <div className="relative shrink-0">
-            <Avatar name={s.avatar.name} email={s.avatar.email} size={80} />
-            <span className={`${HERO_BADGE_CLASS} bg-surface border border-border/60`}>{s.emoji}</span>
+            <span className="block rounded-full ring-2 ring-white/30">
+              <Avatar name={s.avatar.name} email={s.avatar.email} size={80} />
+            </span>
+            <span className={`${HERO_BADGE_CLASS} bg-white text-text border border-white/60`}>{s.emoji}</span>
           </div>
         )}
 
         <div className="min-w-0 flex-1">
-          <div className="text-[10.5px] uppercase tracking-[0.14em] font-bold text-text/70">
+          <div className="text-[10.5px] uppercase tracking-[0.14em] font-bold text-white/75">
             {s.eyebrow}
           </div>
-          <div className="text-xl sm:text-2xl font-extrabold text-text leading-tight mt-1">
+          <div className="text-xl sm:text-2xl font-extrabold leading-tight mt-1">
             {s.headline}
           </div>
-          <div className="text-[13.5px] text-text/80 mt-1.5 max-w-2xl leading-snug">
+          <div className="text-[13.5px] text-white/85 mt-1.5 max-w-2xl leading-snug">
             {s.body}
           </div>
         </div>
@@ -769,7 +761,7 @@ function HeroBanner({ compact = false }: { compact?: boolean } = {}) {
                 onClick={() => setIdx(i)}
                 aria-label={`Slide ${i + 1}`}
                 className={`h-1.5 rounded-full transition-all ${
-                  i === idx ? "w-6 bg-accent" : "w-1.5 bg-text/30 hover:bg-text/50"
+                  i === idx ? "w-6 bg-white" : "w-1.5 bg-white/40 hover:bg-white/60"
                 }`}
               />
             ))}
@@ -777,14 +769,14 @@ function HeroBanner({ compact = false }: { compact?: boolean } = {}) {
           <button
             onClick={() => setIdx((i) => (i - 1 + slides.length) % slides.length)}
             aria-label="Previous"
-            className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-surface/70 hover:bg-surface text-text grid place-items-center shadow-soft"
+            className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 text-white grid place-items-center shadow-soft"
           >
             ‹
           </button>
           <button
             onClick={() => setIdx((i) => (i + 1) % slides.length)}
             aria-label="Next"
-            className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-surface/70 hover:bg-surface text-text grid place-items-center shadow-soft"
+            className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 text-white grid place-items-center shadow-soft"
           >
             ›
           </button>
@@ -842,60 +834,63 @@ function SpotlightCard() {
   if (joiners.length === 0 && onLeave.length === 0 && !trend) return null;
 
   return (
-    <div className="relative bg-gradient-to-br from-warn/15 via-accent-soft/70 to-success/10 border border-accent/30 rounded-3xl p-5 grid grid-cols-1 md:grid-cols-3 gap-5 shadow-card overflow-hidden">
-      <div aria-hidden className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-warn/15 blur-2xl pointer-events-none" />
-      <div aria-hidden className="absolute -bottom-12 -left-8 w-44 h-44 rounded-full bg-accent/10 blur-2xl pointer-events-none" />
+    <div
+      className="relative rounded-3xl p-5 grid grid-cols-1 md:grid-cols-3 gap-5 shadow-card overflow-hidden text-white"
+      style={{ background: "#107B97" }}
+    >
+      <div aria-hidden className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-white/10 pointer-events-none" />
+      <div aria-hidden className="absolute -bottom-12 -left-8 w-44 h-44 rounded-full bg-white/5 pointer-events-none" />
       <SpotlightCol
-        icon={<UserPlus size={14} className="text-accent" />}
+        icon={<UserPlus size={14} className="text-white" />}
         title={joiners.length ? `Welcome ${joiners.length === 1 ? "our newest" : "our newest"} ${joiners.length === 1 ? "joiner" : "joiners"}` : "No new joiners yet"}
       >
         {joiners.length === 0
-          ? <span className="text-[12px] text-muted">Invite someone from Members.</span>
+          ? <span className="text-[12px] text-white/80">Invite someone from Members.</span>
           : (
             <div className="flex flex-wrap items-center gap-2 mt-1">
               {joiners.slice(0, 4).map((j) => (
                 <span key={j.id} className="inline-flex items-center gap-2 text-[12px]" title={j.email}>
                   <Avatar name={j.name} email={j.email} size={22} />
-                  <span className="font-semibold text-text">{(j.name || j.email).split(" ")[0]}</span>
+                  <span className="font-semibold text-white">{(j.name || j.email).split(" ")[0]}</span>
                 </span>
               ))}
-              {joiners.length > 4 && <span className="text-[11px] text-muted">+{joiners.length - 4}</span>}
+              {joiners.length > 4 && <span className="text-[11px] text-white/75">+{joiners.length - 4}</span>}
             </div>
           )}
       </SpotlightCol>
 
       <SpotlightCol
-        icon={<Plane size={14} className="text-accent" />}
+        icon={<Plane size={14} className="text-white" />}
         title={onLeave.length ? `${onLeave.length} on leave today` : "Everyone's in today"}
       >
         {onLeave.length === 0
-          ? <span className="text-[12px] text-muted">Full attendance.</span>
+          ? <span className="text-[12px] text-white/80">Full attendance.</span>
           : (
             <div className="flex flex-wrap items-center gap-2 mt-1">
               {onLeave.slice(0, 4).map((p) => (
                 <span key={p.id} className="inline-flex items-center gap-2 text-[12px]" title={`Back ${new Date(p.back_on).toLocaleDateString()}`}>
                   <Avatar name={p.name} email={p.email} size={22} />
-                  <span className="font-semibold text-text">{(p.name || p.email).split(" ")[0]}</span>
+                  <span className="font-semibold text-white">{(p.name || p.email).split(" ")[0]}</span>
                 </span>
               ))}
-              {onLeave.length > 4 && <span className="text-[11px] text-muted">+{onLeave.length - 4}</span>}
+              {onLeave.length > 4 && <span className="text-[11px] text-white/75">+{onLeave.length - 4}</span>}
             </div>
           )}
       </SpotlightCol>
 
       <SpotlightCol
-        icon={<TrendingUp size={14} className="text-accent" />}
+        icon={<TrendingUp size={14} className="text-white" />}
         title={trend ? "Trending this week" : "Nothing trending yet"}
       >
         {trend ? (
           <div className="mt-1">
-            <div className="text-[12px] text-text font-semibold line-clamp-2">{trend.title || trend.body}</div>
-            <div className="text-[11px] text-muted mt-0.5">
+            <div className="text-[12px] text-white font-semibold line-clamp-2">{trend.title || trend.body}</div>
+            <div className="text-[11px] text-white/75 mt-0.5">
               {trend.author_name || trend.author_email} · {trend.reactions} reaction{trend.reactions === 1 ? "" : "s"}
             </div>
           </div>
         ) : (
-          <span className="text-[12px] text-muted">React to posts to surface what the team loves.</span>
+          <span className="text-[12px] text-white/80">React to posts to surface what the team loves.</span>
         )}
       </SpotlightCol>
     </div>
@@ -905,7 +900,7 @@ function SpotlightCard() {
 function SpotlightCol({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
     <div>
-      <div className="flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider font-bold text-muted">
+      <div className="flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider font-bold text-white/85">
         {icon} {title}
       </div>
       {children}
