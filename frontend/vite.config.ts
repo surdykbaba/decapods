@@ -24,6 +24,12 @@ export default defineConfig({
       },
       workbox: {
         navigateFallback: "/index.html",
+        // Never let the SPA shell take over /api/* requests — that was
+        // silently hijacking OAuth callbacks (Microsoft → /api/v1/auth/
+        // microsoft/callback?code=…) and serving index.html instead,
+        // so the backend never saw the auth code and no token was
+        // persisted. Anything under /api/ must hit the network.
+        navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.pathname.startsWith("/api/"),
