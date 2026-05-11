@@ -222,6 +222,8 @@ func New(d Deps) http.Handler {
 	authed.POST("/projects", mw.RequirePermission("project:write"), proj.Create)
 	authed.GET("/projects/:id", mw.RequirePermission("project:read"), proj.Get)
 	authed.GET("/projects/:id/board", mw.RequirePermission("project:read"), proj.Board)
+	authed.GET("/projects/:id/automation", mw.RequirePermission("project:read"),  proj.GetAutomation)
+	authed.PUT("/projects/:id/automation", mw.RequirePermission("project:write"), proj.PutAutomation)
 	authed.POST("/projects/:id/milestones", mw.RequirePermission("milestone:write"), proj.AddMilestone)
 	authed.POST("/projects/:id/tasks", mw.RequirePermission("task:write"), proj.AddTask)
 	authed.PATCH("/projects/:id/tasks/:taskId", mw.RequirePermission("task:write"), proj.PatchTask)

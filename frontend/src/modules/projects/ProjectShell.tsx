@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, Outlet, useParams, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -56,6 +56,7 @@ export function ProjectShell() {
   // reverts on Escape.
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
+  const [autoOpen, setAutoOpen] = useState(false);
   const rename = useMutation({
     mutationFn: (name: string) => api(`/api/v1/projects/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
     onSuccess: () => {
@@ -166,7 +167,7 @@ export function ProjectShell() {
           </button>
           <button
             type="button"
-            onClick={() => toast.info?.("Automation rules", "Coming soon — gate stage transitions, auto-create tasks, escalate stale items.") ?? toast.success("Automation rules", "Coming soon.")}
+            onClick={() => setAutoOpen(true)}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg border border-border bg-surface text-sm font-semibold text-text hover:border-accent hover:text-accent transition-colors"
           >
             <Sparkles size={14} /> Automation
@@ -195,6 +196,162 @@ export function ProjectShell() {
       </nav>
 
       <Outlet context={{ project, stakeholders, owner }} />
+
+      {autoOpen && id && (
+        <AutomationDialog projectId={id} onClose={() => setAutoOpen(false)} />
+      )}
+    </div>
+  );
+}
+
+/* ---------- Automation rules dialog ---------- */
+
+type AutomationResp = {
+  config: { auto_assign_lead: boolean; notify_lead_on_blocked: boolean };
+  lead_id: string | null;
+  lead_name: string;
+  lead_email: string;
+};
+
+function AutomationDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<AutomationResp>({
+    queryKey: ["project-automation", projectId],
+    queryFn: () => api(`/api/v1/projects/${projectId}/automation`),
+  });
+
+  const [autoAssign, setAutoAssign] = useState(false);
+  const [notifyBlocked, setNotifyBlocked] = useState(false);
+
+  // Hydrate the local toggles once the GET lands. We watch the config object
+  // directly so a refetch after save also re-syncs.
+  useEffect(() => {
+    if (data?.config) {
+      setAutoAssign(data.config.auto_assign_lead);
+      setNotifyBlocked(data.config.notify_lead_on_blocked);
+    }
+  }, [data?.config]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      api(`/api/v1/projects/${projectId}/automation`, {
+        method: "PUT",
+        body: JSON.stringify({
+          auto_assign_lead: autoAssign,
+          notify_lead_on_blocked: notifyBlocked,
+        }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["project-automation", projectId] });
+      toast.success("Automation saved");
+      onClose();
+    },
+    onError: (e: any) => toast.error("Could not save", e?.message),
+  });
+
+  const leadLabel = data?.lead_name?.trim() || data?.lead_email || "Project creator";
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] uppercase tracking-wider font-bold text-accent">Project automation</div>
+            <h2 className="text-lg font-extrabold text-text mt-0.5 inline-flex items-center gap-2">
+              <Sparkles size={18} className="text-accent" /> Rules
+            </h2>
+            <p className="text-xs text-muted mt-1">
+              On a per-project basis. Lead is resolved to{" "}
+              <span className="font-semibold text-text">{leadLabel}</span> — the team-member
+              with a lead/manager role, or the project creator as a fallback.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-text p-1.5 rounded hover:bg-bg" aria-label="Close">
+            <X size={16} />
+          </button>
+        </header>
+
+        {isLoading ? (
+          <div className="p-8 text-center text-sm text-muted">Loading…</div>
+        ) : (
+          <>
+            <div className="px-5 py-4 space-y-3">
+              <RuleRow
+                title="Auto-assign new tasks to the lead"
+                body="When someone creates a task without picking an assignee, route it to the project lead so nothing sits unowned."
+                live
+                checked={autoAssign}
+                onChange={setAutoAssign}
+              />
+              <RuleRow
+                title="Notify the lead when a task is blocked"
+                body="The moment any task flips to ‘blocked', the lead gets a notification with the project + task name so they can step in."
+                live
+                checked={notifyBlocked}
+                onChange={setNotifyBlocked}
+              />
+
+              <div className="pt-4 border-t border-border">
+                <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-2">Planned</div>
+                <div className="space-y-2 text-xs text-muted">
+                  <PlannedRow title="Escalate tasks stuck in ‘blocked' >24h" />
+                  <PlannedRow title="Auto-nudge assignee 1 day before due" />
+                  <PlannedRow title="Auto-move to ‘review' when all subtasks done" />
+                </div>
+              </div>
+            </div>
+
+            <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+              <button onClick={onClose} className="text-sm text-muted hover:text-text px-3 py-2">Cancel</button>
+              <button
+                onClick={() => save.mutate()}
+                disabled={save.isPending}
+                className="inline-flex items-center gap-1.5 bg-accent text-white text-sm font-semibold px-4 py-2 rounded-lg hover:bg-[rgb(var(--accent-hover))] disabled:opacity-50"
+              >
+                {save.isPending ? "Saving…" : "Save rules"}
+              </button>
+            </footer>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function RuleRow({
+  title, body, live, checked, onChange,
+}: {
+  title: string; body: string; live?: boolean;
+  checked: boolean; onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start gap-3 p-3 rounded-xl border border-border hover:border-accent/40 cursor-pointer">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-1 w-4 h-4 accent-accent"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-bold text-text">{title}</span>
+          {live && (
+            <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-success/15 text-success">
+              Active
+            </span>
+          )}
+        </div>
+        <div className="text-[12px] text-muted mt-0.5 leading-relaxed">{body}</div>
+      </div>
+    </label>
+  );
+}
+
+function PlannedRow({ title }: { title: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-1.5 h-1.5 rounded-full bg-muted/50" />
+      <span>{title}</span>
     </div>
   );
 }

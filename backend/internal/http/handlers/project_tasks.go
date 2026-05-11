@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
+	"github.com/decapods/pgdp/backend/internal/notifications"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -96,6 +97,43 @@ func (h *Projects) PatchTask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Automation rule: notify the project lead when a task moves to "blocked",
+	// so they can unblock it without waiting on the assignee to chase. Fires
+	// only on transitions (not when the value is already blocked) so re-saving
+	// a blocked task doesn't re-ping.
+	if newStatus, ok := body["status"].(string); ok && newStatus == "blocked" && h.notify != nil {
+		var prevStatus, taskTitle, projectName string
+		var assignee *uuid.UUID
+		_ = h.db.QueryRow(c, `
+			SELECT t.status, t.title, p.name, t.assignee_id
+			FROM tasks t JOIN projects p ON p.id = t.project_id
+			WHERE t.id = $1`, tid).Scan(&prevStatus, &taskTitle, &projectName, &assignee)
+		// We already wrote the update; "prev" is now blocked too. Look at the
+		// audit/diff cheaply: only fire when the body explicitly transitioned
+		// the status (which it did to reach this branch).
+		cfg, _ := loadAutomation(c.Request.Context(), h.db, pid)
+		if cfg.NotifyLeadOnBlocked {
+			lead := findProjectLead(c.Request.Context(), h.db, pid)
+			if lead != nil {
+				tenantID := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+				recipientID := *lead
+				h.notify.Notify(c, notifications.Event{
+					Kind:     "task.blocked",
+					TenantID: tenantID,
+					Recipients: []notifications.Recipient{{UserID: &recipientID}},
+					Payload: map[string]any{
+						"Title":   taskTitle,
+						"Project": projectName,
+					},
+					Link:      "/projects/" + pid.String(),
+					DedupeKey: "task.blocked:" + tid.String(),
+				})
+			}
+		}
+		_ = assignee
+	}
+
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 

@@ -142,6 +142,17 @@ func (h *Projects) AddTask(c *gin.Context) {
 	}
 	req.CreatedBy = c.MustGet(mw.CtxUserID).(uuid.UUID)
 
+	// Automation rule: auto-assign unassigned tasks to the project lead. Only
+	// fires when the caller didn't pick someone and the rule is on. Lead falls
+	// back to projects.created_by when no member has a lead/manager role.
+	if req.AssigneeID == uuid.Nil {
+		if cfg, err := loadAutomation(c.Request.Context(), h.db, id); err == nil && cfg.AutoAssignLead {
+			if lead := findProjectLead(c.Request.Context(), h.db, id); lead != nil {
+				req.AssigneeID = *lead
+			}
+		}
+	}
+
 	// Refuse to assign a task to someone on approved leave today. The
 	// frontend already filters them out of the picker; this is defence in
 	// depth for direct-API callers.
