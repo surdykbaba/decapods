@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import { SmartButton } from "@/components/SmartButton";
@@ -374,7 +375,12 @@ function MemberTable({
                         />
                       </span>
                       <div className="min-w-0">
-                        <div className="font-bold text-text truncate">{m.name || "—"}</div>
+                        <Link
+                          to={`/members/${m.id}`}
+                          className="font-bold text-text truncate hover:text-accent transition-colors block"
+                        >
+                          {m.name || "—"}
+                        </Link>
                         <a href={`mailto:${m.email}`} className="text-[11.5px] text-muted hover:text-accent truncate inline-flex items-center gap-1">
                           <Mail size={10} /> {m.email}
                         </a>
@@ -798,7 +804,9 @@ function InvitationsPanel() {
     queryFn: () => api("/api/v1/members/invitations"),
     refetchInterval: 60_000,
   });
-  const items = data?.items ?? [];
+  // Accepted invitations have served their purpose — the invitee is now in the
+  // members table below, so showing them here twice is just clutter.
+  const items = (data?.items ?? []).filter((i) => i.status !== "accepted");
 
   const revoke = useMutation({
     mutationFn: (id: string) => api(`/api/v1/member-invitations/${id}`, { method: "DELETE" }),

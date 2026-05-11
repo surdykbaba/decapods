@@ -47,6 +47,7 @@ import {
 } from "@/modules/settings/SettingsLayout";
 import { MembersPage } from "@/modules/members/MembersPage";
 import { MemberInvitePage } from "@/modules/members/MemberInvitePage";
+import { MemberProfilePage } from "@/modules/members/MemberProfilePage";
 // Keep parked imports silenced so a future wiring doesn't need the import dance.
 void SettingsMembersStub;
 
@@ -93,6 +94,7 @@ export function App() {
         <Route path="/vendors"        element={<VendorsPage />} />
         <Route path="/vendors/:id"    element={<VendorDetailPage />} />
         <Route path="/members"        element={<MembersPage />} />
+        <Route path="/members/:id"    element={<MemberProfilePage />} />
         <Route path="/stakeholders"   element={<StakeholdersPage />} />
         <Route path="/agents"         element={<AgentsPage />} />
         <Route path="/agents/:id"     element={<AgentDetailPage />} />
