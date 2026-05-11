@@ -64,7 +64,12 @@ func RequirePermission(perm string) gin.HandlerFunc {
 		roles, _ := c.Get(CtxRoles)
 		rs, _ := roles.([]string)
 		if !auth.HasPermission(rs, perm) {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden", "required": perm})
+			// The user-facing copy stays human; `required` is kept as a hidden
+			// hint for admins debugging from the network panel.
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error":    "You don't have permission to do this. Ask your admin if you need access.",
+				"required": perm,
+			})
 			return
 		}
 		c.Next()
