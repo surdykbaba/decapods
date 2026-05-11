@@ -119,6 +119,10 @@ var Catalog = map[EventKind]EventMeta{
 	"leave.rejected":          {Category: CatGovernance, DefaultTier: TierImmediate, Severity: "warn",     SubjectTpl: "Leave declined — {{.Start}} to {{.End}}",       HeadlineTpl: "Leave declined: {{.Reason}}",                   Description: "Your leave request was rejected", DefaultLink: "/leave"},
 	"leave.cancelled":         {Category: CatGovernance, DefaultTier: TierDigestDaily, Severity: "info",   SubjectTpl: "Leave cancelled — {{.Requester}}",              HeadlineTpl: "{{.Requester}} cancelled their leave",          Description: "A leave request was cancelled", DefaultLink: "/leave"},
 
+	// Attendance — heartbeat-derived warnings dispatched to HR-class roles
+	// when a member's away gap exceeds the threshold during work hours.
+	"attendance.long_away":    {Category: CatGovernance, DefaultTier: TierImmediate, Severity: "warn",     SubjectTpl: "Attendance warning — {{.Member}}",              HeadlineTpl: "{{.Member}} was away {{.Gap}} min during work hours", Description: "A staff member was away beyond the allowed threshold during work hours", DefaultLink: "/attendance"},
+
 	// 6. Risk & Escalation
 	"risk.raised":           {Category: CatRisk, DefaultTier: TierImmediate, Severity: "warn",     SubjectTpl: "New risk — {{.Title}}",                            HeadlineTpl: "Risk raised on {{.Project}}",            Description: "A new risk was raised"},
 	"risk.high_project":     {Category: CatRisk, DefaultTier: TierImmediate, Severity: "critical", SubjectTpl: "High-risk project — {{.Project}}",                 HeadlineTpl: "{{.Project}} graded high risk",          Description: "A project was graded high risk"},

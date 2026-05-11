@@ -114,6 +114,24 @@ func (h *ProjectMembers) Add(c *gin.Context) {
 		return
 	}
 
+	// Refuse to staff someone who's currently on approved leave. They can be
+	// re-added once they're back; doing it now would silently load them on a
+	// day they shouldn't be working.
+	var onLeave bool
+	_ = h.db.QueryRow(c, `
+		SELECT EXISTS (
+		  SELECT 1 FROM leave_requests
+		   WHERE user_id=$1 AND status='approved'
+		     AND CURRENT_DATE BETWEEN start_date AND end_date
+		)`, userID).Scan(&onLeave)
+	if onLeave {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "That member is on approved leave today — they can't be added to a project right now.",
+			"code":  "on_leave",
+		})
+		return
+	}
+
 	// Try insert first; on unique conflict (existing row, possibly removed),
 	// re-activate it. This keeps the audit trail intact (same row, new added_at).
 	var id uuid.UUID
@@ -213,6 +231,14 @@ func (h *ProjectMembers) Assignable(c *gin.Context) {
 		 WHERE u.tenant_id = $1
 		   AND u.deleted_at IS NULL
 		   AND u.status <> 'disabled'
+		   -- Exclude anyone on approved leave today — they can't be staffed
+		   -- onto a project (or a new task) while they're out.
+		   AND NOT EXISTS (
+		     SELECT 1 FROM leave_requests lr
+		      WHERE lr.user_id = u.id
+		        AND lr.status = 'approved'
+		        AND CURRENT_DATE BETWEEN lr.start_date AND lr.end_date
+		   )
 		   AND u.id NOT IN (
 		     SELECT user_id FROM project_members
 		      WHERE project_id = $2 AND removed_at IS NULL

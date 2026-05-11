@@ -10,7 +10,7 @@
 // no staff-facing punch clock. Heartbeats become sessions; sessions roll up
 // into the numbers below.
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Avatar } from "@/components/Avatar";
 import {
@@ -91,13 +91,38 @@ const TONE_BG: Record<TodayRow["tone"], string> = {
 
 /* ─── page ─── */
 
-type Tab = "today" | "trend" | "appraisal";
+type Tab = "today" | "trend" | "warnings" | "appraisal";
+
+type Warning = {
+  id: string;
+  user_id: string;
+  name: string;
+  email: string;
+  avatar_url?: string;
+  kind: string;
+  gap_minutes: number;
+  started_at: string;
+  ended_at: string | null;
+  notified_at: string | null;
+  acknowledged_at: string | null;
+  created_at: string;
+};
 
 export function AttendancePage() {
   const [tab, setTab] = useState<Tab>("today");
-  const tabs: { key: Tab; label: string; icon: React.ComponentType<any> }[] = [
+
+  // Pull open warnings up here so we can badge the tab + show a banner on Today.
+  const { data: warnData } = useQuery<{ items: Warning[] }>({
+    queryKey: ["attendance", "warnings", "open"],
+    queryFn: () => api("/api/v1/attendance/warnings?status=open"),
+    refetchInterval: 60_000,
+  });
+  const openWarnings = warnData?.items ?? [];
+
+  const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; badge?: number }[] = [
     { key: "today",     label: "Today",      icon: Activity },
     { key: "trend",     label: "Trend",      icon: TrendingUp },
+    { key: "warnings",  label: "Warnings",   icon: AlertTriangle, badge: openWarnings.length || undefined },
     { key: "appraisal", label: "Appraisals", icon: Award },
   ];
 
@@ -129,13 +154,121 @@ export function AttendancePage() {
             }`}
           >
             <t.icon size={14} /> {t.label}
+            {t.badge ? (
+              <span className={`min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold grid place-items-center ${
+                tab === t.key ? "bg-white text-accent" : "bg-danger text-white"
+              }`}>
+                {t.badge}
+              </span>
+            ) : null}
           </button>
         ))}
       </nav>
 
+      {/* Open-warnings banner on the Today tab — drives HR straight to action. */}
+      {tab === "today" && openWarnings.length > 0 && (
+        <div className="bg-danger/10 border border-danger/30 rounded-2xl px-4 py-3 flex items-center gap-3">
+          <AlertTriangle size={18} className="text-danger shrink-0" />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-bold text-danger">
+              {openWarnings.length} unacknowledged attendance warning{openWarnings.length === 1 ? "" : "s"}
+            </div>
+            <div className="text-[12px] text-muted">
+              Members were away beyond 30 min during work hours without leave coverage.
+            </div>
+          </div>
+          <button
+            onClick={() => setTab("warnings")}
+            className="text-[12.5px] font-semibold text-danger hover:underline shrink-0"
+          >
+            Review →
+          </button>
+        </div>
+      )}
+
       {tab === "today"     && <TodayTab />}
       {tab === "trend"     && <TrendTab />}
+      {tab === "warnings"  && <WarningsTab />}
       {tab === "appraisal" && <AppraisalTab />}
+    </div>
+  );
+}
+
+/* ─── warnings tab ─── */
+
+function WarningsTab() {
+  const qc = useQueryClient();
+  const [scope, setScope] = useState<"open" | "all">("open");
+  const { data, isLoading } = useQuery<{ items: Warning[] }>({
+    queryKey: ["attendance", "warnings", scope],
+    queryFn: () => api(`/api/v1/attendance/warnings?status=${scope}`),
+  });
+  const items = data?.items ?? [];
+
+  const ack = useMutation({
+    mutationFn: (id: string) => api(`/api/v1/attendance/warnings/${id}/ack`, { method: "POST" }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["attendance", "warnings"] }),
+  });
+
+  if (isLoading) return <div className="text-sm text-muted py-8 text-center">Loading…</div>;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-1 p-1 bg-surface border border-border rounded-full w-fit">
+        {(["open", "all"] as const).map((s) => (
+          <button
+            key={s}
+            onClick={() => setScope(s)}
+            className={`px-3 py-1 text-[12px] font-semibold rounded-full ${
+              scope === s ? "bg-accent text-white" : "text-muted hover:text-text"
+            }`}
+          >
+            {s === "open" ? "Open" : "All (30d)"}
+          </button>
+        ))}
+      </div>
+
+      {items.length === 0 ? (
+        <div className="bg-surface border border-border rounded-2xl p-10 text-center">
+          <CheckCircle2 size={28} className="text-success mx-auto mb-2" />
+          <div className="text-sm font-semibold text-text">All clear</div>
+          <div className="text-xs text-muted mt-1">
+            No {scope === "open" ? "unacknowledged" : "recent"} attendance warnings.
+          </div>
+        </div>
+      ) : (
+        <ul className="bg-surface border border-border rounded-2xl divide-y divide-border overflow-hidden">
+          {items.map((w) => {
+            const since = new Date(w.created_at);
+            const sinceMin = Math.max(1, Math.round((Date.now() - since.getTime()) / 60_000));
+            const ago = sinceMin < 60 ? `${sinceMin}m` : sinceMin < 1440 ? `${Math.round(sinceMin / 60)}h` : `${Math.round(sinceMin / 1440)}d`;
+            return (
+              <li key={w.id} className="px-4 py-3 flex items-center gap-3 flex-wrap">
+                <Avatar name={w.name} email={w.email} src={w.avatar_url} size={36} />
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-text truncate">{w.name || w.email}</div>
+                  <div className="text-[11.5px] text-muted">
+                    Away <span className="font-bold text-danger">{w.gap_minutes} min</span>
+                    {" "}during work hours · started {new Date(w.started_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    {" · "}{ago} ago
+                  </div>
+                </div>
+                {w.acknowledged_at ? (
+                  <span className="pill bg-success/10 text-success text-[11px]">Acknowledged</span>
+                ) : (
+                  <button
+                    onClick={() => ack.mutate(w.id)}
+                    disabled={ack.isPending}
+                    className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/90 disabled:opacity-40"
+                  >
+                    Acknowledge
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
@@ -503,6 +636,3 @@ function Stat({ label, value, good, bad }: { label: string; value: string | numb
   );
 }
 
-// Silence unused — kept for the icon palette in case we add empty states later.
-void CheckCircle2;
-void AlertTriangle;

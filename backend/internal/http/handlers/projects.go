@@ -82,6 +82,26 @@ func (h *Projects) AddMilestone(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Block assignment to someone on approved leave today — same rule the
+	// task creation path enforces.
+	if req.AssigneeID != uuid.Nil {
+		var onLeave bool
+		_ = h.db.QueryRow(c, `
+			SELECT EXISTS (
+			  SELECT 1 FROM leave_requests
+			   WHERE user_id=$1 AND status='approved'
+			     AND CURRENT_DATE BETWEEN start_date AND end_date
+			)`, req.AssigneeID).Scan(&onLeave)
+		if onLeave {
+			c.JSON(409, gin.H{
+				"error": "Assignee is on approved leave today — pick someone else.",
+				"code":  "assignee_on_leave",
+			})
+			return
+		}
+	}
+
 	mid, err := h.svc.AddMilestone(c, id, req)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -121,6 +141,27 @@ func (h *Projects) AddTask(c *gin.Context) {
 		return
 	}
 	req.CreatedBy = c.MustGet(mw.CtxUserID).(uuid.UUID)
+
+	// Refuse to assign a task to someone on approved leave today. The
+	// frontend already filters them out of the picker; this is defence in
+	// depth for direct-API callers.
+	if req.AssigneeID != uuid.Nil {
+		var onLeave bool
+		_ = h.db.QueryRow(c, `
+			SELECT EXISTS (
+			  SELECT 1 FROM leave_requests
+			   WHERE user_id=$1 AND status='approved'
+			     AND CURRENT_DATE BETWEEN start_date AND end_date
+			)`, req.AssigneeID).Scan(&onLeave)
+		if onLeave {
+			c.JSON(409, gin.H{
+				"error": "Assignee is on approved leave today — pick someone else or wait until they return.",
+				"code":  "assignee_on_leave",
+			})
+			return
+		}
+	}
+
 	tid, err := h.svc.AddTask(c, id, req)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})

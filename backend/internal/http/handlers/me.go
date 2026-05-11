@@ -1,12 +1,14 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
+	"github.com/decapods/pgdp/backend/internal/notifications"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -14,9 +16,20 @@ import (
 
 // Me hosts the per-user personal portal endpoints. Every handler here is
 // scoped to the authenticated user — never returns tenant-wide data.
-type Me struct{ db *pgxpool.Pool }
+type Me struct {
+	db     *pgxpool.Pool
+	notify *notifications.Engine
+}
 
 func NewMe(db *pgxpool.Pool) *Me { return &Me{db: db} }
+
+// WithEngine attaches the notification engine so the heartbeat can fan out
+// HR alerts when an attendance warning fires. Optional — the heartbeat still
+// works without it, just silent.
+func (h *Me) WithEngine(engine *notifications.Engine) *Me {
+	h.notify = engine
+	return h
+}
 
 /* ---------- Dashboard ---------- */
 
@@ -710,15 +723,161 @@ func (h *Me) Heartbeat(c *gin.Context) {
 			ua, ip, platform, os, browser,
 			body.Timezone, body.Locale, body.Screen, openID)
 	} else {
-		// Open a new session.
+		// Open a new session AND inspect the gap that produced it. If the user
+		// resumes after >30 min during work hours and isn't on approved leave,
+		// log a warning + ping HR. The check is fire-and-forget — never blocks
+		// the heartbeat response.
 		_, _ = h.db.Exec(c, `
 			INSERT INTO attendance_sessions
 			  (tenant_id, user_id, user_agent, ip_address, platform, os, browser, timezone, locale, screen)
 			VALUES ($1,$2,$3, NULLIF($4,'')::inet, $5,$6,$7, NULLIF($8,''), NULLIF($9,''), NULLIF($10,''))`,
 			tid, uid, ua, ip, platform, os, browser, body.Timezone, body.Locale, body.Screen)
+		go h.checkAwayGap(context.Background(), tid, uid, body.Timezone)
 	}
 
 	c.JSON(200, gin.H{"ok": true, "last_seen_at": time.Now().UTC()})
+}
+
+// awayThresholdMinutes is the size of an unexcused gap during work hours that
+// trips an attendance warning. Tuned to allow short bio/coffee breaks but
+// flag anything longer that wasn't an approved leave day.
+const awayThresholdMinutes = 30
+
+// checkAwayGap runs after a heartbeat opens a new session — meaning the user
+// just came back from being away. It looks at the previous session's
+// last_seen_at vs. the new session's started_at and decides whether the gap
+// counts as a warning. Best-effort; the heartbeat write already happened.
+func (h *Me) checkAwayGap(ctx context.Context, tid, uid uuid.UUID, clientTZ string) {
+	// Most recent session for this user excluding the one we just opened.
+	// `LIMIT 2` then take the second row keeps it to a single index scan.
+	rows, err := h.db.Query(ctx, `
+		SELECT last_seen_at FROM attendance_sessions
+		 WHERE user_id=$1
+		 ORDER BY last_seen_at DESC LIMIT 2`, uid)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	var seen []time.Time
+	for rows.Next() {
+		var t time.Time
+		if err := rows.Scan(&t); err == nil {
+			seen = append(seen, t)
+		}
+	}
+	if len(seen) < 2 {
+		return // first session of the user's lifetime — no gap to evaluate
+	}
+	prevLastSeen := seen[1] // [0] is the new session we just opened
+	gap := time.Since(prevLastSeen)
+	if gap < time.Duration(awayThresholdMinutes)*time.Minute {
+		return
+	}
+
+	// Was the gap inside work hours? We use the client-reported timezone
+	// when present, else server local. Work hours = Mon-Fri 09:00-17:00.
+	loc, _ := time.LoadLocation(clientTZ)
+	if loc == nil {
+		loc = time.Local
+	}
+	if !gapInsideWorkHours(prevLastSeen.In(loc), time.Now().In(loc)) {
+		return
+	}
+
+	// Was the user on approved leave during the gap?
+	var onLeave bool
+	_ = h.db.QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM leave_requests
+		   WHERE user_id=$1 AND status='approved'
+		     AND $2::date BETWEEN start_date AND end_date
+		)`, uid, prevLastSeen).Scan(&onLeave)
+	if onLeave {
+		return
+	}
+
+	// Dedupe — don't fire if the previous warning ended within the last hour
+	// (covers heartbeat fluttering at the edge of the window).
+	var recent bool
+	_ = h.db.QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM attendance_warnings
+		   WHERE user_id=$1 AND created_at > now() - interval '1 hour'
+		)`, uid).Scan(&recent)
+	if recent {
+		return
+	}
+
+	gapMin := int(gap.Minutes())
+	var warnID uuid.UUID
+	if err := h.db.QueryRow(ctx, `
+		INSERT INTO attendance_warnings
+		  (tenant_id, user_id, kind, gap_minutes, started_at, ended_at, work_hours_only)
+		VALUES ($1,$2,'long_away',$3,$4,now(),true)
+		RETURNING id`, tid, uid, gapMin, prevLastSeen).Scan(&warnID); err != nil {
+		return
+	}
+
+	// Notify HR-class roles. Engine is nil-safe — if not wired we just keep
+	// the persisted warning row for the appraisal pipeline.
+	if h.notify != nil {
+		var memberName string
+		_ = h.db.QueryRow(ctx,
+			`SELECT COALESCE(NULLIF(full_name,''), email::text) FROM users WHERE id=$1`, uid,
+		).Scan(&memberName)
+
+		recipientRows, err := h.db.Query(ctx, `
+			SELECT DISTINCT u.id FROM users u
+			JOIN user_roles ur ON ur.user_id = u.id
+			JOIN roles r       ON r.id      = ur.role_id
+			WHERE u.tenant_id=$1 AND u.deleted_at IS NULL AND u.status='active'
+			  AND r.name IN ('super_admin','ceo','coo','hr','hr_manager')`, tid)
+		if err == nil {
+			defer recipientRows.Close()
+			recipients := []notifications.Recipient{}
+			for recipientRows.Next() {
+				var id uuid.UUID
+				if err := recipientRows.Scan(&id); err == nil && id != uid {
+					recipients = append(recipients, notifications.Recipient{UserID: &id})
+				}
+			}
+			if len(recipients) > 0 {
+				h.notify.Notify(ctx, notifications.Event{
+					Kind:     "attendance.long_away",
+					TenantID: tid,
+					Recipients: recipients,
+					Payload: map[string]any{
+						"Member": memberName,
+						"Gap":    gapMin,
+						"From":   prevLastSeen.In(loc).Format("15:04"),
+					},
+					DedupeKey: "attendance.long_away:" + warnID.String(),
+					Link:      "/attendance",
+				})
+				_, _ = h.db.Exec(ctx,
+					`UPDATE attendance_warnings SET notified_at=now() WHERE id=$1`, warnID)
+			}
+		}
+	}
+}
+
+// gapInsideWorkHours returns true when the [start, end) interval overlaps any
+// work-hours window (Mon-Fri 09:00-17:00 in the supplied location). We don't
+// require the whole gap to be inside the window — even straddling the edge
+// counts, because the bulk of the absence still happened on company time.
+func gapInsideWorkHours(start, end time.Time) bool {
+	// Walk day-by-day across the span; tiny because gaps are minutes-hours.
+	for d := start; d.Before(end); d = d.Add(time.Hour) {
+		wd := d.Weekday()
+		if wd == time.Saturday || wd == time.Sunday {
+			continue
+		}
+		h := d.Hour()
+		if h >= 9 && h < 17 {
+			return true
+		}
+	}
+	return false
 }
 
 // parseUA is a tiny zero-dep User-Agent classifier. Anything fancier (full

@@ -106,7 +106,7 @@ func New(d Deps) http.Handler {
 	authed.GET("/admin/audit", sysAudit.List)
 
 	// Personal portal — every endpoint here is scoped to the logged-in user.
-	me := handlers.NewMe(d.DB)
+	me := handlers.NewMe(d.DB).WithEngine(earlyEngine)
 	authed.GET("/me/work",        me.Work)
 	authed.GET("/me/tasks",       me.Tasks)
 	authed.POST("/me/tasks/:id/status",   me.UpdateTaskStatus)
@@ -305,6 +305,8 @@ func New(d Deps) http.Handler {
 	authed.GET("/attendance/insights",     mw.RequirePermission("governance:write"), att.Insights)
 	authed.GET("/attendance/appraisal",    mw.RequirePermission("governance:write"), att.Appraisal)
 	authed.GET("/attendance/member/:id",   mw.RequirePermission("governance:write"), att.Member)
+	authed.GET("/attendance/warnings",         mw.RequirePermission("governance:write"), att.Warnings)
+	authed.POST("/attendance/warnings/:id/ack", mw.RequirePermission("governance:write"), att.AcknowledgeWarning)
 
 	return r
 }

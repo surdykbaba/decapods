@@ -248,9 +248,27 @@ func (h *Attendance) Insights(c *gin.Context) {
 //   attendance     30-day attendance rate vs. workdays
 //   delivery       task completion rate
 //   responsiveness mention/comment activity + daily updates
-//   wellbeing      mood + leave balance use
+//   wellbeing      mood + leave balance use, penalised by attendance warnings
 func (h *Attendance) Appraisal(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+
+	// Cache: count of attendance_warnings per user in the last 30 days. Each
+	// warning costs the member 2 points on the Wellbeing sub-score (capped at
+	// 10 so a single bad month can't fully tank the score on its own).
+	warnings := map[uuid.UUID]int{}
+	if wRows, err := h.db.Query(c, `
+		SELECT user_id, COUNT(*)::int FROM attendance_warnings
+		 WHERE tenant_id=$1 AND created_at > now() - interval '30 days'
+		 GROUP BY user_id`, tid); err == nil {
+		defer wRows.Close()
+		for wRows.Next() {
+			var uid uuid.UUID
+			var n int
+			if err := wRows.Scan(&uid, &n); err == nil {
+				warnings[uid] = n
+			}
+		}
+	}
 
 	rows, err := h.db.Query(c, `
 		WITH last30 AS (
@@ -338,28 +356,40 @@ func (h *Attendance) Appraisal(c *gin.Context) {
 		// Responsiveness — updates + inbound kudos.
 		respScore := float64(updates)*1.2 + float64(kudos)*2.5
 		responsiveness := clamp25(respScore)
-		// Wellbeing — mood avg out of 5 + a small bonus for not running on empty.
+		// Wellbeing — mood avg out of 5, then docked for each attendance
+		// warning in the last 30 days (max 10 point hit).
 		wellbeing := 0.0
 		if moodAvg != nil {
 			wellbeing = clamp25(*moodAvg * 5.0)
 		} else {
 			wellbeing = 12 // no signal: middle of the road
 		}
+		warnCount := warnings[uid]
+		warnPenalty := float64(warnCount) * 2.0
+		if warnPenalty > 10 {
+			warnPenalty = 10
+		}
+		wellbeing = clamp25(wellbeing - warnPenalty)
 		total := attendance + delivery + responsiveness + wellbeing
 
 		// One sentence of "auto goal" guidance — derived from the weakest area.
 		goal := suggestGoal(attendance, delivery, responsiveness, wellbeing, tasksOverdue, daysPresent)
+		if warnCount > 0 {
+			goal = "Attendance flag: " + strconv.Itoa(warnCount) + " long-away warning" +
+				plural(warnCount) + " in the last 30 days. " + goal
+		}
 
 		out = append(out, gin.H{
 			"id": uid, "name": name, "email": email, "avatar_url": avatar,
-			"days_present": daysPresent,
-			"hours_30":     hours30,
-			"tasks_done":   tasksDone,
-			"tasks_open":   tasksOpen,
-			"tasks_overdue": tasksOverdue,
-			"updates_30":   updates,
-			"kudos_in":     kudos,
-			"mood_avg":     moodAvg,
+			"days_present":   daysPresent,
+			"hours_30":       hours30,
+			"tasks_done":     tasksDone,
+			"tasks_open":     tasksOpen,
+			"tasks_overdue":  tasksOverdue,
+			"updates_30":     updates,
+			"kudos_in":       kudos,
+			"mood_avg":       moodAvg,
+			"warnings_30d":   warnCount,
 			"scores": gin.H{
 				"attendance":     round1(attendance),
 				"delivery":       round1(delivery),
@@ -429,6 +459,86 @@ func clamp25(v float64) float64 {
 
 func round1(v float64) float64 {
 	return float64(int(v*10+0.5)) / 10
+}
+
+// Warnings — GET /api/v1/attendance/warnings?status=open|all
+//
+// Recent attendance warnings (long-away gaps during work hours). The Today
+// tab pulls open warnings to surface them as banners; appraisals only count
+// the last-30-day window via the dedicated SQL above.
+func (h *Attendance) Warnings(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	status := c.Query("status")
+	if status == "" {
+		status = "open"
+	}
+	args := []any{tid}
+	q := `
+		SELECT w.id, w.user_id, COALESCE(u.full_name,''), u.email::text, COALESCE(u.avatar_url,''),
+		       w.kind, w.gap_minutes, w.started_at, w.ended_at,
+		       w.notified_at, w.acknowledged_at, w.created_at
+		  FROM attendance_warnings w
+		  JOIN users u ON u.id = w.user_id
+		 WHERE w.tenant_id=$1`
+	if status == "open" {
+		q += " AND w.acknowledged_at IS NULL"
+	}
+	q += " ORDER BY w.created_at DESC LIMIT 200"
+
+	rows, err := h.db.Query(c, q, args...)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	out := []gin.H{}
+	for rows.Next() {
+		var (
+			id, uid             uuid.UUID
+			name, email, avatar string
+			kind                string
+			gap                 int
+			started             time.Time
+			ended, notified, ack *time.Time
+			created             time.Time
+		)
+		if err := rows.Scan(&id, &uid, &name, &email, &avatar,
+			&kind, &gap, &started, &ended, &notified, &ack, &created); err == nil {
+			out = append(out, gin.H{
+				"id":              id,
+				"user_id":         uid,
+				"name":            name,
+				"email":           email,
+				"avatar_url":      avatar,
+				"kind":            kind,
+				"gap_minutes":     gap,
+				"started_at":      started,
+				"ended_at":        ended,
+				"notified_at":     notified,
+				"acknowledged_at": ack,
+				"created_at":      created,
+			})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"items": out})
+}
+
+// AcknowledgeWarning — POST /api/v1/attendance/warnings/:id/ack
+// Stamps acknowledged_at so the warning leaves the open list.
+func (h *Attendance) AcknowledgeWarning(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	if _, err := h.db.Exec(c,
+		`UPDATE attendance_warnings SET acknowledged_at=now()
+		 WHERE id=$1 AND tenant_id=$2 AND acknowledged_at IS NULL`, id, tid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 // Member — GET /api/v1/attendance/member/:id
