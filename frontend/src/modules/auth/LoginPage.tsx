@@ -7,12 +7,6 @@ import {
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
-// Stable Pexels hero — abstract circuit/macro tech image. Pexels permits
-// hotlinking under their license; the URL carries auto-compress + width so the
-// CDN serves a right-sized variant rather than the raw original.
-const HERO_URL =
-  "https://images.pexels.com/photos/2451646/pexels-photo-2451646.jpeg?auto=compress&cs=tinysrgb&w=1600&dpr=2";
-
 const REMEMBER_KEY = "pgdp:remember-email";
 
 const TIPS = [
@@ -218,32 +212,10 @@ export function LoginPage() {
       </div>
 
       {/* ============== RIGHT — hero ============== */}
-      <div className="hidden lg:flex flex-1 relative overflow-hidden">
-        {/* Pexels image fills the panel; fallback is the accent gradient if
-            the CDN is unreachable. onError swaps to a CSS-only background. */}
-        <img
-          src={HERO_URL}
-          alt=""
-          aria-hidden
-          className="absolute inset-0 w-full h-full object-cover"
-          onError={(e) => {
-            const el = e.currentTarget;
-            el.style.display = "none";
-            const parent = el.parentElement;
-            if (parent) parent.style.background = "linear-gradient(135deg, rgb(var(--accent)), #0a3b4b)";
-          }}
-        />
-        {/* Brand-tinted gradient overlay so text reads cleanly regardless of
-            which slice of the photo is visible at any viewport. */}
-        <div className="absolute inset-0 bg-gradient-to-br from-text/95 via-text/80 to-accent/70" />
-        {/* Subtle grid texture so the panel doesn't feel like a flat overlay. */}
-        <div
-          className="absolute inset-0 opacity-[0.07] pointer-events-none"
-          style={{
-            backgroundImage: `linear-gradient(rgba(255,255,255,1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,1) 1px, transparent 1px)`,
-            backgroundSize: "32px 32px",
-          }}
-        />
+      {/* Solid brand panel — was a Pexels hero with gradient overlays; the
+          image added bandwidth and visual noise without much value. Solid
+          accent colour reads cleaner and matches the rest of the app. */}
+      <div className="hidden lg:flex flex-1 relative overflow-hidden bg-text">
 
         <div className="relative z-10 flex flex-col justify-between p-12 xl:p-16 text-surface w-full">
           <div className="inline-flex items-center gap-2 text-[11px] uppercase tracking-[0.14em] font-bold text-accent-soft">
