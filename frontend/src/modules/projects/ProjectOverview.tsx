@@ -2,13 +2,13 @@ import { useState } from "react";
 import { useOutletContext, useParams, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  CheckSquare, Users as UsersIcon, UploadCloud, Plus, Rocket, CheckCircle2,
-  MoreHorizontal, Calendar as CalendarIcon, X,
+  CheckSquare, Users as UsersIcon, UploadCloud, Plus, Rocket, CheckCircle2, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Avatar } from "@/components/Avatar";
 import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
+import { TaskRowItem, TaskDrawer, type TaskRow, type ProjectMember } from "./TaskCard";
 
 /* ---------- types ---------- */
 
@@ -29,11 +29,7 @@ type Project = {
 type Stakeholder = {
   id: string; name: string; role: string; kind: "internal" | "external"; email?: string;
 };
-type Task = {
-  id: string; title: string; status: string; priority: number;
-  due_on: string | null; assignee_id?: string | null;
-};
-type Board = { columns: { todo: Task[]; in_progress: Task[]; review: Task[]; done: Task[] } };
+type Board = { columns: Record<string, TaskRow[]> };
 type AuditEntry = { id: string; action: string; actor_name: string; created_at: string; entity: string; entity_id?: string };
 
 type ShellCtx = {
@@ -56,12 +52,6 @@ function relTime(iso?: string | null): string {
   if (day < 7) return `${day}d ago`;
   return d.toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" });
 }
-function fmtDueShort(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso); if (isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
-    " · " + d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
-}
 function healthCopy(h: string | undefined): { title: string; emoji: string } {
   if (h === "red")   return { title: "This Project needs attention!", emoji: "🚨" };
   if (h === "amber") return { title: "This Project is at risk",        emoji: "⚠️" };
@@ -72,7 +62,7 @@ function healthCopy(h: string | undefined): { title: string; emoji: string } {
 
 export function ProjectOverview() {
   const { id } = useParams();
-  const { project, stakeholders, owner } = useOutletContext<ShellCtx>();
+  const { project, owner } = useOutletContext<ShellCtx>();
   const qc = useQueryClient();
 
   const { data: board } = useQuery<Board>({
@@ -87,13 +77,18 @@ export function ProjectOverview() {
   const [taskOpen, setTaskOpen] = useState(false);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [fileOpen, setFileOpen] = useState(false);
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
 
-  const allTasks: Task[] = [
-    ...(board?.columns.todo ?? []),
-    ...(board?.columns.in_progress ?? []),
-    ...(board?.columns.review ?? []),
-    ...(board?.columns.done ?? []),
-  ];
+  const { data: membersData } = useQuery<{ items: ProjectMember[] }>({
+    queryKey: ["project-members", id],
+    queryFn: () => api(`/api/v1/projects/${id}/members`),
+    enabled: !!id,
+  });
+  const members = membersData?.items ?? [];
+
+  const allTasks: TaskRow[] = board
+    ? Object.values(board.columns).flat()
+    : [];
   const recentTasks = allTasks
     .slice()
     .sort((a, b) => {
@@ -104,7 +99,7 @@ export function ProjectOverview() {
     .slice(0, 5);
 
   const addTask = useMutation({
-    mutationFn: (b: { title: string; description?: string; priority: number; due_on?: string; assignee_id?: string }) =>
+    mutationFn: (b: { title: string; description?: string; priority: number; due_on?: string; start_on?: string; assignee_id?: string }) =>
       api(`/api/v1/projects/${id}/tasks`, { method: "POST", body: JSON.stringify(b) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["project-board", id] });
@@ -151,38 +146,6 @@ export function ProjectOverview() {
           </p>
         </section>
 
-        {/* Assignee */}
-        <section className="bg-surface border border-border rounded-2xl p-5">
-          <h2 className="text-base font-bold text-text mb-3">Assignee</h2>
-          {stakeholders.length === 0 ? (
-            <p className="text-sm text-muted italic">
-              No stakeholders yet. Add the project owner and any reviewers from the
-              source opportunity or the team panel below.
-            </p>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {stakeholders.slice(0, 6).map((s) => (
-                <div key={s.id} className="flex items-center gap-3 min-w-0">
-                  <Avatar name={s.name} email={s.email} size={36} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm font-semibold text-text truncate">{s.name}</div>
-                    <div className="text-[11px] text-muted truncate">{s.role}</div>
-                  </div>
-                </div>
-              ))}
-              <button
-                onClick={() => setInviteOpen(true)}
-                className="flex items-center gap-3 min-w-0 text-left rounded-lg p-1 hover:bg-bg transition-colors"
-              >
-                <span className="w-9 h-9 rounded-full border-2 border-dashed border-border text-muted grid place-items-center shrink-0">
-                  <Plus size={14} />
-                </span>
-                <span className="text-sm font-semibold text-accent">+ Add role</span>
-              </button>
-            </div>
-          )}
-        </section>
-
         {/* Recent Tasks */}
         <section className="bg-surface border border-border rounded-2xl overflow-hidden">
           <header className="flex items-center justify-between px-5 py-4 border-b border-border">
@@ -196,31 +159,33 @@ export function ProjectOverview() {
               No tasks yet. Click <strong className="text-text">+ Add Task</strong> below to create one.
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
-                  <tr>
-                    <th className="text-left px-5 py-2">Name</th>
-                    <th className="text-left px-3 py-2 w-[160px]">Assignee</th>
-                    <th className="text-left px-3 py-2 w-[180px]">Due Date</th>
-                    <th className="w-[40px]"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {recentTasks.map((t) => (
-                    <TaskRow key={t.id} task={t} stakeholders={stakeholders} />
-                  ))}
-                </tbody>
-              </table>
+            <div>
+              <div className="hidden sm:grid grid-cols-[1fr_180px_140px_120px_90px] gap-3 px-4 py-2 text-[10.5px] uppercase tracking-wider font-bold text-muted bg-bg/40">
+                <div>Task</div>
+                <div>Assignee</div>
+                <div>Status</div>
+                <div>Due / age</div>
+                <div className="justify-self-end">💬</div>
+              </div>
+              {recentTasks.map((t) => (
+                <TaskRowItem
+                  key={t.id}
+                  task={t}
+                  projectId={id!}
+                  members={members}
+                  onOpen={setOpenTaskId}
+                />
+              ))}
             </div>
           )}
-          <div className="px-5 py-3 border-t border-border">
+          <div className="px-5 py-3 border-t border-border flex items-center justify-between">
             <button
               onClick={() => setTaskOpen(true)}
               className="inline-flex items-center gap-1.5 text-sm font-semibold text-accent hover:underline"
             >
               <Plus size={14} /> Add Task
             </button>
+            <Link to="list" className="text-xs text-muted hover:text-accent">View all in List →</Link>
           </div>
         </section>
       </div>
@@ -289,6 +254,14 @@ export function ProjectOverview() {
           onClose={() => setInviteOpen(false)}
         />
       )}
+      {openTaskId && id && (
+        <TaskDrawer
+          projectId={id}
+          taskId={openTaskId}
+          members={members}
+          onClose={() => setOpenTaskId(null)}
+        />
+      )}
       {fileOpen && (
         <InfoDialog
           icon={<UploadCloud size={16} className="text-accent" />}
@@ -335,55 +308,6 @@ function ActionCard({
         <div className="text-[11px] text-muted truncate">{body}</div>
       </div>
     </button>
-  );
-}
-
-function TaskRow({ task, stakeholders }: { task: Task; stakeholders: Stakeholder[] }) {
-  const assignee = stakeholders.find((s) => s.id === task.assignee_id);
-  const done = task.status === "done";
-  return (
-    <tr className="border-t border-border hover:bg-bg/30">
-      <td className="px-5 py-3">
-        <div className="flex items-center gap-2.5">
-          <span
-            className={`w-4 h-4 rounded-full border-2 grid place-items-center shrink-0 ${
-              done ? "border-success bg-success/20" : "border-border"
-            }`}
-          >
-            {done && <CheckCircle2 size={10} className="text-success" />}
-          </span>
-          <span className={`text-sm truncate ${done ? "line-through text-muted" : "text-text"}`}>
-            {task.title}
-          </span>
-        </div>
-      </td>
-      <td className="px-3 py-3">
-        {assignee ? (
-          <div className="inline-flex items-center gap-2 min-w-0">
-            <Avatar name={assignee.name} email={assignee.email} size={24} />
-            <span className="text-xs text-text truncate">{assignee.name.split(" ")[0]}</span>
-          </div>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-xs text-muted">
-            <UsersIcon size={12} /> Assign
-          </span>
-        )}
-      </td>
-      <td className="px-3 py-3">
-        {task.due_on ? (
-          <span className="text-xs text-text">{fmtDueShort(task.due_on)}</span>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-xs text-muted">
-            <CalendarIcon size={12} /> Add date
-          </span>
-        )}
-      </td>
-      <td className="px-3 py-3 text-right">
-        <button className="text-muted hover:text-text p-1" aria-label="Task actions">
-          <MoreHorizontal size={14} />
-        </button>
-      </td>
-    </tr>
   );
 }
 
@@ -450,7 +374,7 @@ function AddTaskDialog({
   projectId: string;
   submitting: boolean;
   onClose: () => void;
-  onAdd: (b: { title: string; description?: string; priority: number; due_on?: string; assignee_id?: string }) => void;
+  onAdd: (b: { title: string; description?: string; priority: number; due_on?: string; start_on?: string; assignee_id?: string }) => void;
 }) {
   type Member = { user_id: string; name: string; email: string; role: string };
   const { data } = useQuery<{ items: Member[] }>({
@@ -462,6 +386,7 @@ function AddTaskDialog({
   const [title, setTitle]       = useState("");
   const [description, setDesc]  = useState("");
   const [priority, setPriority] = useState(3);
+  const [startOn, setStartOn]   = useState("");
   const [dueOn, setDueOn]       = useState("");
   const [assignee, setAssignee] = useState("");
 
@@ -497,7 +422,7 @@ function AddTaskDialog({
               </div>
             )}
           </label>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <label className="block">
               <div className="text-[11px] text-muted font-medium mb-1">Priority</div>
               <select className="input" value={priority} onChange={(e) => setPriority(Number(e.target.value))}>
@@ -507,6 +432,10 @@ function AddTaskDialog({
                 <option value={4}>High</option>
                 <option value={5}>Highest</option>
               </select>
+            </label>
+            <label className="block">
+              <div className="text-[11px] text-muted font-medium mb-1">Start date</div>
+              <input type="date" className="input" value={startOn} onChange={(e) => setStartOn(e.target.value)} />
             </label>
             <label className="block">
               <div className="text-[11px] text-muted font-medium mb-1">Due date</div>
@@ -526,6 +455,7 @@ function AddTaskDialog({
               description: description.trim() || undefined,
               priority,
               due_on: dueOn || undefined,
+              start_on: startOn || undefined,
               assignee_id: assignee || undefined,
             })}
           >
