@@ -7,6 +7,8 @@ import { useAuth } from "@/lib/auth";
 import {
   Plane, Plus, CheckCircle2, X, Calendar as CalendarIcon, AlertTriangle,
   ListChecks, Users as UsersIcon, BarChart3, Clock, UploadCloud, FileText,
+  Trash2, Hourglass, MessageSquare, TrendingUp, Ban,
+  ChevronDown, ChevronRight,
 } from "lucide-react";
 
 /* ---------- Types ---------- */
@@ -338,6 +340,45 @@ function PendingRow({ req, authority }: {
 
 /* ---------- My / Team requests tab ---------- */
 
+type StatusFilter = "all" | "active" | "pending" | "approved" | "rejected" | "cancelled";
+
+function daysBetween(from: Date, to: Date): number {
+  const ms = to.getTime() - from.getTime();
+  return Math.round(ms / 86_400_000);
+}
+
+function relWindow(start: string, end: string): { label: string; tone: string } {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const s = new Date(start);  s.setHours(0, 0, 0, 0);
+  const e = new Date(end);    e.setHours(0, 0, 0, 0);
+  if (today < s) {
+    const d = daysBetween(today, s);
+    if (d === 0) return { label: "Starts today",       tone: "text-accent" };
+    if (d === 1) return { label: "Starts tomorrow",    tone: "text-accent" };
+    if (d <= 7)  return { label: `Starts in ${d} days`, tone: "text-accent" };
+    return { label: `Starts in ${d} days`, tone: "text-muted" };
+  }
+  if (today > e) {
+    const d = daysBetween(e, today);
+    if (d === 0) return { label: "Ended today",      tone: "text-muted" };
+    if (d === 1) return { label: "Ended yesterday",   tone: "text-muted" };
+    if (d <= 30) return { label: `Ended ${d}d ago`,    tone: "text-muted" };
+    const months = Math.round(d / 30);
+    return { label: `Ended ${months}mo ago`,           tone: "text-muted/70" };
+  }
+  return { label: "On leave now", tone: "text-success" };
+}
+
+function timeToDecision(submitted?: string, decided?: string | null): string | null {
+  if (!submitted || !decided) return null;
+  const ms = new Date(decided).getTime() - new Date(submitted).getTime();
+  if (ms < 0) return null;
+  const h = Math.floor(ms / 3_600_000);
+  if (h < 1)  return `${Math.max(1, Math.round(ms / 60_000))}m`;
+  if (h < 48) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
 function RequestList({ scope }: { scope: "mine" | "team"; canApprove?: boolean }) {
   const qc = useQueryClient();
   const { data, isLoading } = useQuery<{ items: LeaveRequest[] }>({
@@ -371,6 +412,15 @@ function RequestList({ scope }: { scope: "mine" | "team"; canApprove?: boolean }
     onError: (e: any) => toast.error("Could not cancel", e?.message),
   });
 
+  const remove = useMutation({
+    mutationFn: (id: string) => api(`/api/v1/leave/requests/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["leave-requests"] });
+      toast.success("Request deleted");
+    },
+    onError: (e: any) => toast.error("Could not delete", e?.message),
+  });
+
   const decide = useMutation({
     mutationFn: ({ id, decision, comment }: { id: string; decision: "approved" | "rejected"; comment?: string }) =>
       api(`/api/v1/leave/requests/${id}/decision`, { method: "POST", body: JSON.stringify({ decision, comment }) }),
@@ -382,6 +432,73 @@ function RequestList({ scope }: { scope: "mine" | "team"; canApprove?: boolean }
     onError: (e: any) => toast.error("Could not save decision", e?.message),
   });
 
+  const [filter, setFilter]   = useState<StatusFilter>("all");
+  const [search, setSearch]   = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  // KPIs across the full set so the strip doesn't change when filters do.
+  const stats = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const year = today.getFullYear();
+    const inYear = items.filter((r) => new Date(r.start_date).getFullYear() === year);
+
+    const approved = items.filter((r) => r.status === "approved");
+    const rejected = items.filter((r) => r.status === "rejected");
+    const decided  = approved.length + rejected.length;
+    const approvalRate = decided > 0 ? Math.round((approved.length / decided) * 100) : null;
+
+    const daysApprovedYTD = inYear
+      .filter((r) => r.status === "approved")
+      .reduce((sum, r) => sum + (r.days || 0), 0);
+    const daysPending = items
+      .filter((r) => r.status === "pending")
+      .reduce((sum, r) => sum + (r.days || 0), 0);
+
+    // Median time-to-decision in hours, for the dashboard's "how fast does HR move" stat.
+    const ttdHours = items
+      .map((r) => (r.decision_at && r.submitted_at
+        ? (new Date(r.decision_at).getTime() - new Date(r.submitted_at).getTime()) / 3_600_000
+        : null))
+      .filter((v): v is number => v !== null && v >= 0)
+      .sort((a, b) => a - b);
+    const medianTTD = ttdHours.length === 0 ? null : ttdHours[Math.floor(ttdHours.length / 2)];
+
+    // Active = pending OR approved & not yet ended. Used by the filter pill.
+    const todayStr = today.toISOString().slice(0, 10);
+    const active = items.filter(
+      (r) => (r.status === "pending" || (r.status === "approved" && r.end_date >= todayStr)),
+    );
+
+    const byStatus: Record<string, number> = { pending: 0, approved: 0, rejected: 0, cancelled: 0, draft: 0 };
+    items.forEach((r) => { byStatus[r.status] = (byStatus[r.status] || 0) + 1; });
+
+    return {
+      total: items.length,
+      active: active.length,
+      daysApprovedYTD,
+      daysPending,
+      approvalRate,
+      medianTTD,
+      byStatus,
+    };
+  }, [items]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const today = new Date().toISOString().slice(0, 10);
+    return items.filter((r) => {
+      if (filter === "active") {
+        if (!(r.status === "pending" || (r.status === "approved" && r.end_date >= today))) return false;
+      } else if (filter !== "all" && r.status !== filter) {
+        return false;
+      }
+      if (!q) return true;
+      const hay = [r.type_name, r.reason, r.handover_notes, r.user_name, r.user_email]
+        .filter(Boolean).join(" ").toLowerCase();
+      return hay.includes(q);
+    });
+  }, [items, filter, search]);
+
   if (isLoading) return <div className="text-muted">Loading…</div>;
   if (items.length === 0) return (
     <Empty>
@@ -390,100 +507,296 @@ function RequestList({ scope }: { scope: "mine" | "team"; canApprove?: boolean }
   );
 
   return (
-    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
-            <tr>
-              {scope === "team" && <th className="text-left px-4 py-3">Member</th>}
-              <th className="text-left px-4 py-3">Type</th>
-              <th className="text-left px-4 py-3">Window</th>
-              <th className="text-right px-4 py-3">Days</th>
-              <th className="text-left px-4 py-3">Reason</th>
-              <th className="text-left px-4 py-3">Status</th>
-              <th className="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((r) => {
-              const pill = statusPill(r);
-              return (
-                <tr key={r.id} className="border-t border-border">
-                  {scope === "team" && (
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <Avatar name={r.user_name || r.user_email} />
-                        <div className="min-w-0">
-                          <div className="font-semibold text-text truncate">{r.user_name || r.user_email}</div>
-                          <div className="text-[11px] text-muted truncate">{r.user_email}</div>
-                        </div>
-                      </div>
-                    </td>
-                  )}
-                  <td className="px-4 py-3">
-                    <div className="font-semibold text-text">{r.type_name}</div>
-                    {!r.paid && <div className="text-[11px] text-muted">Unpaid</div>}
-                  </td>
-                  <td className="px-4 py-3 text-muted whitespace-nowrap">
-                    {fmtDate(r.start_date)} → {fmtDate(r.end_date)}
-                  </td>
-                  <td className="px-4 py-3 text-right font-semibold text-text">{r.days}</td>
-                  <td className="px-4 py-3 text-muted max-w-[280px]">
-                    <div className="truncate" title={r.reason}>{r.reason || "—"}</div>
-                    {r.handover_notes && (
-                      <div className="text-[11px] text-muted/80 italic truncate" title={r.handover_notes}>
-                        Handover: {r.handover_notes}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`pill ${pill.cls}`}>{pill.label}</span>
-                    {r.approvals && r.approvals.length > 0 && (
-                      <div className="text-[10.5px] text-muted mt-0.5">
-                        {r.approvals.map((a, i) => (
-                          <div key={i}>
-                            {a.stage === "manager" ? "Manager" : "HR"} {a.decision} {a.comment ? `· "${a.comment}"` : ""}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
-                    {canActOn(r) && (
-                      <>
-                        <button
-                          onClick={() => decide.mutate({ id: r.id, decision: "approved" })}
-                          className="text-xs font-semibold px-2.5 py-1 rounded-full bg-success/10 text-success hover:bg-success/20 mr-1"
-                          title={r.approval_stage === "manager_pending" ? "Approve as line manager" : "Approve as HR"}
-                        >
-                          Approve
-                        </button>
-                        <button
-                          onClick={() => decide.mutate({ id: r.id, decision: "rejected" })}
-                          className="text-xs font-semibold px-2.5 py-1 rounded-full bg-danger/10 text-danger hover:bg-danger/20 mr-1"
-                        >
-                          Reject
-                        </button>
-                      </>
-                    )}
-                    {(r.status === "pending" || r.status === "approved") && (
-                      <button
-                        onClick={() => {
-                          if (confirm("Cancel this request?")) cancel.mutate(r.id);
-                        }}
-                        className="text-xs text-muted hover:text-danger"
-                      >
-                        Cancel
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+    <div className="space-y-4">
+      {/* KPI strip */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <StatTile icon={<ListChecks size={14} />} label="Total" value={stats.total} sub={`${stats.active} active`} />
+        <StatTile icon={<CheckCircle2 size={14} className="text-success" />} label={`Days approved · ${new Date().getFullYear()}`} value={stats.daysApprovedYTD} />
+        <StatTile icon={<Hourglass size={14} className="text-accent" />} label="Days pending" value={stats.daysPending} />
+        <StatTile
+          icon={<TrendingUp size={14} className="text-accent" />}
+          label="Approval rate"
+          value={stats.approvalRate === null ? "—" : `${stats.approvalRate}%`}
+          sub={stats.approvalRate === null ? "no decisions yet" : `${stats.byStatus.approved} approved / ${stats.byStatus.rejected} rejected`}
+        />
+        <StatTile
+          icon={<Clock size={14} className="text-muted" />}
+          label="Median time-to-decision"
+          value={stats.medianTTD === null ? "—" : (stats.medianTTD < 48 ? `${Math.round(stats.medianTTD)}h` : `${Math.round(stats.medianTTD / 24)}d`)}
+        />
       </div>
+
+      {/* Filters */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap gap-1 p-1 bg-surface border border-border rounded-full">
+          {([
+            { k: "all",       label: `All · ${stats.total}` },
+            { k: "active",    label: `Active · ${stats.active}` },
+            { k: "pending",   label: `Pending · ${stats.byStatus.pending ?? 0}` },
+            { k: "approved",  label: `Approved · ${stats.byStatus.approved ?? 0}` },
+            { k: "rejected",  label: `Rejected · ${stats.byStatus.rejected ?? 0}` },
+            { k: "cancelled", label: `Cancelled · ${stats.byStatus.cancelled ?? 0}` },
+          ] as { k: StatusFilter; label: string }[]).map((f) => (
+            <button
+              key={f.k}
+              onClick={() => setFilter(f.k)}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+                filter === f.k ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search type, reason, name…"
+          className="bg-surface border border-border rounded-lg text-sm px-3 py-2 w-56"
+        />
+      </div>
+
+      {filtered.length === 0 ? (
+        <Empty>No requests match this filter.</Empty>
+      ) : (
+        <ul className="space-y-2">
+          {filtered.map((r) => (
+            <RequestCard
+              key={r.id}
+              r={r}
+              scope={scope}
+              expanded={expanded === r.id}
+              onToggle={() => setExpanded((p) => (p === r.id ? null : r.id))}
+              canActOn={canActOn(r)}
+              onCancel={() => {
+                if (confirm("Cancel this request?")) cancel.mutate(r.id);
+              }}
+              onDelete={() => {
+                if (confirm("Delete this request permanently? This can't be undone.")) remove.mutate(r.id);
+              }}
+              onApprove={() => decide.mutate({ id: r.id, decision: "approved" })}
+              onReject={() => decide.mutate({ id: r.id, decision: "rejected" })}
+              deleting={remove.isPending}
+            />
+          ))}
+        </ul>
+      )}
     </div>
+  );
+}
+
+function StatTile({ icon, label, value, sub }: { icon: React.ReactNode; label: string; value: number | string; sub?: string }) {
+  return (
+    <div className="bg-surface border border-border rounded-2xl p-4">
+      <div className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wider font-bold text-muted">
+        {icon} {label}
+      </div>
+      <div className="text-2xl font-extrabold text-text mt-1">{value}</div>
+      {sub && <div className="text-[11px] text-muted mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+
+function StageStrip({ r }: { r: LeaveRequest }) {
+  if (r.status === "cancelled") {
+    return <div className="text-[11px] text-muted inline-flex items-center gap-1"><Ban size={11} /> Cancelled by {r.decision_by_name || "owner"}</div>;
+  }
+  const managerDecision = r.approvals?.find((a) => a.stage === "manager")?.decision;
+  const hrDecision      = r.approvals?.find((a) => a.stage === "hr")?.decision;
+
+  const dot = (state: "done" | "active" | "rejected" | "idle") =>
+    state === "done"     ? "bg-success" :
+    state === "active"   ? "bg-accent animate-pulse" :
+    state === "rejected" ? "bg-danger"  : "bg-border";
+
+  let mgr: "done" | "active" | "rejected" | "idle" = "idle";
+  let hr:  "done" | "active" | "rejected" | "idle" = "idle";
+  if (managerDecision === "approved") mgr = "done";
+  else if (managerDecision === "rejected") mgr = "rejected";
+  else if (r.approval_stage === "manager_pending") mgr = "active";
+  if (hrDecision === "approved") hr = "done";
+  else if (hrDecision === "rejected") hr = "rejected";
+  else if (r.approval_stage === "hr_pending") hr = "active";
+
+  return (
+    <div className="flex items-center gap-1 text-[11px]">
+      <span className={`w-2 h-2 rounded-full ${dot(mgr)}`} />
+      <span className={mgr === "active" ? "text-accent font-semibold" : "text-muted"}>Manager</span>
+      <span className="w-4 h-px bg-border" />
+      <span className={`w-2 h-2 rounded-full ${dot(hr)}`} />
+      <span className={hr === "active" ? "text-accent font-semibold" : "text-muted"}>HR</span>
+    </div>
+  );
+}
+
+function RequestCard({
+  r, scope, expanded, onToggle, canActOn,
+  onCancel, onDelete, onApprove, onReject, deleting,
+}: {
+  r: LeaveRequest;
+  scope: "mine" | "team";
+  expanded: boolean;
+  onToggle: () => void;
+  canActOn: boolean;
+  onCancel: () => void;
+  onDelete: () => void;
+  onApprove: () => void;
+  onReject: () => void;
+  deleting: boolean;
+}) {
+  const pill = statusPill(r);
+  const win  = relWindow(r.start_date, r.end_date);
+  const ttd  = timeToDecision(r.submitted_at, r.decision_at);
+  const isTerminal = r.status === "cancelled" || r.status === "rejected";
+  const isOwnerScope = scope === "mine";
+  const rejection = r.approvals?.find((a) => a.decision === "rejected");
+
+  return (
+    <li className="bg-surface border border-border rounded-2xl overflow-hidden">
+      <div className="grid grid-cols-[auto_1fr_auto] items-start gap-3 px-4 py-3">
+        <button onClick={onToggle} className="text-muted hover:text-text mt-1.5" aria-label="Expand details">
+          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+
+        <div className="min-w-0">
+          <div className="flex items-baseline flex-wrap gap-2">
+            {scope === "team" && (
+              <div className="inline-flex items-center gap-1.5 mr-1">
+                <Avatar name={r.user_name || r.user_email} />
+                <span className="text-sm font-semibold text-text">{r.user_name || r.user_email}</span>
+              </div>
+            )}
+            <span className="text-sm font-bold text-text">{r.type_name}</span>
+            {!r.paid && <span className="pill bg-muted/15 text-muted text-[10px]">Unpaid</span>}
+            <span className={`pill ${pill.cls} text-[11px]`}>{pill.label}</span>
+            {r.duration && r.duration !== "full_day" && (
+              <span className="text-[11px] text-muted">{r.duration.replace("_", " ")}</span>
+            )}
+          </div>
+
+          <div className="text-sm text-muted mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+              <CalendarIcon size={12} /> {fmtDate(r.start_date)} → {fmtDate(r.end_date)}
+            </span>
+            <span className="font-semibold text-text">{r.days}d</span>
+            <span className={`inline-flex items-center gap-1 ${win.tone}`}>
+              <Clock size={11} /> {win.label}
+            </span>
+            {ttd && (
+              <span className="inline-flex items-center gap-1 text-muted" title="Time from submission to decision">
+                <TrendingUp size={11} /> decided in {ttd}
+              </span>
+            )}
+          </div>
+
+          {r.reason && <div className="text-sm text-text mt-1 truncate" title={r.reason}>{r.reason}</div>}
+
+          {r.status === "rejected" && rejection?.comment && (
+            <div className="mt-2 rounded-lg bg-danger/5 border border-danger/20 px-3 py-2 text-sm text-danger">
+              <span className="font-semibold">Rejected:</span> {rejection.comment}
+            </div>
+          )}
+
+          <div className="mt-2"><StageStrip r={r} /></div>
+        </div>
+
+        <div className="flex flex-col items-end gap-1.5 shrink-0">
+          {canActOn && (
+            <div className="flex gap-1">
+              <button
+                onClick={onApprove}
+                className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-success/10 text-success hover:bg-success/20"
+                title={r.approval_stage === "manager_pending" ? "Approve as line manager" : "Approve as HR"}
+              >
+                Approve
+              </button>
+              <button
+                onClick={onReject}
+                className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-danger/10 text-danger hover:bg-danger/20"
+              >
+                Reject
+              </button>
+            </div>
+          )}
+          {(r.status === "pending" || r.status === "approved") && (
+            <button
+              onClick={onCancel}
+              className="text-[11px] text-muted hover:text-danger inline-flex items-center gap-1"
+            >
+              <Ban size={11} /> Cancel
+            </button>
+          )}
+          {isOwnerScope && isTerminal && (
+            <button
+              onClick={onDelete}
+              disabled={deleting}
+              className="text-[11px] text-muted hover:text-danger inline-flex items-center gap-1 disabled:opacity-50"
+              title="Delete from history"
+            >
+              <Trash2 size={11} /> Delete
+            </button>
+          )}
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-border bg-bg/30 px-4 py-3 grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1">Submitted</div>
+            <div className="text-text">{fmtDate(r.submitted_at)}{r.submitted_at && ` · ${new Date(r.submitted_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`}</div>
+
+            {r.backup_user_name && (
+              <>
+                <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mt-3 mb-1">Backup</div>
+                <div className="text-text">{r.backup_user_name}</div>
+              </>
+            )}
+
+            {r.handover_notes && (
+              <>
+                <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mt-3 mb-1">
+                  <FileText size={11} className="inline mr-1" /> Handover
+                </div>
+                <div className="text-text whitespace-pre-wrap">{r.handover_notes}</div>
+              </>
+            )}
+          </div>
+
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1">Approvals</div>
+            {(!r.approvals || r.approvals.length === 0) ? (
+              <div className="text-muted italic">Awaiting first decision.</div>
+            ) : (
+              <ul className="space-y-2">
+                {r.approvals.map((a, i) => (
+                  <li key={i} className="flex gap-2">
+                    <span className={`mt-1 w-2 h-2 rounded-full shrink-0 ${a.decision === "approved" ? "bg-success" : "bg-danger"}`} />
+                    <div className="min-w-0">
+                      <div className="text-text">
+                        <span className="font-semibold">{a.stage === "manager" ? "Manager" : "HR"}</span>{" "}
+                        <span className={a.decision === "approved" ? "text-success" : "text-danger"}>
+                          {a.decision}
+                        </span>
+                        {" "}<span className="text-muted">by {a.by}</span>
+                      </div>
+                      <div className="text-[11px] text-muted">{new Date(a.at).toLocaleString()}</div>
+                      {a.comment && <div className="text-sm text-muted mt-0.5 italic">"{a.comment}"</div>}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {r.decision_comment && !r.approvals?.some((a) => a.comment === r.decision_comment) && (
+              <div className="mt-3 text-sm">
+                <MessageSquare size={11} className="inline mr-1 text-muted" />
+                <span className="text-muted">Final note:</span> <span className="text-text">{r.decision_comment}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </li>
   );
 }
 

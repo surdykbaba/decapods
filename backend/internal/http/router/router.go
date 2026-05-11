@@ -219,6 +219,7 @@ func New(d Deps) http.Handler {
 	authed.POST("/leave/requests/:id/decision", leave.Decide)
 	authed.GET("/leave/decision-authority",   leave.DecisionAuthority)
 	authed.POST("/leave/requests/:id/cancel", leave.Cancel)
+	authed.DELETE("/leave/requests/:id",      leave.Delete)
 	authed.GET("/leave/dashboard",            leave.Dashboard)
 	authed.GET("/leave/calendar",             leave.Calendar)
 	authed.GET("/leave/public-holidays",      leave.PublicHolidays)

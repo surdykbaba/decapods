@@ -733,6 +733,52 @@ func (h *Leave) Cancel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// Delete — DELETE /api/v1/leave/requests/:id
+// Hard-removes a leave row from the user's history. Only the owner can delete
+// (managers/HR have Cancel which preserves the audit), and only when the
+// request is already terminal (cancelled or rejected) — we never let a user
+// erase an approved / in-flight request because that would silently put time
+// back on the balance and break HR's audit trail.
+func (h *Leave) Delete(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rid, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+
+	var (
+		ownerID uuid.UUID
+		status  string
+	)
+	if err := h.db.QueryRow(c, `
+		SELECT user_id, status FROM leave_requests
+		WHERE id=$1 AND tenant_id=$2`, rid, tid).Scan(&ownerID, &status); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "request not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if ownerID != uid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the owner can delete their own request"})
+		return
+	}
+	if status != "cancelled" && status != "rejected" {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "Only cancelled or rejected requests can be deleted. Cancel it first.",
+		})
+		return
+	}
+	if _, err := h.db.Exec(c, `DELETE FROM leave_requests WHERE id=$1 AND tenant_id=$2`, rid, tid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 // Dashboard — GET /api/v1/leave/dashboard
 // One-shot bundle for the landing page: who's out today, upcoming approved
 // requests, pending approvals queue, and the next 5 public holidays.
