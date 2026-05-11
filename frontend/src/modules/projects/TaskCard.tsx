@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2, Hourglass, Clock, AlertCircle, Ban,
   Calendar as CalendarIcon, MessageSquare, User as UserIcon, X, Send,
+  Paperclip, Download, Trash2, UploadCloud,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { Avatar } from "@/components/Avatar";
 import { toast } from "@/lib/toast";
 
@@ -386,6 +388,9 @@ export function TaskDrawer({
             </div>
           )}
 
+          {/* Files */}
+          <TaskFiles projectId={projectId} taskId={taskId} />
+
           {/* Comments */}
           <div className="pt-2 border-t border-border">
             <div className="text-[11px] uppercase tracking-wider font-bold text-muted mb-3">
@@ -461,4 +466,171 @@ function relTime(iso: string): string {
   const day = Math.floor(h / 24);
   if (day < 7) return `${day}d ago`;
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+/* ---------- Task files ---------- */
+
+type TaskFile = {
+  id: string;
+  name: string;
+  mime: string;
+  size_bytes: number;
+  uploaded_by_name: string;
+  created_at: string;
+  download_url: string;
+};
+
+function fmtSize(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function TaskFiles({ projectId, taskId }: { projectId: string; taskId: string }) {
+  const qc = useQueryClient();
+  const token = useAuth((s) => s.token);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const { data } = useQuery<{ items: TaskFile[] }>({
+    queryKey: ["task-files", taskId],
+    queryFn: () => api(`/api/v1/projects/${projectId}/files?task=${taskId}`),
+  });
+  const files = data?.items ?? [];
+
+  const remove = useMutation({
+    mutationFn: (fileId: string) =>
+      api(`/api/v1/projects/${projectId}/files/${fileId}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["task-files", taskId] });
+      qc.invalidateQueries({ queryKey: ["project-board", projectId] });
+      toast.success("File removed");
+    },
+    onError: (e: any) => toast.error("Could not remove", e?.message),
+  });
+
+  // Multipart upload — bypasses the JSON-only api() helper so we can stream a
+  // FormData body. Auth token comes from the same auth store.
+  async function upload(file: File) {
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("task_id", taskId);
+      fd.append("kind", "other");
+      fd.append("visibility", "team");
+      const res = await fetch(`/api/v1/projects/${projectId}/files`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        body: fd,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = "Upload failed";
+        try { msg = (JSON.parse(text)?.error) || text || msg; } catch { msg = text || msg; }
+        throw new Error(msg);
+      }
+      qc.invalidateQueries({ queryKey: ["task-files", taskId] });
+      qc.invalidateQueries({ queryKey: ["project-board", projectId] });
+      toast.success("File attached");
+    } catch (e: any) {
+      toast.error("Could not upload", e?.message);
+    } finally {
+      setUploading(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
+
+  // Download with auth header — anchor tags can't carry the bearer, so fetch
+  // the bytes, stream into a blob URL, then synthesise a click.
+  async function downloadFile(f: TaskFile) {
+    try {
+      const res = await fetch(f.download_url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = f.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      toast.error("Could not download", e?.message);
+    }
+  }
+
+  return (
+    <div className="pt-2 border-t border-border">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[11px] uppercase tracking-wider font-bold text-muted inline-flex items-center gap-1.5">
+          <Paperclip size={12} /> Files · {files.length}
+        </div>
+        <button
+          onClick={() => fileInput.current?.click()}
+          disabled={uploading}
+          className="inline-flex items-center gap-1 text-xs font-semibold text-accent hover:underline disabled:opacity-50"
+        >
+          <UploadCloud size={12} /> {uploading ? "Uploading…" : "Attach"}
+        </button>
+        <input
+          ref={fileInput}
+          type="file"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) upload(f);
+          }}
+        />
+      </div>
+
+      {files.length === 0 ? (
+        <div className="text-sm text-muted italic">
+          Nothing attached yet. Drop a wireframe, spec, or screenshot to give context.
+        </div>
+      ) : (
+        <ul className="space-y-1.5">
+          {files.map((f) => (
+            <li
+              key={f.id}
+              className="flex items-center gap-2 px-2.5 py-2 rounded-lg border border-border hover:border-accent/40 bg-bg/30 group"
+            >
+              <Paperclip size={13} className="text-muted shrink-0" />
+              <button
+                onClick={() => downloadFile(f)}
+                className="flex-1 min-w-0 text-left"
+                title="Download"
+              >
+                <div className="text-sm font-medium text-text truncate group-hover:text-accent">{f.name}</div>
+                <div className="text-[10.5px] text-muted truncate">
+                  {fmtSize(f.size_bytes)} · {f.uploaded_by_name || "—"} · {relTime(f.created_at)}
+                </div>
+              </button>
+              <button
+                onClick={() => downloadFile(f)}
+                className="p-1 rounded text-muted hover:text-accent"
+                title="Download"
+                aria-label="Download"
+              >
+                <Download size={13} />
+              </button>
+              <button
+                onClick={() => {
+                  if (confirm(`Delete "${f.name}"?`)) remove.mutate(f.id);
+                }}
+                className="p-1 rounded text-muted hover:text-danger"
+                title="Delete"
+                aria-label="Delete"
+              >
+                <Trash2 size={13} />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }

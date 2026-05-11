@@ -118,14 +118,27 @@ func (h *ProjectFiles) List(c *gin.Context) {
 	isMember := h.isProjectMember(c, pid, uid)
 	lead := hasLeadRole(roles)
 
+	// Optional ?task=<uuid> narrows the result to files tagged to a single
+	// task. Empty / missing → return all visible files for the project.
+	taskFilterRaw := strings.TrimSpace(c.Query("task"))
+	var taskFilter *uuid.UUID
+	if taskFilterRaw != "" {
+		if u, err := uuid.Parse(taskFilterRaw); err == nil {
+			taskFilter = &u
+		}
+	}
+
 	rows, err := h.db.Query(c, `
 		SELECT f.id, f.name, COALESCE(f.description,''), f.kind, f.visibility, f.tags,
 		       f.mime, f.size_bytes, f.version,
 		       f.uploaded_by, COALESCE(u.full_name,''), u.email::text,
-		       f.created_at
+		       f.created_at,
+		       f.task_id, COALESCE(t.title,'')
 		FROM project_files f
 		JOIN users u ON u.id = f.uploaded_by
+		LEFT JOIN tasks t ON t.id = f.task_id
 		WHERE f.tenant_id = $1 AND f.project_id = $2 AND f.deleted_at IS NULL
+		  AND ($6::uuid IS NULL OR f.task_id = $6)
 		  AND (
 		    f.visibility = 'workspace'
 		    OR (f.visibility = 'team'    AND ($3::bool OR $4::bool OR f.uploaded_by = $5))
@@ -133,7 +146,7 @@ func (h *ProjectFiles) List(c *gin.Context) {
 		    OR (f.visibility = 'private' AND  f.uploaded_by = $5)
 		  )
 		ORDER BY f.created_at DESC`,
-		tid, pid, isMember, lead, uid)
+		tid, pid, isMember, lead, uid, taskFilter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -144,7 +157,9 @@ func (h *ProjectFiles) List(c *gin.Context) {
 	for rows.Next() {
 		var (
 			id, uploader               uuid.UUID
+			taskID                     *uuid.UUID
 			name, desc, kind, vis      string
+			taskTitle                  string
 			mime                       *string
 			size                       int64
 			version                    int
@@ -154,7 +169,8 @@ func (h *ProjectFiles) List(c *gin.Context) {
 		)
 		if err := rows.Scan(&id, &name, &desc, &kind, &vis, &tags,
 			&mime, &size, &version,
-			&uploader, &uploaderName, &uploaderMail, &created); err == nil {
+			&uploader, &uploaderName, &uploaderMail, &created,
+			&taskID, &taskTitle); err == nil {
 			mimeStr := ""
 			if mime != nil {
 				mimeStr = *mime
@@ -173,6 +189,8 @@ func (h *ProjectFiles) List(c *gin.Context) {
 				"uploaded_by_name":  uploaderName,
 				"uploaded_by_email": uploaderMail,
 				"created_at":     created,
+				"task_id":        taskID,
+				"task_title":     taskTitle,
 				"download_url":   "/api/v1/projects/" + pid.String() + "/files/" + id.String() + "/download",
 			})
 		}
@@ -243,6 +261,26 @@ func (h *ProjectFiles) Upload(c *gin.Context) {
 	}
 	desc := strings.TrimSpace(c.PostForm("description"))
 
+	// Optional task tag — must belong to this project. We reject silently-wrong
+	// task ids (404) instead of attaching the file to the project anyway so the
+	// uploader sees the mistake immediately.
+	var taskID *uuid.UUID
+	if rawTask := strings.TrimSpace(c.PostForm("task_id")); rawTask != "" {
+		tu, err := uuid.Parse(rawTask)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad task_id"})
+			return
+		}
+		var owner uuid.UUID
+		if err := h.db.QueryRow(c, `
+			SELECT project_id FROM tasks WHERE id=$1 AND deleted_at IS NULL`,
+			tu).Scan(&owner); err != nil || owner != pid {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "task not on this project"})
+			return
+		}
+		taskID = &tu
+	}
+
 	// Tags arrive comma-separated. Trim + dedupe + cap at 8 so a misuse can't
 	// blow out the row.
 	rawTags := strings.Split(c.PostForm("tags"), ",")
@@ -296,11 +334,11 @@ func (h *ProjectFiles) Upload(c *gin.Context) {
 	if err := h.db.QueryRow(c, `
 		INSERT INTO project_files
 		  (tenant_id, project_id, uploaded_by, name, description, kind, visibility, tags,
-		   mime, size_bytes, content, version)
-		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,NULLIF($9,''),$10,$11,$12)
+		   mime, size_bytes, content, version, task_id)
+		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,$7,$8,NULLIF($9,''),$10,$11,$12,$13)
 		RETURNING id`,
 		tid, pid, uid, name, desc, kind, visibility, tags,
-		mime, int64(len(content)), content, version).Scan(&id); err != nil {
+		mime, int64(len(content)), content, version, taskID).Scan(&id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
