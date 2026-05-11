@@ -102,6 +102,18 @@ export function LeavePage() {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [requestOpen, setRequestOpen] = useState(false);
 
+  // Block the "Request leave" button when the caller already has a live
+  // request (pending, or approved & not yet ended). Mirrors the 409 the API
+  // returns so the user finds out before opening the dialog.
+  const { data: mine } = useQuery<{ items: LeaveRequest[] }>({
+    queryKey: ["leave-requests", "mine"],
+    queryFn: () => api(`/api/v1/leave/requests?scope=mine`),
+  });
+  const today = new Date().toISOString().slice(0, 10);
+  const activeLeave = (mine?.items ?? []).find(
+    (r) => (r.status === "pending" || r.status === "approved") && r.end_date >= today,
+  );
+
   const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; show: boolean }[] = [
     { key: "dashboard", label: "Dashboard",    icon: BarChart3,   show: true },
     { key: "my",        label: "My requests",  icon: ListChecks,  show: true },
@@ -123,9 +135,23 @@ export function LeavePage() {
             availability on the workforce + project pages automatically.
           </p>
         </div>
-        <SmartButton variant="primary" icon={<Plus size={14} />} onClick={() => setRequestOpen(true)}>
-          Request leave
-        </SmartButton>
+        <div className="flex flex-col items-end gap-1">
+          <SmartButton
+            variant="primary"
+            icon={<Plus size={14} />}
+            onClick={() => setRequestOpen(true)}
+            disabled={!!activeLeave}
+            title={activeLeave ? "You already have an active leave request" : undefined}
+          >
+            Request leave
+          </SmartButton>
+          {activeLeave && (
+            <div className="text-[11px] text-muted text-right">
+              You have a {activeLeave.status} request ({fmtDate(activeLeave.start_date)} – {fmtDate(activeLeave.end_date)}).
+              Cancel it to request another.
+            </div>
+          )}
+        </div>
       </header>
 
       <nav className="flex flex-wrap gap-1 p-1 bg-surface border border-border rounded-full w-fit">

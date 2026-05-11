@@ -254,6 +254,23 @@ func (h *Leave) CreateRequest(c *gin.Context) {
 	typeID, err := uuid.Parse(req.LeaveTypeID)
 	if err != nil { c.JSON(http.StatusBadRequest, gin.H{"error": "bad leave_type_id"}); return }
 
+	// Only one live leave per person — block if they have a pending request,
+	// or an approved one that hasn't ended yet. Past leave doesn't count;
+	// cancelled / rejected don't count either.
+	var activeID uuid.UUID
+	if err := h.db.QueryRow(c, `
+		SELECT id FROM leave_requests
+		WHERE tenant_id=$1 AND user_id=$2
+		  AND status IN ('pending','approved')
+		  AND end_date >= CURRENT_DATE
+		LIMIT 1`, tid, uid).Scan(&activeID); err == nil {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "You already have an active leave request. Cancel it or wait for it to end before requesting another.",
+			"active_request_id": activeID,
+		})
+		return
+	}
+
 	var typeName string
 	if err := h.db.QueryRow(c, `SELECT name FROM leave_types WHERE id=$1 AND tenant_id=$2 AND active=true`, typeID, tid).Scan(&typeName); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown leave type"}); return
