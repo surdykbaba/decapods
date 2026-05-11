@@ -161,25 +161,42 @@ export function MicrosoftCalendarPage() {
 
         <label className="block">
           <div className="text-[11px] text-muted font-medium mb-1">Tenant hint</div>
-          <select
-            className="input"
+          {/* Always-visible text field — preset chips above just stamp common
+              values into it. Previously the input was conditional on a select,
+              which hid it whenever the value matched a preset, leaving admins
+              with no way to paste a custom tenant ID without first clearing
+              the select. */}
+          <input
+            className="input font-mono text-[12px]"
             value={tenantHint}
             onChange={(e) => setTenantHint(e.target.value)}
-          >
-            <option value="common">common (any Microsoft account — work, school, personal)</option>
-            <option value="organizations">organizations (any work / school account)</option>
-            <option value="consumers">consumers (personal Microsoft accounts only)</option>
-          </select>
-          <div className="text-[11px] text-muted mt-1">
-            Or paste a specific tenant ID/domain (e.g. <code>contoso.onmicrosoft.com</code>) to restrict to one organisation.
+            placeholder="Tenant ID GUID, contoso.onmicrosoft.com, or common"
+            autoComplete="off"
+          />
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {[
+              { v: "common",        label: "common" },
+              { v: "organizations", label: "organizations" },
+              { v: "consumers",     label: "consumers" },
+            ].map((p) => (
+              <button
+                key={p.v}
+                type="button"
+                onClick={() => setTenantHint(p.v)}
+                className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border transition ${
+                  tenantHint === p.v
+                    ? "bg-accent-soft text-accent border-accent/40"
+                    : "bg-bg text-muted border-border hover:border-accent/30 hover:text-text"
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
           </div>
-          {!["common", "organizations", "consumers"].includes(tenantHint) && (
-            <input
-              className="input mt-2 font-mono text-[12px]"
-              value={tenantHint}
-              onChange={(e) => setTenantHint(e.target.value)}
-            />
-          )}
+          <div className="text-[11px] text-muted mt-2 leading-snug">
+            Paste your <strong>Directory (tenant) ID</strong> (Azure → App registration → Overview) for a single-tenant app.
+            Use <code>common</code> only if your app is registered as multi-tenant.
+          </div>
         </label>
 
         <div className="flex items-center justify-end gap-3 pt-1">
