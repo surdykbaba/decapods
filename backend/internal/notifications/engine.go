@@ -236,6 +236,11 @@ func (e *Engine) Notify(ctx context.Context, ev Event) int {
 	link = absoluteURL(e.cfg, link)
 	payloadJSON, _ := json.Marshal(ev.Payload)
 
+	// Fan the event out to any Teams webhooks the tenant has configured. Runs
+	// in parallel with the per-user dispatch loop — Teams must never block
+	// the in-app + email path.
+	go e.dispatchTeams(ctx, meta, ev, subject, link)
+
 	queued := 0
 	for _, r := range ev.Recipients {
 		email, userID := r.Email, r.UserID

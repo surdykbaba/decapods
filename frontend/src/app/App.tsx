@@ -24,6 +24,7 @@ import { InvoicesPage } from "@/modules/finance/InvoicesPage";
 import { GovernancePoliciesPage } from "@/modules/governance/PoliciesPage";
 import { AuditPage } from "@/modules/governance/AuditPage";
 import { GitHubPage } from "@/modules/integrations/GitHubPage";
+import { TeamsPage } from "@/modules/integrations/TeamsPage";
 import { AdminUsersPage } from "@/modules/admin/UsersPage";
 import { SystemAuditPage } from "@/modules/admin/SystemAuditPage";
 import { WorkflowPage } from "@/modules/settings/WorkflowPage";
@@ -111,6 +112,7 @@ export function App() {
           <Route path="audit"      element={<AuditPage />} />
           <Route path="archived-projects" element={<ArchivedProjectsPage />} />
           <Route path="integrations/github" element={<GitHubPage />} />
+          <Route path="integrations/teams"  element={<TeamsPage />} />
           <Route path="members"    element={<MembersPage />} />
           <Route path="notifications" element={<SettingsNotificationsStub />} />
         </Route>

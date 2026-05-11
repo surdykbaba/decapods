@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   GitBranch, Wallet, ShieldCheck, Github, Users, FileSearch, SlidersHorizontal,
-  Building2, Bell, Archive, Check, Clock,
+  Building2, Bell, Archive, Check, Clock, MessageSquare,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { SUPPORTED_CURRENCIES, FALLBACK_CURRENCY } from "@/lib/currency";
@@ -45,6 +45,7 @@ const SECTIONS: Section[] = [
     group: "Integrations",
     items: [
       { to: "/settings/integrations/github", label: "GitHub",       icon: Github,    description: "Link repos and webhooks" },
+      { to: "/settings/integrations/teams",  label: "Microsoft Teams", icon: MessageSquare, description: "Post events into Teams channels" },
     ],
   },
 ];

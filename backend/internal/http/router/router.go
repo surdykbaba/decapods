@@ -95,6 +95,11 @@ func New(d Deps) http.Handler {
 	authed.GET("/settings/work-policy", workPolicy.Get)
 	authed.PUT("/settings/work-policy", mw.RequirePermission("governance:write"), workPolicy.Put)
 
+	teamsIntegration := handlers.NewTeamsIntegration(d.DB)
+	authed.GET("/settings/teams",            mw.RequirePermission("governance:write"), teamsIntegration.Get)
+	authed.PUT("/settings/teams",            mw.RequirePermission("governance:write"), teamsIntegration.Put)
+	authed.POST("/settings/teams/test/:id",  mw.RequirePermission("governance:write"), teamsIntegration.Test)
+
 	rv := handlers.NewRoleVisibility(d.DB)
 	authed.GET("/settings/role-visibility", rv.Get)
 	authed.PUT("/settings/role-visibility", mw.RequirePermission("governance:write"), rv.Put)
