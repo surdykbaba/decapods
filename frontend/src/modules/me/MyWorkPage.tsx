@@ -1,6 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
 import { SmartButton } from "@/components/SmartButton";
-import { AvatarUploader } from "@/components/AvatarUploader";
 import { Avatar } from "@/components/Avatar";
 import { MeetingsCard } from "@/modules/me/MeetingsCard";
 import { toast } from "@/lib/toast";
@@ -12,7 +11,7 @@ import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
   Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
-  Sparkles, Bell, XCircle,
+  Sparkles, Bell, XCircle, Pencil,
 } from "lucide-react";
 
 type TaskRow = {
@@ -1606,11 +1605,36 @@ function ProfileTab() {
   const qc = useQueryClient();
   const setUser = useAuth((s) => s.setUser);
   const currentUser = useAuth((s) => s.user);
+  const canEditRoles = !!currentUser?.roles?.some((r) => r === "super_admin" || r === "admin");
   const { data, isLoading } = useQuery<Profile>({
     queryKey: ["me", "profile"], queryFn: () => api("/api/v1/me/profile"),
   });
   const [name, setName] = useState("");
   const [github, setGithub] = useState("");
+  const [editingRoles, setEditingRoles] = useState(false);
+  const [roleDraft, setRoleDraft] = useState<string[]>([]);
+  const { data: rolesCatalog } = useQuery<{ items: { id: string; name: string; description: string }[] }>({
+    queryKey: ["roles"],
+    queryFn: () => api("/api/v1/members/roles"),
+    enabled: canEditRoles && editingRoles,
+  });
+
+  const saveRoles = useMutation({
+    mutationFn: (roles: string[]) => api(`/api/v1/members/${data!.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ roles }),
+    }),
+    onSuccess: () => {
+      toast.success("Roles updated", "Your role assignments have been saved.");
+      qc.invalidateQueries({ queryKey: ["me", "profile"] });
+      qc.invalidateQueries({ queryKey: ["members"] });
+      setEditingRoles(false);
+    },
+    onError: (e: unknown) => {
+      const msg = (e as { message?: string })?.message ?? "Could not update roles.";
+      toast.error("Save failed", msg);
+    },
+  });
 
   // Hydrate locally when data arrives — useEffect, not useMemo (the previous version
   // was also re-resetting the inputs on every refetch, clobbering pending edits).
@@ -1686,23 +1710,32 @@ function ProfileTab() {
             </div>
             <div className="text-sm text-white/80 mt-0.5 truncate">{data.email}</div>
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              {data.roles.map((r) => (
+              {!editingRoles && data.roles.map((r) => (
                 <span key={r} className="pill bg-white/15 text-white border border-white/20">{r}</span>
               ))}
-              {data.roles.length === 0 && (
+              {!editingRoles && data.roles.length === 0 && (
                 <span className="text-xs text-white/75">No roles assigned.</span>
               )}
-              {data.mfa_enabled && (
+              {!editingRoles && canEditRoles && (
+                <button
+                  onClick={() => { setRoleDraft(data.roles); setEditingRoles(true); }}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/10 text-white border border-white/25 hover:bg-white/25"
+                  title="Edit role assignments"
+                >
+                  <Pencil size={10} /> Edit roles
+                </button>
+              )}
+              {!editingRoles && data.mfa_enabled && (
                 <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/15 text-white border border-white/25">
                   <Sparkles size={10} /> MFA on
                 </span>
               )}
-              {!data.mfa_enabled && data.mfa_required && (
+              {!editingRoles && !data.mfa_enabled && data.mfa_required && (
                 <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white/15 text-white border border-white/25">
                   <AlertTriangle size={10} /> MFA required
                 </span>
               )}
-              {data.github_username && (
+              {!editingRoles && data.github_username && (
                 <a
                   href={`https://github.com/${data.github_username}`}
                   target="_blank"
@@ -1713,6 +1746,49 @@ function ProfileTab() {
                 </a>
               )}
             </div>
+            {editingRoles && (
+              <div className="mt-3 bg-white/10 border border-white/20 rounded-xl p-3">
+                <div className="text-[11px] uppercase tracking-wider font-bold text-white/80 mb-2">
+                  Edit role assignments
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {(rolesCatalog?.items ?? []).map((r) => {
+                    const on = roleDraft.includes(r.name);
+                    return (
+                      <button
+                        key={r.id}
+                        onClick={() => setRoleDraft((d) => on ? d.filter((x) => x !== r.name) : [...d, r.name])}
+                        className={`inline-flex items-center gap-1 text-[11.5px] font-semibold px-2.5 py-1 rounded-full border transition ${
+                          on
+                            ? "bg-white text-[#107B97] border-white"
+                            : "bg-white/10 text-white border-white/30 hover:bg-white/20"
+                        }`}
+                        title={r.description}
+                      >
+                        {on ? <CheckCircle2 size={11} /> : <Plus size={11} />}
+                        {r.name}
+                      </button>
+                    );
+                  })}
+                  {!rolesCatalog && <span className="text-[11px] text-white/70">Loading roles…</span>}
+                </div>
+                <div className="mt-3 flex items-center gap-2 justify-end">
+                  <button
+                    onClick={() => setEditingRoles(false)}
+                    className="text-[12px] font-semibold text-white/80 hover:text-white px-3 py-1.5"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => saveRoles.mutate(roleDraft)}
+                    disabled={saveRoles.isPending}
+                    className="text-[12px] font-bold bg-white text-[#107B97] hover:bg-white/90 px-3 py-1.5 rounded-full disabled:opacity-50"
+                  >
+                    {saveRoles.isPending ? "Saving…" : "Save roles"}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
           <Link
             to={`/members/${data.id}`}
@@ -1786,9 +1862,6 @@ function ProfileTab() {
           <p className="text-xs text-muted mb-4">
             Email is set by your workspace admin — reach out if it's wrong.
           </p>
-          <div className="mb-5 pb-5 border-b border-border">
-            <AvatarUploader name={data.name} email={data.email} src={data.avatar_url} />
-          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <label className="block">
               <div className="label">Display name</div>
