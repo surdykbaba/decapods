@@ -1650,7 +1650,17 @@ function ProfileTab() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
       <section className="bg-surface border border-border rounded-2xl p-5 lg:col-span-2">
-        <h2 className="h2 mb-4">Profile</h2>
+        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
+          <h2 className="h2">Profile</h2>
+          {/* Jump to the public-facing member profile (what teammates see) —
+              richer KPIs, workload, leave balances, projects. */}
+          <Link
+            to={`/members/${data.id}`}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-accent hover:underline"
+          >
+            View full profile <ArrowRight size={13} />
+          </Link>
+        </div>
 
         <div className="mb-5 pb-5 border-b border-border">
           <AvatarUploader name={data.name} email={data.email} src={data.avatar_url} />
