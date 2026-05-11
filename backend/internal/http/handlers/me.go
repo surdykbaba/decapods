@@ -742,16 +742,14 @@ func (h *Me) Heartbeat(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true, "last_seen_at": time.Now().UTC()})
 }
 
-// awayThresholdMinutes is the size of an unexcused gap during work hours that
-// trips an attendance warning. Tuned to allow short bio/coffee breaks but
-// flag anything longer that wasn't an approved leave day.
-const awayThresholdMinutes = 30
-
 // checkAwayGap runs after a heartbeat opens a new session — meaning the user
-// just came back from being away. It looks at the previous session's
-// last_seen_at vs. the new session's started_at and decides whether the gap
-// counts as a warning. Best-effort; the heartbeat write already happened.
+// just came back from being away. It loads the tenant's work-hours policy,
+// checks the previous session's last_seen_at vs. now, and decides whether the
+// gap warrants an attendance warning. Best-effort; the heartbeat write
+// already happened.
 func (h *Me) checkAwayGap(ctx context.Context, tid, uid uuid.UUID, clientTZ string) {
+	policy := LoadWorkPolicy(ctx, h.db, tid)
+
 	// Most recent session for this user excluding the one we just opened.
 	// `LIMIT 2` then take the second row keeps it to a single index scan.
 	rows, err := h.db.Query(ctx, `
@@ -774,17 +772,14 @@ func (h *Me) checkAwayGap(ctx context.Context, tid, uid uuid.UUID, clientTZ stri
 	}
 	prevLastSeen := seen[1] // [0] is the new session we just opened
 	gap := time.Since(prevLastSeen)
-	if gap < time.Duration(awayThresholdMinutes)*time.Minute {
+	if gap < time.Duration(policy.AwayThresholdMinutes)*time.Minute {
 		return
 	}
 
-	// Was the gap inside work hours? We use the client-reported timezone
-	// when present, else server local. Work hours = Mon-Fri 09:00-17:00.
-	loc, _ := time.LoadLocation(clientTZ)
-	if loc == nil {
-		loc = time.Local
-	}
-	if !gapInsideWorkHours(prevLastSeen.In(loc), time.Now().In(loc)) {
+	// Prefer the tenant's configured timezone; fall back to the client's
+	// reported zone, then the server's local zone.
+	loc := timeLocation(policy.Timezone, clientTZ)
+	if !gapInsideWorkHoursPolicy(policy, prevLastSeen.In(loc), time.Now().In(loc)) {
 		return
 	}
 
@@ -865,23 +860,33 @@ func (h *Me) checkAwayGap(ctx context.Context, tid, uid uuid.UUID, clientTZ stri
 	}
 }
 
-// gapInsideWorkHours returns true when the [start, end) interval overlaps any
-// work-hours window (Mon-Fri 09:00-17:00 in the supplied location). We don't
-// require the whole gap to be inside the window — even straddling the edge
-// counts, because the bulk of the absence still happened on company time.
-func gapInsideWorkHours(start, end time.Time) bool {
-	// Walk day-by-day across the span; tiny because gaps are minutes-hours.
+// gapInsideWorkHoursPolicy is the policy-aware version of the old helper.
+// Walks the [start, end) interval hour by hour and returns true the moment
+// any sample lands inside the configured work-hours window — even a gap
+// straddling the edge counts, because the bulk of the absence still happened
+// on company time.
+func gapInsideWorkHoursPolicy(p WorkPolicySpec, start, end time.Time) bool {
 	for d := start; d.Before(end); d = d.Add(time.Hour) {
-		wd := d.Weekday()
-		if wd == time.Saturday || wd == time.Sunday {
-			continue
-		}
-		h := d.Hour()
-		if h >= 9 && h < 17 {
+		if p.IsWorkHour(int(d.Weekday()), d.Hour()) {
 			return true
 		}
 	}
 	return false
+}
+
+// timeLocation picks the most specific timezone available, in order: the
+// tenant's configured tz → the client's reported tz → server local. Anything
+// that fails to parse falls through.
+func timeLocation(tenantTZ, clientTZ string) *time.Location {
+	for _, tz := range []string{tenantTZ, clientTZ} {
+		if tz == "" {
+			continue
+		}
+		if loc, err := time.LoadLocation(tz); err == nil && loc != nil {
+			return loc
+		}
+	}
+	return time.Local
 }
 
 // parseUA is a tiny zero-dep User-Agent classifier. Anything fancier (full

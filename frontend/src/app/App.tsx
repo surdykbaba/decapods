@@ -27,6 +27,7 @@ import { GitHubPage } from "@/modules/integrations/GitHubPage";
 import { AdminUsersPage } from "@/modules/admin/UsersPage";
 import { SystemAuditPage } from "@/modules/admin/SystemAuditPage";
 import { WorkflowPage } from "@/modules/settings/WorkflowPage";
+import { WorkPolicyPage } from "@/modules/settings/WorkPolicyPage";
 import { TeamRatesPage } from "@/modules/settings/TeamRatesPage";
 import { RolesPermissionsPage } from "@/modules/settings/RolesPermissionsPage";
 import { MyWorkPage } from "@/modules/me/MyWorkPage";
@@ -104,6 +105,7 @@ export function App() {
           <Route index element={<SettingsGeneralPage />} />
           <Route path="roles"      element={<RolesPermissionsPage />} />
           <Route path="workflow"   element={<WorkflowPage />} />
+          <Route path="work-policy" element={<WorkPolicyPage />} />
           <Route path="team-rates" element={<TeamRatesPage />} />
           <Route path="governance" element={<GovernancePoliciesPage />} />
           <Route path="audit"      element={<AuditPage />} />

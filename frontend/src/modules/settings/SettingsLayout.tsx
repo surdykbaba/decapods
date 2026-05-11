@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   GitBranch, Wallet, ShieldCheck, Github, Users, FileSearch, SlidersHorizontal,
-  Building2, Bell, Archive, Check,
+  Building2, Bell, Archive, Check, Clock,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { SUPPORTED_CURRENCIES, FALLBACK_CURRENCY } from "@/lib/currency";
@@ -29,6 +29,7 @@ const SECTIONS: Section[] = [
     group: "Delivery & finance",
     items: [
       { to: "/settings/workflow",   label: "Approval workflow", icon: GitBranch,    description: "Stages and role gates" },
+      { to: "/settings/work-policy", label: "Work hours",       icon: Clock,        description: "Working days, hours, break + away thresholds" },
       { to: "/settings/team-rates", label: "Team rates",        icon: Wallet,       description: "Internal & external daily rates" },
     ],
   },
