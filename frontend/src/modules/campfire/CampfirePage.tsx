@@ -209,22 +209,8 @@ export function CampfirePage() {
   ];
 
   return (
-    // Sky backdrop — bleeds past the Shell's content padding on both axes so
-    // it actually feels like a room with weather. Decorative SVG clouds float
-    // in the top third; pointer-events:none keeps them inert.
-    //
-    // z-stacking note: the wrapper is positioned (relative) which creates a
-    // new stacking context. The gradient + clouds sit at z-0 inside it, the
-    // page content rides above at z-10 — that way the gradient is never
-    // hidden by the Shell's bg-surface (which is in a *separate* context).
-    <div className="relative -mx-4 md:-mx-8 -mt-0 px-4 md:px-8 pt-6 pb-8 min-h-full overflow-hidden">
-      <div
-        aria-hidden
-        className="absolute inset-0 z-0 pointer-events-none
-                   bg-gradient-to-b from-sky-200 via-sky-100 to-bg
-                   dark:from-accent/30 dark:via-accent/10 dark:to-bg"
-      />
-      <div className="relative z-10">
+    <div className="pt-2 pb-8">
+      <div className="relative">
 
       <header className="flex items-end justify-between flex-wrap gap-4 mb-6">
         <div className="flex items-center gap-3">
