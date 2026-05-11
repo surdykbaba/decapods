@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from "react";
 import { SmartButton } from "@/components/SmartButton";
 import { AvatarUploader } from "@/components/AvatarUploader";
+import { Avatar } from "@/components/Avatar";
 import { MeetingsCard } from "@/modules/me/MeetingsCard";
 import { toast } from "@/lib/toast";
 import { Link, useSearchParams } from "react-router-dom";
@@ -1663,7 +1664,7 @@ function ProfileTab() {
         ? { tone: "bad", label: "Needs attention", hint: `${p.tasks_overdue} overdue · ${p.blocked_now} blocked.` }
         : { tone: "warn", label: "A few loose ends", hint: `${p.tasks_overdue} overdue · ${p.blocked_now} blocked.` };
   return (
-    <div className="space-y-4">
+    <div className="max-w-5xl mx-auto space-y-4">
       {/* ============ Identity hero ============ */}
       <section
         className="relative overflow-hidden rounded-2xl p-5 sm:p-6 text-white"
@@ -1672,7 +1673,7 @@ function ProfileTab() {
         <div className="absolute -top-16 -right-12 w-56 h-56 bg-white/10 rounded-full blur-3xl pointer-events-none" />
         <div className="relative flex flex-col sm:flex-row sm:items-center gap-5">
           <div className="shrink-0">
-            <AvatarUploader name={data.name} email={data.email} src={data.avatar_url} />
+            <Avatar name={data.name} email={data.email} src={data.avatar_url} size={88} className="ring-2 ring-white/30" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
@@ -1786,6 +1787,9 @@ function ProfileTab() {
           <p className="text-xs text-muted mb-4">
             Email is set by your workspace admin — reach out if it's wrong.
           </p>
+          <div className="mb-5 pb-5 border-b border-border">
+            <AvatarUploader name={data.name} email={data.email} src={data.avatar_url} />
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <label className="block">
               <div className="label">Display name</div>
