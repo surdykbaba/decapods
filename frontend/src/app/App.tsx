@@ -38,13 +38,11 @@ import { LeavePage } from "@/modules/leave/LeavePage";
 import { CampfirePage } from "@/modules/campfire/CampfirePage";
 import { AttendancePage } from "@/modules/attendance/AttendancePage";
 import { ArchivedProjectsPage } from "@/modules/settings/ArchivedProjectsPage";
-import { VendorsPage } from "@/modules/vendors/VendorsPage";
 import { VendorDetailPage } from "@/modules/vendors/VendorDetailPage";
 import { VendorInvitePage } from "@/modules/vendors/VendorInvitePage";
-import { StakeholdersPage } from "@/modules/stakeholders/StakeholdersPage";
-import { AgentsPage } from "@/modules/agents/AgentsPage";
 import { AgentDetailPage } from "@/modules/agents/AgentDetailPage";
 import { AgentInvitePage } from "@/modules/agents/AgentInvitePage";
+import { RelationshipsPage } from "@/modules/relationships/RelationshipsPage";
 import {
   SettingsLayout, SettingsGeneralPage, SettingsMembersStub, SettingsNotificationsStub,
 } from "@/modules/settings/SettingsLayout";
@@ -94,13 +92,18 @@ export function App() {
         <Route path="/finance" element={<FinancePage />} />
         <Route path="/finance/invoices" element={<InvoicesPage />} />
 
-        <Route path="/vendors"        element={<VendorsPage />} />
-        <Route path="/vendors/:id"    element={<VendorDetailPage />} />
-        <Route path="/members"        element={<MembersPage />} />
-        <Route path="/members/:id"    element={<MemberProfilePage />} />
-        <Route path="/stakeholders"   element={<StakeholdersPage />} />
-        <Route path="/agents"         element={<AgentsPage />} />
-        <Route path="/agents/:id"     element={<AgentDetailPage />} />
+        {/* Unified Relationships hub — Stakeholders, Vendors and PR & Agents
+            in one page with a tab strip. Old top-level routes redirect with
+            their respective ?tab=… so notifications and bookmarks still land
+            on the right pane. Detail pages keep their own routes. */}
+        <Route path="/relationships" element={<RelationshipsPage />} />
+        <Route path="/stakeholders"  element={<Navigate to="/relationships?tab=stakeholders" replace />} />
+        <Route path="/vendors"       element={<Navigate to="/relationships?tab=vendors" replace />} />
+        <Route path="/agents"        element={<Navigate to="/relationships?tab=agents" replace />} />
+        <Route path="/vendors/:id"   element={<VendorDetailPage />} />
+        <Route path="/agents/:id"    element={<AgentDetailPage />} />
+        <Route path="/members"       element={<MembersPage />} />
+        <Route path="/members/:id"   element={<MemberProfilePage />} />
 
         {/* Unified settings */}
         <Route path="/settings" element={<SettingsLayout />}>

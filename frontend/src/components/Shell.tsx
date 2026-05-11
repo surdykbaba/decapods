@@ -3,7 +3,7 @@ import {
  Briefcase, FolderKanban, Users, Banknote,
   Settings, LifeBuoy, Search, UserCheck,
   Sun, Moon, LogOut, ChevronDown,
-  Handshake, UsersRound, Network, UserCog, Folder, Plane,
+  Handshake, UserCog, Folder, Plane,
   ShieldCheck, Menu, X, ClipboardCheck,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
@@ -32,9 +32,10 @@ const navTop: NavItem[] = [
   { section: "projects",     to: "/projects",     label: "Projects",     icon: FolderKanban },
   { section: "workforce",    to: "/workforce",    label: "Workforce",    icon: Users },
   { section: "members",      to: "/members",      label: "Members",      icon: UserCog },
-  { section: "stakeholders", to: "/stakeholders", label: "Stakeholders", icon: UsersRound },
-  { section: "vendors",      to: "/vendors",      label: "Vendors",      icon: Handshake },
-  { section: "agents",       to: "/agents",       label: "PR & Agents",  icon: Network },
+  // Stakeholders + Vendors + PR & Agents merged into one Relationships
+  // hub — same data, just one nav slot. Tabs inside the page handle the
+  // breakdown so the sidebar stays light.
+  { section: "relationships", to: "/relationships", label: "Relationships", icon: Handshake },
   { section: "finance",      to: "/finance",      label: "Finance",      icon: Banknote },
   { section: "files",        to: "/files",        label: "Files & media", icon: Folder },
   { section: "leave",        to: "/leave",        label: "Leave",        icon: Plane },

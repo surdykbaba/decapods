@@ -30,9 +30,11 @@ var NavSections = []struct {
 	{"projects",      "Projects"},
 	{"workforce",     "Workforce"},
 	{"members",       "Members"},
-	{"stakeholders",  "Stakeholders"},
-	{"vendors",       "Vendors"},
-	{"agents",        "PR & Agents"},
+	// Stakeholders + Vendors + PR & Agents merged into one Relationships
+	// section. The old three keys are kept in DefaultRoleVisibility (no
+	// NavSections entry) so any existing tenant matrix that references them
+	// keeps the row-level API gates working unchanged.
+	{"relationships", "Relationships"},
 	{"finance",       "Finance"},
 	{"files",         "Files & media"},
 	{"leave",         "Leave"},
@@ -51,6 +53,12 @@ var DefaultRoleVisibility = map[string][]string{
 	"projects":     {"super_admin", "ceo", "coo", "delivery_manager", "project_manager", "engineer", "designer", "qa", "finance", "auditor", "business_dev"},
 	"workforce":    {"super_admin", "ceo", "coo", "hr", "hr_manager", "delivery_manager", "project_manager", "finance"},
 	"members":      {"super_admin", "ceo", "coo", "hr", "hr_manager"},
+	// Unified Relationships hub — visible to anyone who used to see any of
+	// the three sub-sections. Inner data is still row-gated at the API.
+	"relationships": {"super_admin", "ceo", "coo", "business_dev", "delivery_manager", "project_manager", "finance", "compliance_officer"},
+	// Old sub-section keys retained so legacy tenant matrices keep working
+	// at the API gate. The sidebar no longer renders them — visibility is
+	// driven by the "relationships" key above.
 	"stakeholders": {"super_admin", "ceo", "coo", "business_dev", "delivery_manager", "project_manager"},
 	"vendors":      {"super_admin", "ceo", "coo", "delivery_manager", "finance", "compliance_officer"},
 	"agents":       {"super_admin", "ceo", "coo", "business_dev", "compliance_officer"},
