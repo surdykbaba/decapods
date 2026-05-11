@@ -18,7 +18,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -83,58 +82,54 @@ func (h *MicrosoftOAuth) Callback(c *gin.Context) {
 	// the card, so feedback was being swallowed there.
 	landing := publicLandingURL(h.cfg, "/my-work?ms=" )
 
+	// failHTML serves a plain-HTML result page on any failure. The previous
+	// behaviour redirected back into the SPA with ?ms=error&detail=…, but the
+	// SPA toast was eaten by some combination of service worker caching,
+	// stripped query params and an unmounted card — so the admin saw nothing.
+	// A static error page can't be cached away or swallowed by React state.
+	failHTML := func(title, detail string) {
+		renderResultPage(c, false, title, detail)
+	}
+
 	if errParam != "" {
-		// User cancelled or Microsoft rejected. Pass through a friendly
-		// summary so the SPA toast has something actionable instead of just
-		// "invalid_request".
 		detail := friendlyMSError(errParam, c.Query("error_description"))
-		c.Redirect(http.StatusFound, landing+"error&detail="+url.QueryEscape(detail))
+		failHTML("Microsoft sign-in rejected", detail)
 		return
 	}
 	if code == "" || state == "" {
-		c.Redirect(http.StatusFound, landing+"missing")
+		failHTML("Missing parameters", "Microsoft didn't return an authorization code. Try Connect Microsoft again — codes expire fast.")
 		return
 	}
 	uidStr, err := microsoft.ValidState([]byte(h.cfg.JWTAccessSecret), state)
 	if err != nil {
-		c.Redirect(http.StatusFound, landing+"bad_state")
+		failHTML("State validation failed", "Your sign-in session expired or the state token was tampered with. Sign back into D'Accubin and retry.")
 		return
 	}
 	uid, err := uuid.Parse(uidStr)
 	if err != nil {
-		c.Redirect(http.StatusFound, landing+"bad_uid")
+		failHTML("Bad user identifier", "The signed state didn't decode to a valid user — try signing out, in, and retrying.")
 		return
 	}
 	// Find the user's tenant so we load the right Microsoft Config.
 	var tid uuid.UUID
 	if err := h.db.QueryRow(c, `SELECT tenant_id FROM users WHERE id=$1`, uid).Scan(&tid); err != nil {
-		c.Redirect(http.StatusFound, landing+"unknown_user")
+		failHTML("User not found", "The user this sign-in belongs to is no longer in the workspace.")
 		return
 	}
 	msCfg := loadMicrosoftConfig(c, h.db, h.cfg, tid)
 	if !msCfg.Configured {
-		c.Redirect(http.StatusFound, landing+"not_configured")
+		failHTML("Workspace not configured", "An admin needs to paste the Azure AD Client ID + Secret in Settings → Microsoft Calendar.")
 		return
 	}
 
 	tok, err := msCfg.Exchange(c.Request.Context(), code)
 	if err != nil {
-		// Surface Microsoft's actual rejection so the admin can act on it
-		// instead of staring at a generic "exchange_failed". The library
-		// formats errors as "microsoft token endpoint returned NNN: {json}",
-		// and the JSON usually contains an AADSTS code our friendly mapper
-		// already knows how to translate.
-		c.Redirect(http.StatusFound, landing+"error&detail="+url.QueryEscape(friendlyMSError("exchange_failed", err.Error())))
+		failHTML("Token exchange failed", friendlyMSError("exchange_failed", err.Error()))
 		return
 	}
 	account, oid, profileErr := microsoft.FetchProfile(c.Request.Context(), tok.AccessToken)
 	if profileErr != nil {
-		// We have a valid access token but Graph /me rejected it — almost
-		// always a missing User.Read permission on the Azure app, or the
-		// token's scopes don't include it. Bail loudly so the admin can fix
-		// the registration instead of staring at a silent not-connected.
-		c.Redirect(http.StatusFound, landing+"error&detail="+url.QueryEscape(
-			friendlyMSError("graph_profile_failed", profileErr.Error())))
+		failHTML("Microsoft Graph rejected the token", friendlyMSError("graph_profile_failed", profileErr.Error()))
 		return
 	}
 
@@ -151,7 +146,7 @@ func (h *MicrosoftOAuth) Callback(c *gin.Context) {
 		  expires_at    = EXCLUDED.expires_at,
 		  updated_at    = now()`,
 		uid, tid, account, oid, tok.AccessToken, tok.RefreshToken, tok.Scope, tok.ExpiresAt); err != nil {
-		c.Redirect(http.StatusFound, landing+"error&detail="+url.QueryEscape("Token persist failed: "+err.Error()))
+		failHTML("Couldn't save the token", err.Error())
 		return
 	}
 	audit.WriteHTTP(c, h.db, c, tid, &uid, "integration.microsoft.connected", "user", uid, gin.H{
@@ -251,6 +246,49 @@ type errStr string
 func (e errStr) Error() string { return string(e) }
 
 const errMSNotConnected errStr = "microsoft account not connected"
+
+// renderResultPage serves a self-contained HTML result page so the user
+// always sees feedback after Microsoft bounces them back, even when the SPA
+// is uncooperative (service worker cache, missing toast container, etc.).
+// On success we still redirect into the SPA so the calendar appears inline.
+func renderResultPage(c *gin.Context, ok bool, title, detail string) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	statusColor := "#dc2626"
+	statusLabel := "Connection failed"
+	emoji := "⚠️"
+	if ok {
+		statusColor = "#16a34a"
+		statusLabel = "Connected"
+		emoji = "✅"
+	}
+	// Escape so a hostile detail can't inject markup.
+	safeTitle := htmlEscape(title)
+	safeDetail := htmlEscape(detail)
+	page := `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>` + safeTitle + ` — D'Accubin</title>
+<style>
+  body { margin:0; font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Manrope,sans-serif; background:#FAF7F2; color:#0b1220; display:flex; min-height:100vh; align-items:center; justify-content:center; padding:1.5rem; }
+  .card { background:#fff; border:1px solid #e5e7eb; border-radius:16px; padding:2rem; max-width:560px; box-shadow:0 12px 40px rgba(0,0,0,.06); }
+  .pill { display:inline-flex; align-items:center; gap:.4rem; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; padding:.25rem .65rem; border-radius:999px; color:` + statusColor + `; background:` + statusColor + `15; border:1px solid ` + statusColor + `40; }
+  h1 { font-size:1.6rem; margin:1rem 0 .25rem; line-height:1.15; }
+  p.detail { margin:1rem 0 0; padding:1rem; background:#FAF7F2; border:1px solid #e5e7eb; border-radius:8px; font-size:.95rem; white-space:pre-wrap; word-break:break-word; }
+  a.cta { display:inline-block; margin-top:1.5rem; background:#107B97; color:#fff; padding:.65rem 1.2rem; border-radius:999px; font-weight:700; text-decoration:none; font-size:.9rem; }
+  a.cta:hover { background:#0d6c84; }
+  .meta { margin-top:1rem; font-size:.8rem; color:#6b7280; }
+</style>
+</head><body>
+<div class="card">
+  <div class="pill">` + emoji + ` ` + statusLabel + `</div>
+  <h1>` + safeTitle + `</h1>
+  <p class="detail">` + safeDetail + `</p>
+  <a class="cta" href="/my-work">Back to D'Accubin</a>
+  <div class="meta">This page is served directly by the backend so feedback survives caching.</div>
+</div>
+</body></html>`
+	c.String(http.StatusOK, page)
+}
 
 // friendlyMSError turns Microsoft's verbose AADSTSxxxxx error_description
 // into a one-line, actionable message that fits in a toast. Falls back to the
