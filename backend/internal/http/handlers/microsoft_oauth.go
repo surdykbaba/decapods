@@ -119,7 +119,12 @@ func (h *MicrosoftOAuth) Callback(c *gin.Context) {
 
 	tok, err := msCfg.Exchange(c.Request.Context(), code)
 	if err != nil {
-		c.Redirect(http.StatusFound, landing+"exchange_failed")
+		// Surface Microsoft's actual rejection so the admin can act on it
+		// instead of staring at a generic "exchange_failed". The library
+		// formats errors as "microsoft token endpoint returned NNN: {json}",
+		// and the JSON usually contains an AADSTS code our friendly mapper
+		// already knows how to translate.
+		c.Redirect(http.StatusFound, landing+"error&detail="+url.QueryEscape(friendlyMSError("exchange_failed", err.Error())))
 		return
 	}
 	account, oid, _ := microsoft.FetchProfile(c.Request.Context(), tok.AccessToken)
@@ -137,7 +142,7 @@ func (h *MicrosoftOAuth) Callback(c *gin.Context) {
 		  expires_at    = EXCLUDED.expires_at,
 		  updated_at    = now()`,
 		uid, tid, account, oid, tok.AccessToken, tok.RefreshToken, tok.Scope, tok.ExpiresAt); err != nil {
-		c.Redirect(http.StatusFound, landing+"persist_failed")
+		c.Redirect(http.StatusFound, landing+"error&detail="+url.QueryEscape("Token persist failed: "+err.Error()))
 		return
 	}
 	audit.WriteHTTP(c, h.db, c, tid, &uid, "integration.microsoft.connected", "user", uid, gin.H{
@@ -245,6 +250,23 @@ func friendlyMSError(code, description string) string {
 		return "Redirect URI mismatch. Register https://myaccubin.com/api/v1/auth/microsoft/callback in Azure → Authentication."
 	case strings.Contains(description, "AADSTS65001"):
 		return "Consent required. An admin needs to grant tenant-wide consent for the calendar scopes."
+	// Token-exchange specific — show up when consent succeeds but the token
+	// POST is rejected. These tend to be Client Secret problems, redirect
+	// URI mismatches on the back-channel, or PKCE/platform misconfig.
+	case strings.Contains(description, "AADSTS7000215"):
+		return "Invalid client secret. Generate a new secret in Azure (Certificates & secrets) and paste the Value into Client secret."
+	case strings.Contains(description, "AADSTS7000222") || strings.Contains(description, "AADSTS700024"):
+		return "Client secret expired. Generate a new secret in Azure and re-paste the Value."
+	case strings.Contains(description, "AADSTS9002313"):
+		return "Invalid auth code. Try Connect Microsoft again — codes are single-use and expire fast."
+	case strings.Contains(description, "AADSTS90002"):
+		return "Tenant hint not recognised. Use your Directory (tenant) ID GUID from Azure → Overview."
+	case strings.Contains(description, "AADSTS500113"):
+		return "Reply URL not registered. Add https://myaccubin.com/api/v1/auth/microsoft/callback to Azure → Authentication → Web platform."
+	case strings.Contains(description, `"error":"invalid_client"`):
+		return "Invalid client. Either Client ID or Client secret is wrong — re-paste both from Azure."
+	case strings.Contains(description, `"error":"invalid_grant"`):
+		return "Auth grant rejected. Usually means the redirect URI registered in Azure doesn't match https://myaccubin.com/api/v1/auth/microsoft/callback exactly."
 	case code == "access_denied":
 		return "Sign-in was cancelled."
 	}
