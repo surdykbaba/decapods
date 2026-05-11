@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect } from "react";
 import { SmartButton } from "@/components/SmartButton";
 import { Avatar } from "@/components/Avatar";
 import { MeetingsCard } from "@/modules/me/MeetingsCard";
+import { MailCard } from "@/modules/me/MailCard";
 import { toast } from "@/lib/toast";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -370,6 +371,10 @@ function DashboardTab() {
       {/* Microsoft calendar — only renders when the workspace has wired the
           Azure AD app. Otherwise stays silent so nobody sees an orphan card. */}
       <MeetingsCard />
+
+      {/* Microsoft Inbox — same connection as the calendar card, hidden
+          when not connected so it never becomes a second silent CTA. */}
+      <MailCard />
 
       {/* Smart briefing — adaptive headline, health badge, briefing sentence */}
       <section className="bg-surface border border-border rounded-2xl p-5">

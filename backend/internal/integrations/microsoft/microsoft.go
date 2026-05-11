@@ -86,7 +86,7 @@ func (c Config) authority() string {
 // give us the standard ID-token claims; offline_access mints the refresh
 // token; Calendars.Read pulls events; User.Read returns user profile for
 // the friendly "connected as" label.
-const Scopes = "openid profile email offline_access Calendars.Read User.Read"
+const Scopes = "openid profile email offline_access Calendars.Read Mail.Read User.Read"
 
 // StartAuthURL builds the Microsoft consent URL with a state value the
 // callback can verify. State carries the user ID + a random nonce, HMAC-
@@ -348,6 +348,72 @@ func FetchEvents(ctx context.Context, accessToken string, from, to time.Time) ([
 			BodyPreview: ev.BodyPreview,
 			Attendees:   attendees,
 			ShowAs:      ev.ShowAs,
+		})
+	}
+	return out, nil
+}
+
+// MailMessage is a trimmed-down /me/messages item — only the fields the SPA
+// renders on the Today briefing card.
+type MailMessage struct {
+	ID          string    `json:"id"`
+	Subject     string    `json:"subject"`
+	From        string    `json:"from"`
+	FromName    string    `json:"from_name"`
+	Preview     string    `json:"preview"`
+	WebLink     string    `json:"web_link"`
+	Received    time.Time `json:"received"`
+	IsRead      bool      `json:"is_read"`
+	HasAttach   bool      `json:"has_attachments"`
+	Importance  string    `json:"importance"` // low | normal | high
+}
+
+// FetchRecentMail pulls the user's most recent Inbox messages. We only need
+// the headline fields — subject, sender, preview, received time, web link —
+// so the Today card can render a compact list.
+func FetchRecentMail(ctx context.Context, accessToken string, top int) ([]MailMessage, error) {
+	if top <= 0 || top > 50 {
+		top = 10
+	}
+	u := "https://graph.microsoft.com/v1.0/me/mailFolders/Inbox/messages" +
+		"?$top=" + strconv.Itoa(top) +
+		"&$orderby=receivedDateTime+desc" +
+		"&$select=id,subject,from,bodyPreview,webLink,receivedDateTime,isRead,hasAttachments,importance"
+	var raw struct {
+		Value []struct {
+			ID      string `json:"id"`
+			Subject string `json:"subject"`
+			From    struct {
+				EmailAddress struct {
+					Name    string `json:"name"`
+					Address string `json:"address"`
+				} `json:"emailAddress"`
+			} `json:"from"`
+			BodyPreview      string `json:"bodyPreview"`
+			WebLink          string `json:"webLink"`
+			ReceivedDateTime string `json:"receivedDateTime"`
+			IsRead           bool   `json:"isRead"`
+			HasAttachments   bool   `json:"hasAttachments"`
+			Importance       string `json:"importance"`
+		} `json:"value"`
+	}
+	if err := graphGet(ctx, accessToken, u, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]MailMessage, 0, len(raw.Value))
+	for _, m := range raw.Value {
+		recv, _ := parseGraphTime(m.ReceivedDateTime)
+		out = append(out, MailMessage{
+			ID:         m.ID,
+			Subject:    m.Subject,
+			From:       m.From.EmailAddress.Address,
+			FromName:   firstNonEmpty(m.From.EmailAddress.Name, m.From.EmailAddress.Address),
+			Preview:    strings.TrimSpace(m.BodyPreview),
+			WebLink:    m.WebLink,
+			Received:   recv,
+			IsRead:     m.IsRead,
+			HasAttach:  m.HasAttachments,
+			Importance: m.Importance,
 		})
 	}
 	return out, nil

@@ -114,6 +114,7 @@ func New(d Deps) http.Handler {
 	authed.POST("/me/microsoft/disconnect", msOAuth.Disconnect)
 	authed.GET("/me/microsoft/status",      msOAuth.Status)
 	authed.GET("/me/meetings",              msOAuth.Meetings)
+	authed.GET("/me/mail",                  msOAuth.Mail)
 	api.GET("/auth/microsoft/callback",     msOAuth.Callback)
 
 	rv := handlers.NewRoleVisibility(d.DB)
