@@ -13,6 +13,9 @@ import { SmartButton } from "@/components/SmartButton";
 import { SmartBody } from "@/modules/campfire/smartBody";
 import { MentionInput } from "@/modules/campfire/MentionInput";
 import {
+  EmojiPopover, AnimatedSticker, isStickerCode, isCelebratory, celebrateAt,
+} from "@/modules/campfire/EmojiPicker";
+import {
   Flame, Megaphone, Trophy, PartyPopper, UserPlus, Cake, Sparkles,
   StickyNote, Newspaper, MessageCircle, Pin, X, Send, Heart, ThumbsUp,
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
@@ -144,7 +147,10 @@ const HELP_KINDS: Record<string, { label: string; icon: React.ComponentType<any>
   management: { label: "Management decision", icon: Briefcase,     tint: "bg-accent-soft text-accent" },
 };
 
-const QUICK_EMOJIS = ["👍", "❤️", "🎉", "🙌", "🔥", "💡"];
+// Quick-reaction emoji set is gone — the full EmojiPicker now handles every
+// reaction surface. Keeping the constant as a brief reference for the curated
+// "warm welcome" set if we ever want a one-click row again.
+void 0;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Helpers
@@ -1022,6 +1028,7 @@ function ReactionStrip({
 }) {
   const qc = useQueryClient();
   const [pickerOpen, setPickerOpen] = useState(false);
+  const addBtnRef = useRef<HTMLButtonElement>(null);
   const toggle = useMutation({
     mutationFn: (emoji: string) =>
       api(`/api/v1/campfire/react/${targetType}/${targetId}`, {
@@ -1030,43 +1037,42 @@ function ReactionStrip({
     onSuccess: () => qc.invalidateQueries({ queryKey: invalidateKey }),
   });
 
+  // React + maybe celebrate. The confetti burst anchors on the button so it
+  // visually launches *from* the reaction the user clicked, not the page
+  // origin — feels much more direct.
+  function react(emoji: string, anchor?: HTMLElement | null) {
+    toggle.mutate(emoji);
+    if (isCelebratory(emoji)) celebrateAt(anchor ?? null);
+  }
+
   return (
     <div className="flex items-center gap-1 flex-wrap">
       {reactions.map((r) => (
         <button
           key={r.emoji}
-          onClick={() => toggle.mutate(r.emoji)}
+          onClick={(e) => react(r.emoji, e.currentTarget)}
           className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[12px] ${
             r.mine ? "bg-accent-soft border-accent text-accent" : "bg-bg/30 border-border text-text hover:bg-bg/60"
           }`}
         >
-          <span>{r.emoji}</span>
+          <span>{isStickerCode(r.emoji) ? <AnimatedSticker code={r.emoji} size={14} /> : r.emoji}</span>
           <span className="font-semibold">{r.count}</span>
         </button>
       ))}
       <div className="relative">
         <button
+          ref={addBtnRef}
           onClick={() => setPickerOpen((v) => !v)}
           className={`px-2 py-0.5 rounded-full border border-dashed border-border text-muted hover:bg-bg/40 ${compact ? "text-[10px]" : "text-[12px]"}`}
         >
           + 😊
         </button>
-        {pickerOpen && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={() => setPickerOpen(false)} />
-            <div className="absolute z-20 mt-1 bg-surface border border-border rounded-xl shadow-card p-1.5 flex gap-1">
-              {QUICK_EMOJIS.map((e) => (
-                <button
-                  key={e}
-                  onClick={() => { toggle.mutate(e); setPickerOpen(false); }}
-                  className="w-8 h-8 rounded hover:bg-bg text-lg leading-none"
-                >
-                  {e}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
+        <EmojiPopover
+          open={pickerOpen}
+          anchorRef={addBtnRef}
+          onClose={() => setPickerOpen(false)}
+          onPick={(s) => react(s, addBtnRef.current)}
+        />
       </div>
     </div>
   );

@@ -9,10 +9,14 @@ import React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { ExternalLink, Image as ImageIcon } from "lucide-react";
+import { AnimatedSticker, isStickerCode } from "@/modules/campfire/EmojiPicker";
 
 const URL_RE = /\b((?:https?:\/\/|www\.)[^\s<>"']+)/gi;
 const TRAIL_PUNCT_RE = /[.,;:!?)\]"']+$/;
 const MENTION_RE = /@([a-zA-Z0-9_.+-]+)/g;
+// Sticker shortcodes round-trip inside post bodies as :name-with-dashes:
+// SmartBody swaps each match for the animated AnimatedSticker component.
+const STICKER_RE = /:([a-z0-9][a-z0-9-]{2,30}):/gi;
 
 export function extractFirstURL(text: string): string | null {
   const m = text.match(URL_RE);
@@ -33,20 +37,27 @@ function renderRich(text: string): React.ReactNode {
   let key = 0;
 
   // Find next match (whichever comes first) starting at index `from`.
-  function nextMatch(from: number): { kind: "url" | "mention"; index: number; raw: string; len: number } | null {
+  function nextMatch(from: number): { kind: "url" | "mention" | "sticker"; index: number; raw: string; len: number } | null {
     URL_RE.lastIndex = from;
     const u = URL_RE.exec(text);
     MENTION_RE.lastIndex = from;
     const m = MENTION_RE.exec(text);
-    if (!u && !m) return null;
-    if (u && (!m || u.index <= m.index)) {
+    STICKER_RE.lastIndex = from;
+    const s = STICKER_RE.exec(text);
+
+    type Cand = { kind: "url" | "mention" | "sticker"; index: number; raw: string; len: number };
+    const cands: Cand[] = [];
+    if (u) {
       let raw = u[1];
       let trailLen = 0;
       const t = raw.match(TRAIL_PUNCT_RE);
       if (t) { trailLen = t[0].length; raw = raw.slice(0, raw.length - trailLen); }
-      return { kind: "url", index: u.index, raw, len: u[1].length - trailLen };
+      cands.push({ kind: "url", index: u.index, raw, len: u[1].length - trailLen });
     }
-    return { kind: "mention", index: m!.index, raw: m![1], len: m![0].length };
+    if (m) cands.push({ kind: "mention", index: m.index, raw: m[1], len: m[0].length });
+    if (s) cands.push({ kind: "sticker", index: s.index, raw: s[0], len: s[0].length });
+    if (cands.length === 0) return null;
+    return cands.sort((a, b) => a.index - b.index)[0];
   }
 
   while (i < text.length) {
@@ -70,6 +81,19 @@ function renderRich(text: string): React.ReactNode {
           {hit.raw}
         </a>,
       );
+    } else if (hit.kind === "sticker") {
+      // Render known sticker codes as the animated component. Unknown codes
+      // fall through to plain text so we don't eat legitimate `:foo:`
+      // references that aren't meant to be stickers.
+      if (isStickerCode(hit.raw)) {
+        out.push(
+          <span key={key++} className="inline-block align-middle mx-0.5">
+            <AnimatedSticker code={hit.raw} size={20} />
+          </span>,
+        );
+      } else {
+        out.push(hit.raw);
+      }
     } else {
       out.push(
         <span

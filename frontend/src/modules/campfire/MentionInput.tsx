@@ -7,7 +7,9 @@
 // <textarea>. Pass `members` and we'll do the rest.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { Smile } from "lucide-react";
 import { api } from "@/lib/api";
+import { EmojiPopover } from "@/modules/campfire/EmojiPicker";
 
 type Member = { id: string; name: string; email: string };
 
@@ -117,6 +119,23 @@ export function MentionInput({
 
   useEffect(() => { if (autoFocus) ref.current?.focus(); }, [autoFocus]);
 
+  // Emoji picker state + caret-aware insert. Drops the chosen character (or
+  // sticker shortcode) at the textarea's current cursor position, then
+  // restores focus and selection right after the inserted token.
+  const emojiBtnRef = useRef<HTMLButtonElement>(null);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  function insertEmoji(s: string) {
+    const el = ref.current;
+    const caret = el?.selectionStart ?? value.length;
+    const next = value.slice(0, caret) + s + value.slice(caret);
+    onChange(next);
+    requestAnimationFrame(() => {
+      el?.focus();
+      const pos = caret + s.length;
+      el?.setSelectionRange(pos, pos);
+    });
+  }
+
   return (
     <div className="relative">
       <textarea
@@ -127,6 +146,23 @@ export function MentionInput({
         value={value}
         onChange={handleChange}
         onKeyDown={handleOuterKey}
+      />
+      {/* Emoji trigger — bottom-right inside the textarea's container so the
+          field still feels like one widget. */}
+      <button
+        ref={emojiBtnRef}
+        type="button"
+        onClick={() => setEmojiOpen((v) => !v)}
+        className="absolute right-2 bottom-2 p-1 rounded-md text-muted hover:text-accent hover:bg-bg/60"
+        title="Insert emoji or sticker"
+      >
+        <Smile size={14} />
+      </button>
+      <EmojiPopover
+        open={emojiOpen}
+        anchorRef={emojiBtnRef}
+        onClose={() => setEmojiOpen(false)}
+        onPick={(s) => insertEmoji(s)}
       />
       {openAt !== null && filtered.length > 0 && (
         <div className="absolute z-30 left-2 top-full mt-1 bg-surface border border-border rounded-xl shadow-card overflow-hidden min-w-[240px]">
