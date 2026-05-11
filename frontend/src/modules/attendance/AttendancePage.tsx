@@ -16,6 +16,7 @@ import { Avatar } from "@/components/Avatar";
 import {
   ClipboardCheck, Activity, TrendingUp, AlertTriangle, CheckCircle2,
   Clock, Laptop, Smartphone, Tablet, Target, Sparkles, Award,
+  LayoutGrid, List as ListIcon, ChevronRight, ChevronDown,
 } from "lucide-react";
 
 /* ─── types ─── */
@@ -533,6 +534,9 @@ const BAND_TONE: Record<string, string> = {
   "At risk":       "bg-danger/10 text-danger border-danger/30",
 };
 
+type AppraisalView = "list" | "grid";
+const APPRAISAL_VIEW_KEY = "attendance-appraisal-view";
+
 function AppraisalTab() {
   const { data, isLoading } = useQuery<{ items: AppraisalRow[] }>({
     queryKey: ["attendance", "appraisal"],
@@ -543,6 +547,16 @@ function AppraisalTab() {
     () => [...items].sort((a, b) => b.scores.total - a.scores.total),
     [items],
   );
+
+  // List is the default — it scans faster when the team grows past a handful
+  // of people. Preference is persisted so the HR lead doesn't keep flipping.
+  const [view, setView] = useState<AppraisalView>(
+    () => (localStorage.getItem(APPRAISAL_VIEW_KEY) as AppraisalView) || "list",
+  );
+  function pickView(v: AppraisalView) {
+    setView(v);
+    localStorage.setItem(APPRAISAL_VIEW_KEY, v);
+  }
 
   if (isLoading) return <div className="text-sm text-muted py-8 text-center">Loading scorecards…</div>;
   if (sorted.length === 0) {
@@ -557,8 +571,43 @@ function AppraisalTab() {
   }
 
   return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-end">
+        <div className="flex items-center gap-1 p-1 bg-surface border border-border rounded-full">
+          <button
+            onClick={() => pickView("list")}
+            className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition-colors ${
+              view === "list" ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+            }`}
+            title="List view"
+          >
+            <ListIcon size={12} /> List
+          </button>
+          <button
+            onClick={() => pickView("grid")}
+            className={`inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full transition-colors ${
+              view === "grid" ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+            }`}
+            title="Grid view"
+          >
+            <LayoutGrid size={12} /> Grid
+          </button>
+        </div>
+      </div>
+
+      {view === "list" ? (
+        <AppraisalList rows={sorted} />
+      ) : (
+        <AppraisalGrid rows={sorted} />
+      )}
+    </div>
+  );
+}
+
+function AppraisalGrid({ rows }: { rows: AppraisalRow[] }) {
+  return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-      {sorted.map((r) => (
+      {rows.map((r) => (
         <article key={r.id} className="bg-surface border border-border rounded-2xl p-5">
           <header className="flex items-start gap-3">
             <Avatar name={r.name} email={r.email} src={r.avatar_url} size={44} />
@@ -604,6 +653,142 @@ function AppraisalTab() {
           </div>
         </article>
       ))}
+    </div>
+  );
+}
+
+/* ---------- List view ---------- */
+
+// Compact one-row-per-member layout: avatar + identity, total score, the four
+// sub-scores as a tight inline bar each, signal counts and band pill. Clicking
+// a row reveals the suggested goal + raw signals.
+function AppraisalList({ rows }: { rows: AppraisalRow[] }) {
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  return (
+    <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+      <div className="hidden md:grid grid-cols-[1fr_60px_minmax(280px,1.4fr)_180px_120px_28px] gap-4 px-4 py-2.5 bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
+        <div>Member</div>
+        <div className="text-right">Score</div>
+        <div>Attendance · Delivery · Resp · Wellbeing</div>
+        <div>Signals (30d)</div>
+        <div className="text-right">Band</div>
+        <div></div>
+      </div>
+      <ul className="divide-y divide-border">
+        {rows.map((r) => {
+          const open = openId === r.id;
+          return (
+            <li key={r.id}>
+              <button
+                onClick={() => setOpenId(open ? null : r.id)}
+                className="w-full text-left grid grid-cols-[1fr_60px_minmax(280px,1.4fr)_180px_120px_28px] gap-4 items-center px-4 py-3 hover:bg-bg/30 transition-colors md:grid-cols-[1fr_60px_minmax(280px,1.4fr)_180px_120px_28px]"
+              >
+                {/* Member */}
+                <div className="flex items-center gap-3 min-w-0">
+                  <Avatar name={r.name} email={r.email} src={r.avatar_url} size={32} />
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-text truncate">{r.name || r.email}</div>
+                    <div className="text-[11px] text-muted truncate">{r.email}</div>
+                  </div>
+                </div>
+
+                {/* Score */}
+                <div className="text-right">
+                  <div className="text-lg font-extrabold text-text leading-none">{r.scores.total.toFixed(0)}</div>
+                  <div className="text-[10px] text-muted">/ 100</div>
+                </div>
+
+                {/* Inline sub-score bars */}
+                <div className="grid grid-cols-4 gap-1.5 min-w-0">
+                  <MiniBar value={r.scores.attendance}     max={25} tone="bg-success" label="A" />
+                  <MiniBar value={r.scores.delivery}       max={25} tone="bg-accent"  label="D" />
+                  <MiniBar value={r.scores.responsiveness} max={25} tone="bg-warn"    label="R" />
+                  <MiniBar value={r.scores.wellbeing}      max={25} tone="bg-danger"  label="W" />
+                </div>
+
+                {/* Signal counts */}
+                <div className="hidden md:flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-muted">
+                  <span title="Days present"><span className="font-semibold text-text">{r.days_present}</span>d</span>
+                  <span title="Hours last 30 days"><span className="font-semibold text-text">{r.hours_30.toFixed(1)}</span>h</span>
+                  <span title="Tasks done"><span className="font-semibold text-text">{r.tasks_done}</span>✓</span>
+                  {r.tasks_overdue > 0 && (
+                    <span className="text-danger" title="Overdue">
+                      <span className="font-semibold">{r.tasks_overdue}</span>!
+                    </span>
+                  )}
+                  {r.kudos_in > 0 && (
+                    <span className="text-success" title="Kudos">
+                      <span className="font-semibold">{r.kudos_in}</span>★
+                    </span>
+                  )}
+                </div>
+
+                {/* Band */}
+                <div className="text-right">
+                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold border whitespace-nowrap ${BAND_TONE[r.band] ?? "bg-bg text-muted border-border"}`}>
+                    {r.band}
+                  </span>
+                </div>
+
+                {/* Expand chevron */}
+                <div className="text-muted text-right">
+                  {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                </div>
+              </button>
+
+              {open && (
+                <div className="px-4 pb-4 pt-1 bg-bg/20 border-t border-border grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-2">Sub-scores</div>
+                    <div className="space-y-2">
+                      <ScoreBar label="Attendance"     value={r.scores.attendance}     max={25} tone="text-success" />
+                      <ScoreBar label="Delivery"       value={r.scores.delivery}       max={25} tone="text-accent" />
+                      <ScoreBar label="Responsiveness" value={r.scores.responsiveness} max={25} tone="text-warn" />
+                      <ScoreBar label="Wellbeing"      value={r.scores.wellbeing}      max={25} tone="text-danger" />
+                    </div>
+                  </div>
+                  <div className="space-y-3">
+                    <div>
+                      <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-2">Raw signals</div>
+                      <dl className="grid grid-cols-3 gap-2 text-[11px]">
+                        <Stat label="Days present" value={r.days_present} />
+                        <Stat label="Hours (30d)"  value={r.hours_30.toFixed(1)} />
+                        <Stat label="Tasks done"   value={r.tasks_done} />
+                        <Stat label="Overdue"      value={r.tasks_overdue} bad={r.tasks_overdue > 0} />
+                        <Stat label="Updates"      value={r.updates_30} />
+                        <Stat label="Kudos"        value={r.kudos_in} good={r.kudos_in > 0} />
+                      </dl>
+                    </div>
+                    <div className="flex items-start gap-2 bg-accent-soft/40 border border-accent/20 rounded-xl px-3 py-2.5">
+                      <Target size={14} className="text-accent mt-0.5 shrink-0" />
+                      <div>
+                        <div className="text-[10.5px] uppercase tracking-wide font-bold text-accent">Suggested goal</div>
+                        <div className="text-[12.5px] text-text leading-snug">{r.suggested_goal}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+function MiniBar({ value, max, tone, label }: { value: number; max: number; tone: string; label: string }) {
+  const pct = Math.max(0, Math.min(100, (value / max) * 100));
+  return (
+    <div title={`${label}: ${value.toFixed(1)} / ${max}`}>
+      <div className="flex items-center justify-between text-[9.5px] text-muted">
+        <span>{label}</span>
+        <span className="font-semibold">{value.toFixed(0)}</span>
+      </div>
+      <div className="h-1 bg-bg rounded-full overflow-hidden mt-0.5">
+        <div className={`h-full ${tone}`} style={{ width: `${pct}%` }} />
+      </div>
     </div>
   );
 }
