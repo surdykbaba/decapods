@@ -5,9 +5,8 @@
 //   2. Configured, not connected — Connect Microsoft CTA.
 //   3. Connected       — list of upcoming events grouped by day, with a
 //      "Join" button on online meetings and a webLink fallback.
-import { useEffect, useMemo } from "react";
+import { useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams } from "react-router-dom";
 import { api } from "@/lib/api";
 import { toast } from "@/lib/toast";
 import { SmartButton } from "@/components/SmartButton";
@@ -50,27 +49,8 @@ function isToday(iso: string): boolean {
 
 export function MeetingsCard() {
   const qc = useQueryClient();
-  const [params, setParams] = useSearchParams();
-
-  // OAuth callback bounces back here with ?ms=connected (or an error code).
-  // We toast the outcome and strip the query so a reload doesn't re-fire it.
-  useEffect(() => {
-    const ms = params.get("ms");
-    if (!ms) return;
-    if (ms === "connected") {
-      toast.success("Microsoft connected", "Your calendar will appear in a moment.");
-      qc.invalidateQueries({ queryKey: ["me", "ms-status"] });
-      qc.invalidateQueries({ queryKey: ["me", "meetings"] });
-    } else if (ms === "not_configured") {
-      toast.error("Microsoft not configured", "Ask an admin to set the Azure AD credentials in Settings → Integrations.");
-    } else {
-      toast.error("Microsoft connection failed", "Try again, or check the admin's Azure AD setup.");
-    }
-    const next = new URLSearchParams(params);
-    next.delete("ms"); next.delete("detail");
-    setParams(next, { replace: true });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // The ?ms=connected callback toast + status invalidation is handled at the
+  // page level (MyWorkPage) so it fires no matter which tab is active.
 
   const { data: status } = useQuery<Status>({
     queryKey: ["me", "ms-status"],

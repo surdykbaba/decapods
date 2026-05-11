@@ -77,7 +77,10 @@ func (h *MicrosoftOAuth) Callback(c *gin.Context) {
 	state := c.Query("state")
 	errParam := c.Query("error")
 
-	landing := publicLandingURL(h.cfg, "/my-work?tab=profile&ms=" )
+	// Land on Today (where MeetingsCard lives) so the connect-result toast
+	// and ms-status refetch actually fire — the Profile tab doesn't mount
+	// the card, so feedback was being swallowed there.
+	landing := publicLandingURL(h.cfg, "/my-work?ms=" )
 
 	if errParam != "" {
 		// User cancelled or Microsoft rejected — bounce back with a hint.

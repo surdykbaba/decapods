@@ -103,6 +103,30 @@ export function MyWorkPage() {
   })();
   const [tab, setTab] = useState<Tab>(initialTab);
   const { user } = useAuth();
+  const qc = useQueryClient();
+
+  // Microsoft OAuth callback bounces back with ?ms=connected (or an error
+  // code). Lifted up to the page so the feedback fires regardless of which
+  // tab is active — MeetingsCard isn't mounted on Profile, so handling it
+  // there was swallowing the toast on success.
+  useEffect(() => {
+    const ms = params.get("ms");
+    if (!ms) return;
+    if (ms === "connected") {
+      toast.success("Microsoft connected", "Your calendar will appear in a moment.");
+      qc.invalidateQueries({ queryKey: ["me", "ms-status"] });
+      qc.invalidateQueries({ queryKey: ["me", "meetings"] });
+    } else if (ms === "not_configured") {
+      toast.error("Microsoft not configured", "Ask an admin to set the Azure AD credentials in Settings → Integrations.");
+    } else {
+      const detail = params.get("detail");
+      toast.error("Microsoft connection failed", detail ? `${ms} · ${detail}` : "Try again, or check the admin's Azure AD setup.");
+    }
+    const next = new URLSearchParams(params);
+    next.delete("ms"); next.delete("detail");
+    setParams(next, { replace: true });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Keep the URL ?tab in sync so deep-links from notifications land on the
   // right pane; preserves the rest of the query string (e.g. ?new=1).
