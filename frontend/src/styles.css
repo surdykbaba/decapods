@@ -77,7 +77,10 @@ body {
     @apply w-full bg-surface border border-border rounded-xl px-3.5 py-2.5 text-[14.5px] text-text placeholder:text-muted
            focus:outline-none focus:border-accent focus:ring-2 focus:ring-accent/25 transition-colors;
   }
-  .label { @apply text-[11.5px] uppercase tracking-[0.06em] text-muted mb-1.5 block font-bold; }
+  /* Form field labels — sentence case with normal letter-spacing reads more
+     like a human asking a question and less like a header. The bold weight +
+     muted colour still keep the visual hierarchy under the heading. */
+  .label { @apply text-[13px] capitalize tracking-normal text-text mb-1.5 block font-semibold; }
   .h1 { @apply text-[2rem] md:text-[2.4rem] font-extrabold tracking-tight leading-tight; }
   .h2 { @apply text-[1.15rem] font-bold tracking-tight; }
 }
