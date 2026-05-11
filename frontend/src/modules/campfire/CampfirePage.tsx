@@ -232,12 +232,12 @@ export function CampfirePage() {
         </div>
       </header>
 
-      {/* Single-column layout. The "Most engaging this week" hero at the top
-          of the feed already carries the workspace pulse cues we used to
-          duplicate on the right; the side rail (PulseHero + RecentActivity)
-          was redundant noise. Removed both — feed gets the full width. */}
-      <div className="mt-2">
-        <div>
+      {/* Two-column layout. The campfire body sits in a constrained reading
+          column so long posts don't sprawl across ultrawide monitors; the
+          "Most engaging this week" hero moves to a compact right rail and
+          stays visible across tab switches as a workspace-pulse anchor. */}
+      <div className="mt-2 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6">
+        <div className="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
           <div className="flex items-center gap-1 mb-4 p-1 bg-surface/70 backdrop-blur border border-border rounded-full overflow-x-auto w-fit shadow-soft">
             {tabs.filter((t) => !t.admin || isAdmin).map((t) => {
               const Icon = t.icon;
@@ -267,6 +267,14 @@ export function CampfirePage() {
             {tab === "insights" && isAdmin && <Insights />}
           </div>
         </div>
+
+        {/* Right rail — compact HeroBanner. Sticky so it stays in view as the
+            feed scrolls; hidden under lg to keep small screens uncluttered. */}
+        <aside className="hidden lg:block">
+          <div className="sticky top-4">
+            <HeroBanner compact />
+          </div>
+        </aside>
       </div>
       </div>{/* close: relative z-10 content layer */}
     </div>
@@ -367,7 +375,6 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <div className="space-y-4">
-      <HeroBanner />
       <SpotlightCard />
 
       {/* Post composer trigger — loud on purpose. The old subtle "Share
@@ -521,7 +528,7 @@ const HERO_GRADIENT: Record<HeroSlide["tone"], string> = {
 
 const HERO_BADGE_CLASS = "absolute -bottom-2 -right-2 w-9 h-9 rounded-full grid place-items-center text-lg shadow-card";
 
-function HeroBanner() {
+function HeroBanner({ compact = false }: { compact?: boolean } = {}) {
   type HeroData = {
     new_joiners?: { id: string; name: string; email: string; joined_at: string }[];
     top_kudo?:    { id: string; name: string; email: string; count: number; badge: string; last_note: string };
@@ -639,6 +646,10 @@ function HeroBanner() {
   if (slides.length === 0) return null;
   const s = slides[Math.min(idx, slides.length - 1)];
 
+  // Compact mode: vertical stack tuned for a 320px sidebar slot. The full
+  // banner reads horizontally with a big avatar tile beside the text; that
+  // layout dies at narrow widths, so we restack avatar-on-top and shrink the
+  // typography. Same data, same rotation, just laid out for a rail.
   return (
     <div
       className={`relative overflow-hidden rounded-3xl border border-accent/30 shadow-card bg-gradient-to-br ${HERO_GRADIENT[s.tone]}`}
@@ -649,27 +660,49 @@ function HeroBanner() {
       <div aria-hidden className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-warn/25 blur-3xl pointer-events-none" />
       <div aria-hidden className="absolute -bottom-16 -left-12 w-56 h-56 rounded-full bg-accent/15 blur-3xl pointer-events-none" />
 
-      <div className="relative px-5 py-6 sm:px-8 sm:py-8 flex items-center gap-5 sm:gap-7">
-        {/* Big avatar tile with emoji badge — reads as the "subject" of the slide */}
-        {s.avatar && (
-          <div className="relative shrink-0">
-            <Avatar name={s.avatar.name} email={s.avatar.email} size={80} />
-            <span className={`${HERO_BADGE_CLASS} bg-surface border border-border/60`}>{s.emoji}</span>
-          </div>
-        )}
-
-        <div className="min-w-0 flex-1">
-          <div className="text-[10.5px] uppercase tracking-[0.14em] font-bold text-text/70">
-            {s.eyebrow}
-          </div>
-          <div className="text-xl sm:text-2xl font-extrabold text-text leading-tight mt-1">
-            {s.headline}
-          </div>
-          <div className="text-[13.5px] text-text/80 mt-1.5 max-w-2xl leading-snug">
-            {s.body}
+      {compact ? (
+        <div className="relative px-5 py-5 flex flex-col items-center text-center gap-3">
+          {s.avatar && (
+            <div className="relative shrink-0">
+              <Avatar name={s.avatar.name} email={s.avatar.email} size={64} />
+              <span className={`${HERO_BADGE_CLASS} bg-surface border border-border/60`}>{s.emoji}</span>
+            </div>
+          )}
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-text/70">
+              {s.eyebrow}
+            </div>
+            <div className="text-[15px] font-extrabold text-text leading-tight mt-1">
+              {s.headline}
+            </div>
+            <div className="text-[12px] text-text/80 mt-1.5 leading-snug">
+              {s.body}
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="relative px-5 py-6 sm:px-8 sm:py-8 flex items-center gap-5 sm:gap-7">
+          {/* Big avatar tile with emoji badge — reads as the "subject" of the slide */}
+          {s.avatar && (
+            <div className="relative shrink-0">
+              <Avatar name={s.avatar.name} email={s.avatar.email} size={80} />
+              <span className={`${HERO_BADGE_CLASS} bg-surface border border-border/60`}>{s.emoji}</span>
+            </div>
+          )}
+
+          <div className="min-w-0 flex-1">
+            <div className="text-[10.5px] uppercase tracking-[0.14em] font-bold text-text/70">
+              {s.eyebrow}
+            </div>
+            <div className="text-xl sm:text-2xl font-extrabold text-text leading-tight mt-1">
+              {s.headline}
+            </div>
+            <div className="text-[13.5px] text-text/80 mt-1.5 max-w-2xl leading-snug">
+              {s.body}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Nav controls — only render when there's more than one slide. */}
       {slides.length > 1 && (
