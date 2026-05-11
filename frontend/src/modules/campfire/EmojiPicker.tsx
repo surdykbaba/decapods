@@ -14,7 +14,8 @@
 // SmartBody renders them as the looping animated component. Plain emojis
 // round-trip as their literal unicode character.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Search, Clock, Smile, Hand, Heart, PartyPopper, Leaf, Sparkles, X } from "lucide-react";
 
 const LS_RECENT = "pgdp:emoji-recent";
@@ -220,6 +221,42 @@ export function EmojiPopover({
   anchorRef: React.RefObject<HTMLElement | null>;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Render into document.body so the picker isn't constrained by any
+  // ancestor's stacking context, overflow:hidden, or transforms. Plain
+  // `absolute z-50` inside a comment row got pushed behind sibling rows.
+  // Computed in layout effect so the position is correct on first paint.
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
+  const PICKER_W = 320; // matches w-[320px] on the inner card
+  const PICKER_H = 340; // worst-case height of the picker card + grid
+
+  useLayoutEffect(() => {
+    if (!open || !anchorRef.current) return;
+    function place() {
+      const a = anchorRef.current!.getBoundingClientRect();
+      // Default to below the anchor, aligned to its left edge.
+      let top  = a.bottom + 6;
+      let left = a.left;
+      // Flip above when there isn't room below.
+      if (top + PICKER_H > window.innerHeight - 8) {
+        top = Math.max(8, a.top - PICKER_H - 6);
+      }
+      // Keep the right edge inside the viewport.
+      if (left + PICKER_W > window.innerWidth - 8) {
+        left = Math.max(8, window.innerWidth - PICKER_W - 8);
+      }
+      setPos({ top, left });
+    }
+    place();
+    // Re-place on scroll/resize so the popover sticks with its trigger.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, anchorRef]);
+
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
@@ -232,11 +269,16 @@ export function EmojiPopover({
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open, onClose, anchorRef]);
 
-  if (!open) return null;
-  return (
-    <div ref={ref} className="absolute z-50 mt-2">
+  if (!open || !pos) return null;
+  return createPortal(
+    <div
+      ref={ref}
+      className="fixed z-[1000]"
+      style={{ top: pos.top, left: pos.left }}
+    >
       <EmojiPicker onPick={(s) => { onPick(s); onClose(); }} onClose={onClose} />
-    </div>
+    </div>,
+    document.body,
   );
 }
 
