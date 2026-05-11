@@ -5,8 +5,14 @@ import { api } from "@/lib/api";
 import {
   Bell, FileText, ListChecks, Clock,
   ThumbsUp, MessageSquare, Activity, ShieldAlert, CheckCircle2,
-  Check, X, CheckCheck, Trash2,
+  Check, X, CheckCheck, Trash2, Volume2, VolumeX, BellRing, BellOff,
 } from "lucide-react";
+import {
+  useNotificationAlerts,
+  desktopPermission, requestDesktopPermission,
+  getSoundPref, setSoundPref,
+  getDesktopPref, setDesktopPref,
+} from "@/lib/notificationAlerts";
 
 // Live attention item — derived from current state, or pulled from the
 // notification_outbox. Outbox items carry an OutboxID and a Read flag so the
@@ -80,6 +86,29 @@ export function NotificationsBell() {
 
   const items = data?.items ?? [];
   const count = data?.unread ?? items.filter((i) => !i.read).length;
+
+  // Fire chime + OS toast + favicon badge whenever a new attention item lands.
+  // The hook seeds itself silently on mount so a fresh page-load doesn't
+  // re-toast a backlog of existing items.
+  useNotificationAlerts(items, count);
+
+  // Local re-render trigger for the alert-prefs toggles. The values live in
+  // localStorage so they survive reloads.
+  const [, setPrefTick] = useState(0);
+  const bumpPref = () => setPrefTick((n) => n + 1);
+  const soundOn   = getSoundPref();
+  const desktopOn = getDesktopPref();
+  const perm      = desktopPermission();
+
+  async function toggleDesktop() {
+    if (!desktopOn) {
+      if (perm === "default") await requestDesktopPermission();
+      setDesktopPref(true);
+    } else {
+      setDesktopPref(false);
+    }
+    bumpPref();
+  }
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ["notifications"] });
 
@@ -262,8 +291,57 @@ export function NotificationsBell() {
             )}
           </div>
 
-          <footer className="px-4 py-2.5 border-t border-border bg-bg/40 text-[11px] text-muted">
-            Live attention list · refreshes automatically
+          <footer className="border-t border-border bg-bg/40">
+            <div className="flex items-center justify-between px-4 py-2.5 gap-3">
+              {/* Sound toggle — flips localStorage and unlocks the AudioContext
+                  on click (browsers require a user gesture before audio plays). */}
+              <button
+                onClick={() => { setSoundPref(!soundOn); bumpPref(); }}
+                className={`inline-flex items-center gap-1.5 text-[11.5px] font-semibold ${
+                  soundOn ? "text-accent" : "text-muted hover:text-text"
+                }`}
+                title={soundOn ? "Mute notification sound" : "Unmute notification sound"}
+              >
+                {soundOn ? <Volume2 size={12} /> : <VolumeX size={12} />}
+                {soundOn ? "Sound on" : "Sound off"}
+              </button>
+
+              {/* Desktop-notification toggle. Three states reflected:
+                  granted+on → BellRing+on; on but permission missing → prompt;
+                  off → BellOff. */}
+              <button
+                onClick={toggleDesktop}
+                className={`inline-flex items-center gap-1.5 text-[11.5px] font-semibold ${
+                  desktopOn && perm === "granted" ? "text-accent" :
+                  desktopOn ? "text-warn" :
+                  "text-muted hover:text-text"
+                }`}
+                title={
+                  perm === "unsupported"   ? "Desktop alerts unsupported in this browser" :
+                  perm === "denied"        ? "Browser blocked desktop alerts — change in browser settings" :
+                  desktopOn && perm === "granted" ? "Disable desktop alerts" :
+                  desktopOn                ? "Enable browser permission" :
+                  "Enable desktop alerts"
+                }
+                disabled={perm === "unsupported"}
+              >
+                {desktopOn && perm === "granted"
+                  ? <BellRing size={12} />
+                  : <BellOff size={12} />}
+                {perm === "denied"
+                  ? "Desktop blocked"
+                  : perm === "unsupported"
+                    ? "Desktop n/a"
+                    : desktopOn && perm === "granted"
+                      ? "Desktop on"
+                      : desktopOn
+                        ? "Allow desktop…"
+                        : "Desktop off"}
+              </button>
+            </div>
+            <div className="px-4 pb-2.5 text-[11px] text-muted">
+              Live attention list · refreshes automatically
+            </div>
           </footer>
         </div>
       )}
