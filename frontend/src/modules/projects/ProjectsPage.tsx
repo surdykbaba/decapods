@@ -1,12 +1,14 @@
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
+import { toast } from "@/lib/toast";
+import { confirmAction } from "@/lib/confirm";
 import { Empty, Skeleton } from "@/components/ui";
 import {
   Search, X, LayoutGrid, List as ListIcon, ChevronRight, Users, AlertCircle,
   Flag, Wallet, Clock, CheckCircle2,
-  MoreHorizontal, Loader,
+  MoreHorizontal, Loader, Archive, ExternalLink,
 } from "lucide-react";
 
 type Project = {
@@ -516,14 +518,90 @@ function ProjectRow({ project: p }: { project: Project }) {
         </div>
 
         {/* Trailing menu */}
-        <button
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          className="text-muted hover:text-text p-1 -m-1 rounded hover:bg-surface justify-self-end"
-          aria-label="Row actions"
-        >
-          <MoreHorizontal size={16} />
-        </button>
+        <RowMenu projectId={p.id} projectName={p.name} />
       </Link>
     </li>
+  );
+}
+
+/* Per-row action menu. Opens on kebab click, dismisses on outside click + Esc.
+ * Stops propagation so clicks here don't trigger the surrounding <Link>. */
+function RowMenu({ projectId, projectName }: { projectId: string; projectName: string }) {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const archive = useMutation({
+    mutationFn: () => api(`/api/v1/projects/${projectId}/archive`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["settings", "archived-projects"] });
+      toast.success("Project archived", `${projectName} moved to Settings → Archived projects.`);
+      setOpen(false);
+    },
+    onError: (e: any) => toast.error("Could not archive", e?.message),
+  });
+
+  async function askThenArchive(e: React.MouseEvent) {
+    e.preventDefault(); e.stopPropagation();
+    setOpen(false);
+    const ok = await confirmAction({
+      title: `Archive ${projectName}?`,
+      body: "The project moves to Settings → Archived projects and disappears from every list. Member allocations drop. You can restore it later.",
+      confirmLabel: "Archive project",
+      danger: true,
+    });
+    if (ok) archive.mutate();
+  }
+
+  return (
+    <div ref={ref} className="relative justify-self-end" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+      <button
+        onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpen((v) => !v); }}
+        className="text-muted hover:text-text p-1 -m-1 rounded hover:bg-surface"
+        aria-label="Row actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <MoreHorizontal size={16} />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute right-0 top-full mt-1 z-30 w-[200px] bg-surface border border-border rounded-xl shadow-card py-1"
+        >
+          <Link
+            to={`/projects/${projectId}`}
+            onClick={(e) => e.stopPropagation()}
+            className="flex items-center gap-2 px-3 py-2 text-sm text-text hover:bg-bg"
+            role="menuitem"
+          >
+            <ExternalLink size={13} className="text-muted" /> Open project
+          </Link>
+          <button
+            onClick={askThenArchive}
+            disabled={archive.isPending}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-text hover:bg-bg disabled:opacity-50"
+            role="menuitem"
+          >
+            <Archive size={13} className="text-warn" /> Archive project
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
