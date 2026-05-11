@@ -139,11 +139,15 @@ func classifyPresence(manual *string, manualUntil *time.Time, lastSeen *time.Tim
 	if lastSeen == nil {
 		return "offline"
 	}
+	// Windows match derivePresence in me.go so Campfire and the rest of the
+	// app never disagree about who's "around". Generous on purpose — the
+	// heartbeat fires every ~60s, so a 5-minute online window forgives a
+	// quick tab-switch or a one-poll blip.
 	since := time.Since(*lastSeen)
 	switch {
-	case since < 2*time.Minute:
+	case since < 5*time.Minute:
 		return "online"
-	case since < 10*time.Minute:
+	case since < 20*time.Minute:
 		return "away"
 	default:
 		return "offline"

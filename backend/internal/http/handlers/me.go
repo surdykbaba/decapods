@@ -661,11 +661,16 @@ func derivePresence(manual *string, manualUntil *time.Time, lastSeen *time.Time)
 	if lastSeen == nil {
 		return "offline"
 	}
+	// Windows are intentionally generous. The client heartbeat fires every
+	// ~60s while the tab is visible — anything tighter than ~3min would flip
+	// people offline during a quick coffee run or a backgrounded tab. The
+	// previous 90s window caused "Sadiq is offline" right after Sadiq just
+	// sent a message, which felt broken.
 	delta := time.Since(*lastSeen)
 	switch {
-	case delta < 90*time.Second:
-		return "online"
 	case delta < 5*time.Minute:
+		return "online"
+	case delta < 20*time.Minute:
 		return "away"
 	}
 	return "offline"
