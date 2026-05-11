@@ -17,6 +17,7 @@ import { CampfireBell } from "@/components/CampfireBell";
 import { Avatar } from "@/components/Avatar";
 import { StatusBadge } from "@/components/StatusBadge";
 import { CommandPalette } from "@/components/CommandPalette";
+import { MorningHuddle } from "@/components/MorningHuddle";
 
 type NavItem = {
   to: string;
@@ -287,6 +288,7 @@ export function Shell() {
       </main>
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+      <MorningHuddle />
     </div>
   );
 }

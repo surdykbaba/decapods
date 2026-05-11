@@ -65,6 +65,12 @@ func New(d Deps) http.Handler {
 
 	authed.GET("/me", auth.Me)
 
+	// Self-service MFA enrollment + admin enforcement toggle.
+	authed.POST("/me/mfa/begin",    auth.BeginMFAEnrollment)
+	authed.POST("/me/mfa/confirm",  auth.ConfirmMFAEnrollment)
+	authed.POST("/me/mfa/disable",  auth.DisableMFA)
+	authed.PATCH("/members/:id/mfa-required", mw.RequirePermission("governance:write"), auth.AdminSetMFARequired)
+
 	earlyEngine := notifications.NewEngine(d.DB, earlyMailer, d.Cfg)
 
 	opp := handlers.NewOpportunities(d.DB).WithEngine(earlyEngine)
@@ -104,6 +110,10 @@ func New(d Deps) http.Handler {
 
 	sysAudit := handlers.NewSystemAudit(d.DB)
 	authed.GET("/admin/audit", sysAudit.List)
+
+	huddle := handlers.NewHuddle(d.DB)
+	authed.GET("/me/huddle",  huddle.Get)
+	authed.POST("/me/huddle", huddle.Save)
 
 	// Personal portal — every endpoint here is scoped to the logged-in user.
 	me := handlers.NewMe(d.DB).WithEngine(earlyEngine)
