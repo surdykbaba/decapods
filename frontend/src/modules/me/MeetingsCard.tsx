@@ -38,10 +38,6 @@ function fmtTime(iso: string): string {
   if (isNaN(d.getTime())) return "";
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
-function dayKey(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
-}
 function isToday(iso: string): boolean {
   const d = new Date(iso); const t = new Date();
   return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate();
@@ -58,9 +54,13 @@ export function MeetingsCard() {
   });
 
   const enabled = !!status?.connected;
+  // Today only — anything further out belongs on the full calendar view, not
+  // the Today briefing card. Day=1 covers ~24h from now; we additionally
+  // filter client-side to "starts today" so a late-evening fetch doesn't
+  // bleed tomorrow's first meeting into the list.
   const { data: meetings, isLoading } = useQuery<Meetings>({
-    queryKey: ["me", "meetings"],
-    queryFn: () => api("/api/v1/me/meetings?days=7"),
+    queryKey: ["me", "meetings", "today"],
+    queryFn: () => api("/api/v1/me/meetings?days=1"),
     enabled,
     refetchInterval: 5 * 60_000,
   });
@@ -81,17 +81,13 @@ export function MeetingsCard() {
     onError: (e: any) => toast.error("Could not disconnect", e?.message),
   });
 
-  // Group events by day so the list reads chronologically.
-  const grouped = useMemo(() => {
-    const out: { day: string; events: Event[] }[] = [];
-    (meetings?.items ?? []).forEach((ev) => {
-      const k = dayKey(ev.start);
-      const bucket = out.find((b) => b.day === k);
-      if (bucket) bucket.events.push(ev);
-      else out.push({ day: k, events: [ev] });
-    });
-    return out;
-  }, [meetings?.items]);
+  // Today only — filter out anything that doesn't start today (catches the
+  // edge where a 24h window from a late-evening fetch includes early-morning
+  // tomorrow events). No day grouping because there's only one day.
+  const todays = useMemo(
+    () => (meetings?.items ?? []).filter((ev) => isToday(ev.start)),
+    [meetings?.items],
+  );
 
   // Hide the card entirely when the workspace hasn't been wired — nothing
   // for the user to do, no point in noise.
@@ -152,29 +148,21 @@ export function MeetingsCard() {
         <div className="px-5 py-4 text-[13px] text-danger inline-flex items-center gap-2">
           <AlertTriangle size={13} /> {meetings.error}
         </div>
-      ) : grouped.length === 0 ? (
+      ) : todays.length === 0 ? (
         <div className="px-5 py-6 text-[13px] text-muted">
-          Nothing on your calendar in the next 7 days.
+          Nothing on your calendar for today.
         </div>
       ) : (
         <div className="max-h-[420px] overflow-y-auto">
-          {grouped.map((g) => (
-            <div key={g.day}>
-              <div className="px-5 pt-3 pb-1 text-[10.5px] uppercase tracking-wider text-muted font-bold">
-                {g.day}
-              </div>
-              <ul>
-                {g.events.map((ev) => (
-                  <li key={ev.id} className="px-5 py-2.5 border-t border-border first:border-t-0">
-                    <div className="flex items-start gap-3">
-                      <div className="text-[11px] text-muted font-mono whitespace-nowrap pt-0.5 w-[88px]">
-                        {ev.is_all_day
-                          ? "All day"
-                          : `${fmtTime(ev.start)} → ${fmtTime(ev.end)}`}
-                        {isToday(ev.start) && (
-                          <div className="text-accent font-semibold">Today</div>
-                        )}
-                      </div>
+          <ul>
+            {todays.map((ev) => (
+              <li key={ev.id} className="px-5 py-2.5 border-t border-border first:border-t-0">
+                <div className="flex items-start gap-3">
+                  <div className="text-[11px] text-muted font-mono whitespace-nowrap pt-0.5 w-[88px]">
+                    {ev.is_all_day
+                      ? "All day"
+                      : `${fmtTime(ev.start)} → ${fmtTime(ev.end)}`}
+                  </div>
                       <div className="min-w-0 flex-1">
                         <div className="text-sm font-semibold text-text truncate">{ev.subject || "(no subject)"}</div>
                         <div className="text-[11.5px] text-muted flex items-center gap-2 flex-wrap mt-0.5">
@@ -213,13 +201,11 @@ export function MeetingsCard() {
                             <ExternalLink size={12} />
                           </a>
                         )}
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </section>
