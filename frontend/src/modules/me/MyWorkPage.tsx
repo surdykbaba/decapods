@@ -135,19 +135,26 @@ export function MyWorkPage() {
     staleTime: 60_000,
   });
 
-  // Derive each badge — counts only meaningful "needs you" items so the
-  // numbers actually mean something. Empty → no badge rendered.
+  // Badge rule of thumb: only render a number when there's something the
+  // user can act on right now. Workload totals (e.g. "you have 3 tasks")
+  // belong inside the page, not as an "attention" chip.
   const badges = useMemo(() => {
     const c = badgeData?.counts;
+    // Today — count of fires (overdue + blocked). Both demand action today.
     const todayCount = c ? c.overdue_tasks + c.blocked_tasks : 0;
-    // Tasks tab — total open items the user has on their plate.
-    const tasksCount = c ? c.active_tasks : 0;
-    // Updates — pending daily updates not yet submitted.
+    // My tasks — only the *overdue* slice. Active total is workload info,
+    // not a "you owe someone something" signal, so it doesn't earn a chip.
+    const tasksCount = c ? c.overdue_tasks : 0;
+    // Updates — pending daily updates not yet submitted. Whatever number the
+    // API hands us is by definition actionable: each row is "submit me".
     const updatesCount = c ? c.pending_updates : 0;
-    // Timesheet — "1" if hours logged this week is under a 10h soft floor
-    // and they have active tasks. Nudges, doesn't yell.
-    const timesheetCount = c && c.active_tasks > 0 && c.hours_this_week < 10 ? 1 : 0;
-    // Profile — MFA setup pending while admin-required.
+    // Timesheet — no clean "one thing to do" signal exists. Past versions
+    // fired purely on "hours < 10", which lit up every brand-new account.
+    // Drop the badge here entirely and surface low-hours inside the tab if
+    // we want a nudge.
+    const timesheetCount = 0;
+    // Profile — MFA setup pending only when the admin has marked the user
+    // mfa_required.
     const profileCount = profileData?.mfa_required && !profileData?.mfa_enabled ? 1 : 0;
     return {
       dashboard: todayCount,
@@ -160,7 +167,7 @@ export function MyWorkPage() {
 
   const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; badge?: number; badgeTone?: "danger" | "warn" | "accent" }[] = [
     { key: "dashboard", label: "Today",     icon: Zap,            badge: badges.dashboard, badgeTone: "danger" },
-    { key: "tasks",     label: "My tasks",  icon: ListChecks,     badge: badges.tasks,     badgeTone: "accent" },
+    { key: "tasks",     label: "My tasks",  icon: ListChecks,     badge: badges.tasks,     badgeTone: "danger" },
     { key: "updates",   label: "Updates",   icon: MessageSquare,  badge: badges.updates,   badgeTone: "warn"   },
     { key: "timesheet", label: "Timesheet", icon: Clock,          badge: badges.timesheet, badgeTone: "warn"   },
     { key: "profile",   label: "Profile",   icon: Github,         badge: badges.profile,   badgeTone: "danger" },
