@@ -238,6 +238,16 @@ func New(d Deps) http.Handler {
 	authed.POST("/projects/:id/members",                mw.RequirePermission("project:write"), pmembers.Add)
 	authed.DELETE("/projects/:id/members/:memberId",   mw.RequirePermission("project:write"), pmembers.Remove)
 
+	// Project files — first-class working artefacts (change requests,
+	// architecture, scope notes, etc.). Visibility is enforced inside the
+	// handler so we keep a single read permission.
+	pfiles := handlers.NewProjectFiles(d.DB)
+	authed.GET("/projects/:id/files",                       mw.RequirePermission("project:read"),  pfiles.List)
+	authed.POST("/projects/:id/files",                      mw.RequirePermission("project:write"), pfiles.Upload)
+	authed.GET("/projects/:id/files/:fileId/download",      mw.RequirePermission("project:read"),  pfiles.Download)
+	authed.PATCH("/projects/:id/files/:fileId",             mw.RequirePermission("project:write"), pfiles.Update)
+	authed.DELETE("/projects/:id/files/:fileId",            mw.RequirePermission("project:write"), pfiles.Delete)
+
 	wf := handlers.NewWorkforce(d.DB)
 	authed.GET("/workforce/load", mw.RequirePermission("workforce:read"), wf.Load)
 	authed.GET("/workforce/burnout", mw.RequirePermission("workforce:read"), wf.Burnout)
