@@ -209,15 +209,23 @@ export function CampfirePage() {
   ];
 
   return (
-    // Sky backdrop — bleeds outside the Shell's padding so the gradient feels
-    // like the room you're in, not a card on a page. Decorative SVG clouds
-    // float behind the content; pointer-events:none keeps them inert.
-    <div className="relative -mx-8 -mt-0 px-8 pt-6 pb-8 min-h-full overflow-hidden">
+    // Sky backdrop — bleeds past the Shell's content padding on both axes so
+    // it actually feels like a room with weather. Decorative SVG clouds float
+    // in the top third; pointer-events:none keeps them inert.
+    //
+    // z-stacking note: the wrapper is positioned (relative) which creates a
+    // new stacking context. The gradient + clouds sit at z-0 inside it, the
+    // page content rides above at z-10 — that way the gradient is never
+    // hidden by the Shell's bg-surface (which is in a *separate* context).
+    <div className="relative -mx-4 md:-mx-8 -mt-0 px-4 md:px-8 pt-6 pb-8 min-h-full overflow-hidden">
       <div
         aria-hidden
-        className="absolute inset-0 -z-10 bg-gradient-to-b from-sky-100/70 via-sky-50/40 to-bg pointer-events-none dark:from-accent/10 dark:via-accent/5 dark:to-bg"
+        className="absolute inset-0 z-0 pointer-events-none
+                   bg-gradient-to-b from-sky-200 via-sky-100 to-bg
+                   dark:from-accent/30 dark:via-accent/10 dark:to-bg"
       />
       <CloudDeco />
+      <div className="relative z-10">
 
       <header className="flex items-end justify-between flex-wrap gap-4 mb-6">
         <div className="flex items-center gap-3">
@@ -263,31 +271,49 @@ export function CampfirePage() {
         {tab === "rooms"    && <TeamRooms />}
         {tab === "insights" && isAdmin && <Insights />}
       </div>
+      </div>{/* close: relative z-10 content layer */}
     </div>
   );
 }
 
-// CloudDeco — two soft white blobs positioned in the top-right + middle-left.
-// Pure decoration: pointer-events:none so they never intercept clicks.
+// CloudDeco — five drifting cloud SVGs across the top of the page. Each
+// cloud is three overlapping ellipses with a soft shadow filter that gives
+// it real puffiness. Animation is a slow horizontal drift (40-60s loops)
+// so the eye picks up movement without it becoming a distraction.
 function CloudDeco() {
   return (
-    <div aria-hidden className="absolute inset-x-0 top-0 h-[360px] -z-10 pointer-events-none overflow-hidden">
-      <svg viewBox="0 0 200 80" className="absolute -top-2 right-8 w-[280px] opacity-70 dark:opacity-20">
-        <ellipse cx="60"  cy="50" rx="50" ry="20" fill="white" />
-        <ellipse cx="100" cy="42" rx="42" ry="22" fill="white" />
-        <ellipse cx="140" cy="50" rx="40" ry="18" fill="white" />
+    <div aria-hidden className="absolute inset-x-0 top-0 h-[420px] z-0 pointer-events-none overflow-hidden">
+      <svg width="0" height="0" className="absolute">
+        <defs>
+          <filter id="cloud-puff" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="0.6" />
+          </filter>
+        </defs>
       </svg>
-      <svg viewBox="0 0 200 80" className="absolute top-24 -left-8 w-[220px] opacity-60 dark:opacity-15">
-        <ellipse cx="50"  cy="50" rx="45" ry="18" fill="white" />
-        <ellipse cx="90"  cy="44" rx="38" ry="20" fill="white" />
-        <ellipse cx="125" cy="50" rx="35" ry="16" fill="white" />
-      </svg>
-      <svg viewBox="0 0 200 80" className="absolute top-40 right-1/3 w-[180px] opacity-50 dark:opacity-10">
-        <ellipse cx="45" cy="50" rx="40" ry="15" fill="white" />
-        <ellipse cx="85" cy="45" rx="35" ry="18" fill="white" />
-        <ellipse cx="120" cy="50" rx="30" ry="14" fill="white" />
-      </svg>
+      <Cloud className="top-2  right-6   w-[320px] opacity-95 dark:opacity-30" drift="animate-cloud-drift-a" />
+      <Cloud className="top-20 left-4    w-[260px] opacity-90 dark:opacity-25" drift="animate-cloud-drift-b" />
+      <Cloud className="top-36 right-1/3 w-[220px] opacity-85 dark:opacity-20" drift="animate-cloud-drift-c" />
+      <Cloud className="top-52 left-1/4  w-[200px] opacity-80 dark:opacity-20" drift="animate-cloud-drift-a" />
+      <Cloud className="top-8  left-1/2  w-[180px] opacity-75 dark:opacity-15" drift="animate-cloud-drift-b" />
     </div>
+  );
+}
+
+function Cloud({ className, drift }: { className: string; drift: string }) {
+  return (
+    <svg
+      viewBox="0 0 200 80"
+      className={`absolute ${className} ${drift}`}
+      style={{ filter: "drop-shadow(0 4px 12px rgba(15, 23, 42, 0.08))" }}
+    >
+      <g filter="url(#cloud-puff)" fill="white">
+        <ellipse cx="55"  cy="52" rx="50" ry="22" />
+        <ellipse cx="100" cy="40" rx="45" ry="26" />
+        <ellipse cx="145" cy="52" rx="42" ry="20" />
+        <ellipse cx="80"  cy="58" rx="40" ry="18" />
+        <ellipse cx="125" cy="58" rx="38" ry="16" />
+      </g>
+    </svg>
   );
 }
 

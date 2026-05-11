@@ -37,9 +37,27 @@ export default {
           "50%":      { transform: "scale(0.96) rotate(-2deg)", filter: "drop-shadow(0 0 3px rgba(234,88,12,0.6))" },
           "75%":      { transform: "scale(1.04) rotate(1deg)", filter: "drop-shadow(0 0 5px rgba(249,115,22,0.65))" },
         },
+        // Gentle horizontal drift for cloud decoration. Three variants share
+        // the same animation but use different durations + offsets so each
+        // cloud feels independent rather than locked to a parade.
+        "cloud-drift-a": {
+          "0%, 100%": { transform: "translateX(0)" },
+          "50%":      { transform: "translateX(-18px)" },
+        },
+        "cloud-drift-b": {
+          "0%, 100%": { transform: "translateX(0)" },
+          "50%":      { transform: "translateX(24px)" },
+        },
+        "cloud-drift-c": {
+          "0%, 100%": { transform: "translateX(0)" },
+          "50%":      { transform: "translateX(-14px)" },
+        },
       },
       animation: {
         flicker: "flicker 1.6s ease-in-out infinite",
+        "cloud-drift-a": "cloud-drift-a 42s ease-in-out infinite",
+        "cloud-drift-b": "cloud-drift-b 56s ease-in-out infinite",
+        "cloud-drift-c": "cloud-drift-c 48s ease-in-out infinite",
       },
     },
   },
