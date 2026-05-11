@@ -236,8 +236,8 @@ export function CampfirePage() {
           column so long posts don't sprawl across ultrawide monitors; the
           "Most engaging this week" hero moves to a compact right rail and
           stays visible across tab switches as a workspace-pulse anchor. */}
-      <div className="mt-2 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6">
-        <div className="min-w-0 max-w-[1054px] w-full mx-auto lg:mx-0">
+      <div className="mt-2 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_280px] gap-6">
+        <div className="min-w-0 max-w-[1054px] w-full mx-auto md:mx-0">
           <div className="flex items-center gap-1 mb-4 p-1 bg-surface/70 backdrop-blur border border-border rounded-full overflow-x-auto w-fit shadow-soft">
             {tabs.filter((t) => !t.admin || isAdmin).map((t) => {
               const Icon = t.icon;
@@ -270,7 +270,7 @@ export function CampfirePage() {
 
         {/* Right rail — compact HeroBanner. Sticky so it stays in view as the
             feed scrolls; hidden under lg to keep small screens uncluttered. */}
-        <aside className="hidden lg:block">
+        <aside className="hidden md:block">
           <div className="sticky top-4">
             <HeroBanner compact />
           </div>
@@ -643,7 +643,26 @@ function HeroBanner({ compact = false }: { compact?: boolean } = {}) {
     return () => clearInterval(t);
   }, [paused, slides.length]);
 
-  if (slides.length === 0) return null;
+  // In compact (sidebar) mode we never collapse to null — an empty rail looks
+  // like a broken layout. Render a quiet placeholder so the column still has
+  // presence while the spotlight warms up or simply has nothing to celebrate.
+  if (slides.length === 0) {
+    if (!compact) return null;
+    return (
+      <div className="relative overflow-hidden rounded-3xl border border-border bg-surface px-5 py-6 text-center">
+        <div className="text-3xl">✨</div>
+        <div className="text-[11px] uppercase tracking-[0.14em] font-bold text-muted mt-2">
+          Workspace pulse
+        </div>
+        <div className="text-[13px] font-semibold text-text mt-1 leading-snug">
+          Nothing to spotlight yet
+        </div>
+        <div className="text-[12px] text-muted mt-1 leading-snug">
+          Kudos, posts and reactions show up here once the team starts firing.
+        </div>
+      </div>
+    );
+  }
   const s = slides[Math.min(idx, slides.length - 1)];
 
   // Compact mode: vertical stack tuned for a 320px sidebar slot. The full
