@@ -276,9 +276,14 @@ export function Shell() {
             <NotificationsBell />
           </header>
 
-          {/* Content — narrower side-padding on mobile so cards breathe. */}
+          {/* Content — narrower side-padding on mobile so cards breathe.
+              Hard cap content width at 1200px and anchor LEFT (no mx-auto)
+              across the whole app, so wide screens don't stretch tables and
+              grids into uncomfortable line lengths. */}
           <div className="flex-1 min-h-0 overflow-auto px-4 pb-6 md:px-8 md:pb-8">
-            <Outlet />
+            <div className="w-full max-w-[1200px]">
+              <Outlet />
+            </div>
           </div>
         </div>
       </main>

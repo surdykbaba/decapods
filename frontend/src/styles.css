@@ -96,6 +96,32 @@ body {
   .h2 { @apply text-[1.15rem] font-bold tracking-tight; }
 }
 
+/* ───────────────────────────────────────────────────────────────────────
+ * Mobile responsiveness — narrow-screen defaults that ride across every
+ * page so individual components don't have to repeat the same media query.
+ * ─────────────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  /* iOS Safari auto-zooms when an input has font-size < 16px and gets
+     focused. Force a 16px-ish font on inputs/textareas at small widths so
+     forms stay readable and the page doesn't yank around on tap. */
+  input, textarea, select {
+    font-size: 16px;
+  }
+
+  /* Cap any fixed/absolute dialog or popover so it can't overflow the
+     viewport on phones. The grid place-items-center wrapper already
+     centres them; this just stops a max-w-2xl modal from blowing past
+     a 375px screen. */
+  [role="dialog"] > div,
+  .fixed > div[class*="max-w-"] {
+    max-width: calc(100vw - 1.5rem);
+  }
+
+  /* Any direct <table> below md gets horizontal scroll — most pages
+     already wrap with overflow-x-auto, this catches the stragglers. */
+  table { display: block; overflow-x: auto; max-width: 100%; }
+}
+
 @keyframes slide-in {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
