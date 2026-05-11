@@ -237,7 +237,7 @@ export function CampfirePage() {
           "Most engaging this week" hero moves to a compact right rail and
           stays visible across tab switches as a workspace-pulse anchor. */}
       <div className="mt-2 grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-6">
-        <div className="min-w-0 max-w-3xl w-full mx-auto lg:mx-0">
+        <div className="min-w-0 max-w-[1054px] w-full mx-auto lg:mx-0">
           <div className="flex items-center gap-1 mb-4 p-1 bg-surface/70 backdrop-blur border border-border rounded-full overflow-x-auto w-fit shadow-soft">
             {tabs.filter((t) => !t.admin || isAdmin).map((t) => {
               const Icon = t.icon;
