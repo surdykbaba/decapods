@@ -12,6 +12,7 @@ import { useAuth, type Me } from "@/lib/auth";
 import { toast } from "@/lib/toast";
 import { Avatar } from "@/components/Avatar";
 import { SmartButton } from "@/components/SmartButton";
+import { AvatarUploader } from "@/components/AvatarUploader";
 import { ExternalEmailBadge } from "@/components/ExternalEmailBadge";
 import { MfaCard } from "@/modules/me/MyWorkPage";
 
@@ -464,6 +465,7 @@ type SelfProfile = {
   id: string;
   email: string;
   name: string;
+  avatar_url?: string | null;
   github_username?: string;
   mfa_enabled?: boolean;
   mfa_required?: boolean;
@@ -575,6 +577,20 @@ function SelfAccountPanel() {
           <p className="text-xs text-muted mb-4">
             Email is set by your workspace admin — reach out if it's wrong.
           </p>
+          {/* Photo first — the hero avatar updates the moment this saves
+              because AvatarUploader pushes the fresh user into the auth
+              store. Invalidate the member-profile cache too so the hero
+              <Avatar src={data.avatar_url} /> repaints without a reload. */}
+          <div className="mb-5 pb-5 border-b border-border">
+            <AvatarUploader
+              name={data.name}
+              email={data.email}
+              src={data.avatar_url}
+              onSaved={() => {
+                qc.invalidateQueries({ queryKey: ["member-profile"] });
+              }}
+            />
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <label className="block">
               <div className="label">Display name</div>
