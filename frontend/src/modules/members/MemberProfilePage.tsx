@@ -1,14 +1,19 @@
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Mail, Shield, ShieldCheck, ShieldOff, Clock, Plane,
   AlertCircle, CheckCircle2, Briefcase, FolderKanban, ListChecks,
   Activity as ActivityIcon, Flame,
-  TrendingUp, Coffee, Circle,
+  TrendingUp, Coffee, Circle, Github, PauseCircle, AlertTriangle, Settings,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuth, type Me } from "@/lib/auth";
+import { toast } from "@/lib/toast";
 import { Avatar } from "@/components/Avatar";
+import { SmartButton } from "@/components/SmartButton";
 import { ExternalEmailBadge } from "@/components/ExternalEmailBadge";
+import { MfaCard } from "@/modules/me/MyWorkPage";
 
 type Balance  = { name: string; paid: boolean; accrued: number; carryover: number; used: number; remaining: number };
 type LeaveReq = { id: string; type_name: string; start_date: string; end_date: string; days: number; status: string; reason: string };
@@ -92,11 +97,16 @@ const LEAVE_STATUS_TONE: Record<string, string> = {
 
 export function MemberProfilePage() {
   const { id } = useParams();
+  const me = useAuth((s) => s.user);
   const { data, isLoading, error } = useQuery<Profile>({
     queryKey: ["member-profile", id],
     queryFn: () => api(`/api/v1/members/${id}/profile`),
     enabled: !!id,
   });
+  // Self-view = me viewing my own profile. Switches on the account-settings
+  // section (Edit details + MFA) so others looking at someone's public
+  // profile never see the editable form or 2FA enrollment UI.
+  const isSelf = !!me && !!data && me.id === data.id;
 
   if (isLoading) {
     return <div className="p-10 text-center text-muted">Loading profile…</div>;
@@ -212,6 +222,11 @@ export function MemberProfilePage() {
         <Stat icon={<AlertCircle size={14} className="text-danger" />} label="Overdue" value={w.overdue_tasks} sub={`${w.due_soon_tasks} due this week`} />
         <Stat icon={<Plane size={14} className="text-accent" />} label="Days off YTD" value={data.leave.days_off_ytd} sub={`${data.leave.recent_requests.length} recent requests`} />
       </section>
+
+      {/* Self-only: personal scoreboard + account settings + MFA. Moved off
+          the My Work profile tab so account management lives here next to
+          the public-facing view of the same person. */}
+      {isSelf && <SelfAccountPanel />}
 
       {/* ============= 2-COLUMN BODY ============= */}
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-5">
@@ -441,4 +456,205 @@ function Legend({ dot, label, value }: { dot: string; label: string; value: numb
 
 function humanAction(action: string): string {
   return action.replace(/[._]/g, " ");
+}
+
+/* ---------- Self-only account panel ---------- */
+
+type SelfProfile = {
+  id: string;
+  email: string;
+  name: string;
+  github_username?: string;
+  mfa_enabled?: boolean;
+  mfa_required?: boolean;
+  performance: {
+    tasks_done: number;
+    tasks_overdue: number;
+    blocked_now: number;
+    hours_last_30: number;
+  };
+};
+
+// Renders the personal scoreboard, edit-details form, and 2FA card. Only
+// mounted when the page is being viewed by its owner — anchored to /me/profile
+// so the editable fields and MFA state map to the signed-in user.
+function SelfAccountPanel() {
+  const qc = useQueryClient();
+  const setUser = useAuth((s) => s.setUser);
+  const currentUser = useAuth((s) => s.user);
+
+  const { data, isLoading } = useQuery<SelfProfile>({
+    queryKey: ["me", "profile"],
+    queryFn: () => api("/api/v1/me/profile"),
+  });
+
+  const [name, setName] = useState("");
+  const [github, setGithub] = useState("");
+
+  useEffect(() => {
+    if (data) {
+      setName(data.name ?? "");
+      setGithub(data.github_username ?? "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data?.email]);
+
+  const dirty = !!data && (
+    (data.name ?? "") !== name ||
+    (data.github_username ?? "") !== github
+  );
+
+  const save = useMutation({
+    mutationFn: () => api<Partial<Me>>("/api/v1/me/profile", {
+      method: "PUT",
+      body: JSON.stringify({ name: name.trim(), github_username: github.trim() }),
+    }),
+    onSuccess: (resp) => {
+      if (resp && currentUser) setUser({ ...currentUser, ...resp } as Me);
+      toast.success("Profile updated", "Your changes have been saved.");
+      qc.invalidateQueries({ queryKey: ["me", "profile"] });
+      qc.invalidateQueries({ queryKey: ["members"] });
+      qc.invalidateQueries({ queryKey: ["member-profile"] });
+    },
+    onError: (e: unknown) => {
+      const msg = (e as { message?: string })?.message ?? "Could not save your profile.";
+      toast.error("Save failed", msg);
+    },
+  });
+
+  if (isLoading || !data) return null;
+  const p = data.performance;
+  const avgHoursPerWeek = p.hours_last_30 / (30 / 7);
+
+  return (
+    <div className="space-y-5">
+      {/* Personal scoreboard — the four tiles that used to sit on the My
+          Work profile tab. Kept self-only so others browsing the directory
+          don't see another teammate's blocked / overdue counts. */}
+      <div className="bg-surface border border-border rounded-2xl p-5">
+        <h2 className="text-sm font-bold text-text flex items-center gap-2 mb-3">
+          <ActivityIcon size={14} className="text-accent" /> Your scoreboard
+        </h2>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <InsightTile
+            icon={<CheckCircle2 size={14} />}
+            label="Tasks completed"
+            value={p.tasks_done.toString()}
+            sub="Lifetime — every one shipped."
+            tone="good"
+          />
+          <InsightTile
+            icon={<AlertTriangle size={14} />}
+            label="Overdue right now"
+            value={p.tasks_overdue.toString()}
+            sub={p.tasks_overdue === 0 ? "Clear runway." : "Knock these out first."}
+            tone={p.tasks_overdue === 0 ? "good" : "bad"}
+          />
+          <InsightTile
+            icon={<PauseCircle size={14} />}
+            label="Blocked"
+            value={p.blocked_now.toString()}
+            sub={p.blocked_now === 0 ? "Nothing waiting on others." : "Unblock or escalate."}
+            tone={p.blocked_now === 0 ? "good" : "warn"}
+          />
+          <InsightTile
+            icon={<Clock size={14} />}
+            label="Avg hours / week"
+            value={`${avgHoursPerWeek.toFixed(1)}h`}
+            sub={`${p.hours_last_30.toFixed(1)}h logged over 30 days.`}
+            tone="info"
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <section className="bg-surface border border-border rounded-2xl p-5 lg:col-span-3">
+          <h2 className="text-base font-bold text-text mb-1 flex items-center gap-2">
+            <Settings size={14} className="text-accent" /> Edit details
+          </h2>
+          <p className="text-xs text-muted mb-4">
+            Email is set by your workspace admin — reach out if it's wrong.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="block">
+              <div className="label">Display name</div>
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <label className="block">
+              <div className="label">Email</div>
+              <input className="input bg-bg no-cap" value={data.email} readOnly />
+            </label>
+            <label className="block md:col-span-2">
+              <div className="label">GitHub username</div>
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-bg border border-border rounded-l-xl text-sm text-muted">
+                  <Github size={14} /> github.com/
+                </span>
+                <input
+                  className="input rounded-l-none no-cap"
+                  value={github}
+                  onChange={(e) => setGithub(e.target.value)}
+                  placeholder="your-handle"
+                />
+              </div>
+              <div className="text-xs text-muted mt-1">
+                Linking your GitHub lets the system attribute commits, PRs and reviews to you.
+              </div>
+            </label>
+          </div>
+          <div className="mt-5 flex items-center justify-end gap-3">
+            {!dirty && !save.isPending && (
+              <span className="text-xs text-muted">No changes yet</span>
+            )}
+            <SmartButton
+              variant="primary"
+              disabled={!dirty}
+              onClick={() => save.mutateAsync()}
+              loadingLabel="Saving…"
+              successLabel="Saved"
+            >
+              Save changes
+            </SmartButton>
+          </div>
+        </section>
+
+        <div className="lg:col-span-2">
+          <MfaCard
+            enabled={!!data.mfa_enabled}
+            required={!!data.mfa_required}
+            onChanged={() => qc.invalidateQueries({ queryKey: ["me", "profile"] })}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InsightTile({
+  icon, label, value, sub, tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub: string;
+  tone: "good" | "warn" | "bad" | "info";
+}) {
+  const bubble = {
+    good: "bg-success/10 text-success",
+    warn: "bg-warn/10 text-warn",
+    bad:  "bg-danger/10 text-danger",
+    info: "bg-accent-soft text-accent",
+  }[tone];
+  return (
+    <div className="bg-surface border border-border rounded-2xl p-4 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${bubble}`}>
+          {icon}
+        </span>
+        <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted">{label}</span>
+      </div>
+      <div className="text-[1.5rem] font-extrabold text-text leading-none">{value}</div>
+      <div className="text-[11.5px] text-muted leading-snug">{sub}</div>
+    </div>
+  );
 }

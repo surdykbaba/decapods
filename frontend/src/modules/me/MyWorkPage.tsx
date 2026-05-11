@@ -6,7 +6,7 @@ import { toast } from "@/lib/toast";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { useAuth, type Me } from "@/lib/auth";
+import { useAuth } from "@/lib/auth";
 import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
@@ -1603,14 +1603,11 @@ function TimesheetTab() {
 
 function ProfileTab() {
   const qc = useQueryClient();
-  const setUser = useAuth((s) => s.setUser);
   const currentUser = useAuth((s) => s.user);
   const canEditRoles = !!currentUser?.roles?.some((r) => r === "super_admin" || r === "admin");
   const { data, isLoading } = useQuery<Profile>({
     queryKey: ["me", "profile"], queryFn: () => api("/api/v1/me/profile"),
   });
-  const [name, setName] = useState("");
-  const [github, setGithub] = useState("");
   const [editingRoles, setEditingRoles] = useState(false);
   const [roleDraft, setRoleDraft] = useState<string[]>([]);
   const { data: rolesCatalog } = useQuery<{ items: { id: string; name: string; description: string }[] }>({
@@ -1636,50 +1633,11 @@ function ProfileTab() {
     },
   });
 
-  // Hydrate locally when data arrives — useEffect, not useMemo (the previous version
-  // was also re-resetting the inputs on every refetch, clobbering pending edits).
-  useEffect(() => {
-    if (data) {
-      setName(data.name ?? "");
-      setGithub(data.github_username ?? "");
-    }
-    // Only on initial load — refetches shouldn't blow away the user's typing.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.email]);
-
-  const dirty = !!data && (
-    (data.name ?? "") !== name ||
-    (data.github_username ?? "") !== github
-  );
-
-  const save = useMutation({
-    mutationFn: () => api<Partial<Me>>("/api/v1/me/profile", {
-      method: "PUT",
-      body: JSON.stringify({ name: name.trim(), github_username: github.trim() }),
-    }),
-    onSuccess: (resp) => {
-      // Push the response back into the auth store so the sidebar identity,
-      // CampfireBell author labels, and member-directory rows pick up the
-      // change without a hard refresh.
-      if (resp && currentUser) {
-        setUser({ ...currentUser, ...resp } as Me);
-      }
-      toast.success("Profile updated", "Your changes have been saved.");
-      qc.invalidateQueries({ queryKey: ["me", "profile"] });
-      qc.invalidateQueries({ queryKey: ["members"] });
-    },
-    onError: (e: unknown) => {
-      const msg = (e as { message?: string })?.message ?? "Could not save your profile.";
-      toast.error("Save failed", msg);
-    },
-  });
-
   if (isLoading || !data) return <div className="text-muted">Loading…</div>;
   const p = data.performance;
 
-  // Derived insights — we don't fetch new endpoints, we squeeze meaning out of
-  // the fields the profile already returns. Self-management framing only.
-  const avgHoursPerWeek = (p.hours_last_30 / (30 / 7));
+  // The edit form + MFA + insight tiles moved to the public profile page,
+  // so we only need the cadence meter's derived value here now.
   const updateStreakPct = Math.min(100, Math.round((p.updates_last_7 / 7) * 100));
   const workloadHealth: { tone: "good" | "warn" | "bad"; label: string } =
     p.tasks_overdue === 0 && p.blocked_now === 0
@@ -1799,37 +1757,10 @@ function ProfileTab() {
         </div>
       </section>
 
-      {/* ============ Insight tiles ============ */}
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <InsightTile
-          icon={<CheckCircle2 size={14} />}
-          label="Tasks completed"
-          value={p.tasks_done.toString()}
-          sub="Lifetime — every one shipped."
-          tone="good"
-        />
-        <InsightTile
-          icon={<AlertTriangle size={14} />}
-          label="Overdue right now"
-          value={p.tasks_overdue.toString()}
-          sub={p.tasks_overdue === 0 ? "Clear runway." : "Knock these out first."}
-          tone={p.tasks_overdue === 0 ? "good" : "bad"}
-        />
-        <InsightTile
-          icon={<PauseCircle size={14} />}
-          label="Blocked"
-          value={p.blocked_now.toString()}
-          sub={p.blocked_now === 0 ? "Nothing waiting on others." : "Unblock or escalate."}
-          tone={p.blocked_now === 0 ? "good" : "warn"}
-        />
-        <InsightTile
-          icon={<Clock size={14} />}
-          label="Avg hours / week"
-          value={`${avgHoursPerWeek.toFixed(1)}h`}
-          sub={`${p.hours_last_30.toFixed(1)}h logged over 30 days.`}
-          tone="info"
-        />
-      </section>
+      {/* Stats strip and Edit details + MFA moved to the public profile page
+          (/members/:id) where the workload metrics already live. The CTA in
+          the hero ("View public profile →") deep-links there for editing
+          identity and managing two-factor auth. */}
 
       {/* ============ Update cadence — full-width meter ============ */}
       <section className="bg-surface border border-border rounded-2xl p-5">
@@ -1855,98 +1786,7 @@ function ProfileTab() {
         </div>
       </section>
 
-      {/* ============ Two-column: edit details + MFA ============ */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        <section className="bg-surface border border-border rounded-2xl p-5 lg:col-span-3">
-          <h2 className="h2 mb-1">Edit details</h2>
-          <p className="text-xs text-muted mb-4">
-            Email is set by your workspace admin — reach out if it's wrong.
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <label className="block">
-              <div className="label">Display name</div>
-              <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
-            </label>
-            <label className="block">
-              <div className="label">Email</div>
-              <input className="input bg-bg" value={data.email} readOnly />
-            </label>
-            <label className="block md:col-span-2">
-              <div className="label">GitHub username</div>
-              <div className="flex items-center gap-2">
-                <span className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-bg border border-border rounded-l-xl text-sm text-muted">
-                  <Github size={14} /> github.com/
-                </span>
-                <input
-                  className="input rounded-l-none"
-                  value={github}
-                  onChange={(e) => setGithub(e.target.value)}
-                  placeholder="your-handle"
-                />
-              </div>
-              <div className="text-xs text-muted mt-1">
-                Linking your GitHub lets the system attribute commits, PRs, and reviews to you.
-              </div>
-            </label>
-          </div>
-          <div className="mt-5 flex items-center justify-end gap-3">
-            {!dirty && !save.isPending && (
-              <span className="text-xs text-muted">No changes yet</span>
-            )}
-            <SmartButton
-              variant="primary"
-              disabled={!dirty}
-              onClick={() => save.mutateAsync()}
-              loadingLabel="Saving…"
-              successLabel="Saved"
-            >
-              Save changes
-            </SmartButton>
-          </div>
-        </section>
-
-        <div className="lg:col-span-2">
-          <MfaCard
-            enabled={!!data.mfa_enabled}
-            required={!!data.mfa_required}
-            onChanged={() => qc.invalidateQueries({ queryKey: ["me", "profile"] })}
-          />
-        </div>
-      </div>
-
       <NotificationPrefsCard />
-    </div>
-  );
-}
-
-/* Stat tile for the Profile insights row. Tone is purely cosmetic — the icon
- * bubble picks up the colour and the rest stays neutral so a screen full of
- * tiles doesn't read like a traffic light. */
-function InsightTile({
-  icon, label, value, sub, tone,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  sub: string;
-  tone: "good" | "warn" | "bad" | "info";
-}) {
-  const bubble = {
-    good: "bg-success/10 text-success",
-    warn: "bg-warn/10 text-warn",
-    bad:  "bg-danger/10 text-danger",
-    info: "bg-accent-soft text-accent",
-  }[tone];
-  return (
-    <div className="bg-surface border border-border rounded-2xl p-4 flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${bubble}`}>
-          {icon}
-        </span>
-        <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted">{label}</span>
-      </div>
-      <div className="text-[1.5rem] font-extrabold text-text leading-none">{value}</div>
-      <div className="text-[11.5px] text-muted leading-snug">{sub}</div>
     </div>
   );
 }
@@ -1989,7 +1829,7 @@ const CATEGORY_LABEL: Record<string, string> = {
  * silently dropping MFA. When the admin has marked the user mfa_required,
  * the Disable button is grayed out with a note explaining why.
  */
-function MfaCard({ enabled, required, onChanged }: { enabled: boolean; required: boolean; onChanged: () => void }) {
+export function MfaCard({ enabled, required, onChanged }: { enabled: boolean; required: boolean; onChanged: () => void }) {
   const [setupOpen, setSetupOpen] = useState(false);
   const [disableOpen, setDisableOpen] = useState(false);
 
