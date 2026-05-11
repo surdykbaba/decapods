@@ -1657,14 +1657,14 @@ function ProfileTab() {
   // the fields the profile already returns. Self-management framing only.
   const avgHoursPerWeek = (p.hours_last_30 / (30 / 7));
   const updateStreakPct = Math.min(100, Math.round((p.updates_last_7 / 7) * 100));
-  const workloadHealth: { tone: "good" | "warn" | "bad"; label: string; hint: string } =
+  const workloadHealth: { tone: "good" | "warn" | "bad"; label: string } =
     p.tasks_overdue === 0 && p.blocked_now === 0
-      ? { tone: "good", label: "On top of things", hint: "Nothing overdue, nothing blocked." }
+      ? { tone: "good", label: "On top of things" }
       : p.tasks_overdue > 2 || p.blocked_now > 1
-        ? { tone: "bad", label: "Needs attention", hint: `${p.tasks_overdue} overdue · ${p.blocked_now} blocked.` }
-        : { tone: "warn", label: "A few loose ends", hint: `${p.tasks_overdue} overdue · ${p.blocked_now} blocked.` };
+        ? { tone: "bad", label: "Needs attention" }
+        : { tone: "warn", label: "A few loose ends" };
   return (
-    <div className="max-w-5xl mx-auto space-y-4">
+    <div className="max-w-5xl space-y-4">
       {/* ============ Identity hero ============ */}
       <section
         className="relative overflow-hidden rounded-2xl p-5 sm:p-6 text-white"
@@ -1713,7 +1713,6 @@ function ProfileTab() {
                 </a>
               )}
             </div>
-            <div className="text-xs text-white/80 mt-2">{workloadHealth.hint}</div>
           </div>
           <Link
             to={`/members/${data.id}`}
