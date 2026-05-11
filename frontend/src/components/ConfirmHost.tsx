@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { AlertTriangle, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { AlertTriangle, X, ShieldAlert } from "lucide-react";
 import { SmartButton } from "@/components/SmartButton";
 import { usePendingConfirm, resolveConfirm } from "@/lib/confirm";
 
@@ -7,6 +7,10 @@ import { usePendingConfirm, resolveConfirm } from "@/lib/confirm";
  *  pending. Outside-click and Escape both resolve `false`. */
 export function ConfirmHost() {
   const p = usePendingConfirm();
+  // Type-to-confirm input. Reset whenever the active dialog id changes so a
+  // second confirm doesn't inherit the previous typed value.
+  const [confirmText, setConfirmText] = useState("");
+  useEffect(() => { setConfirmText(""); }, [p?.id]);
 
   // Esc-to-cancel — only when a dialog is open.
   useEffect(() => {
@@ -20,6 +24,10 @@ export function ConfirmHost() {
 
   if (!p) return null;
   const danger = !!p.danger;
+  // The confirm button is gated by the type-to-confirm input when one is
+  // configured. Case-sensitive on purpose — names with capitalisation that
+  // matter (initials, brand names) should round-trip exactly.
+  const guardMet = !p.requireText || confirmText.trim() === p.requireText;
 
   return (
     <div
@@ -54,16 +62,66 @@ export function ConfirmHost() {
             <X size={16} />
           </button>
         </header>
-        <footer className="flex items-center justify-end gap-2 p-4 border-t border-border bg-bg">
+
+        {/* Body — bullets, warning banner and type-to-confirm input. All
+            optional; renders nothing extra for a plain yes/no confirm. */}
+        {(p.bullets?.length || p.warning || p.requireText) && (
+          <div className="px-5 py-4 space-y-3 border-b border-border">
+            {p.bullets && p.bullets.length > 0 && (
+              <ul className="text-[12.5px] text-text space-y-1.5">
+                {p.bullets.map((b, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${
+                      danger ? "bg-danger" : "bg-accent"
+                    }`} />
+                    <span className="leading-snug">{b}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {p.warning && (
+              <div className={`flex items-start gap-2 px-3 py-2 rounded-lg border text-[12px] ${
+                danger
+                  ? "bg-danger/10 border-danger/30 text-danger"
+                  : "bg-warn/10 border-warn/30 text-warn"
+              }`}>
+                <ShieldAlert size={13} className="shrink-0 mt-0.5" />
+                <span className="leading-snug">{p.warning}</span>
+              </div>
+            )}
+            {p.requireText && (
+              <div>
+                <label className="block">
+                  <div className="text-[11px] text-muted font-medium mb-1">
+                    Type <code className="bg-bg border border-border rounded px-1.5 py-0.5 text-[11px] font-mono text-text">{p.requireText}</code> to confirm
+                  </div>
+                  <input
+                    autoFocus
+                    value={confirmText}
+                    onChange={(e) => setConfirmText(e.target.value)}
+                    className="input font-mono text-[13px]"
+                    placeholder={p.requireText}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && guardMet) resolveConfirm(true);
+                    }}
+                  />
+                </label>
+              </div>
+            )}
+          </div>
+        )}
+
+        <footer className="flex items-center justify-end gap-2 p-4 bg-bg">
           <button
             onClick={() => resolveConfirm(false)}
             className="btn-ghost"
-            autoFocus
+            autoFocus={!p.requireText}
           >
             {p.cancelLabel ?? "Cancel"}
           </button>
           <SmartButton
             variant={danger ? "danger" : "primary"}
+            disabled={!guardMet}
             onClick={() => resolveConfirm(true)}
           >
             {p.confirmLabel ?? "Confirm"}

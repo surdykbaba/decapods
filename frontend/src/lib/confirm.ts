@@ -17,6 +17,17 @@ export interface ConfirmOptions {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+  /** Optional list of consequences — rendered as a tight bullet list under
+   *  the body. Use this for destructive actions so the user sees exactly
+   *  what's about to happen instead of a vague "this can't be undone". */
+  bullets?: string[];
+  /** When set, the confirm button stays disabled until the user types this
+   *  exact phrase into a guarded input. Use for genuinely destructive
+   *  actions — type-to-confirm forces a deliberate pause. Case-sensitive. */
+  requireText?: string;
+  /** Inline warning shown above the action buttons. Useful for context the
+   *  user *must* see before confirming, e.g. "This account is a super_admin". */
+  warning?: string;
 }
 
 interface PendingConfirm extends ConfirmOptions {

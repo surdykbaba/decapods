@@ -256,11 +256,30 @@ export function MembersPage() {
           rows={filtered}
           onEdit={setEditing}
           onRemove={async (id, name) => {
+            // Pull the full member row so the confirm dialog can warn about
+            // the member's role + status + MFA state. This is local data —
+            // no extra round trip.
+            const m = items.find((x) => x.id === id);
+            const isAdminClass = !!m?.roles?.some((r) =>
+              ["super_admin", "ceo", "coo", "hr", "hr_manager", "finance"].includes(r),
+            );
             const ok = await confirmAction({
               title: `Remove ${name}?`,
-              body: "This soft-deletes their account. They won't be able to sign in. You can re-invite them later, but their session ends now.",
-              confirmLabel: "Remove member",
+              body: "Removing a member is a destructive action. Please read the impact below carefully before continuing.",
+              confirmLabel: "Remove member permanently",
               danger: true,
+              warning: isAdminClass
+                ? `${name} holds an admin-class role (${(m?.roles || []).join(", ")}). Removing them may leave parts of the workspace without an owner — make sure someone else has the same access first.`
+                : undefined,
+              bullets: [
+                "Their session ends immediately — they're signed out everywhere.",
+                "They can no longer log in until you re-invite them.",
+                "Tasks, projects, and audit trails they touched are preserved (their name still appears as the actor).",
+                "Open task assignments stay on the project — reassign them before removal if you want them picked up.",
+                "Their leave balance and approval history stay intact in case they return.",
+                "This is a soft delete — a super-admin can restore the account from the database. It is NOT a hard delete.",
+              ],
+              requireText: name,
             });
             if (ok) remove.mutate(id);
           }}

@@ -165,24 +165,19 @@ export function Shell() {
           ))}
 
           {user?.roles?.includes("super_admin") && (
-            <>
-              <div className="mt-4 mb-1 px-3.5 text-[10px] uppercase tracking-[0.08em] font-bold text-muted/70">
-                Super admin
-              </div>
-              <NavLink
-                to="/admin/audit"
-                className={({ isActive }) =>
-                  `flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-semibold transition-colors ${
-                    isActive
-                      ? "bg-accent text-white shadow-soft"
-                      : "text-muted hover:text-text hover:bg-surface"
-                  }`
-                }
-              >
-                <ShieldCheck size={18} />
-                <span className="flex-1">System audit</span>
-              </NavLink>
-            </>
+            <NavLink
+              to="/admin/audit"
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-semibold transition-colors ${
+                  isActive
+                    ? "bg-accent text-white shadow-soft"
+                    : "text-muted hover:text-text hover:bg-surface"
+                }`
+              }
+            >
+              <ShieldCheck size={18} />
+              <span className="flex-1">System audit</span>
+            </NavLink>
           )}
         </nav>
 
