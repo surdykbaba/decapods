@@ -112,19 +112,25 @@ export function MyWorkPage() {
   useEffect(() => {
     const ms = params.get("ms");
     if (!ms) return;
+    const detail = params.get("detail");
+    // Also surface to the console so a stuck toast / blocked notification
+    // doesn't hide the actual failure reason.
+    console.log("[microsoft-oauth]", { ms, detail });
     if (ms === "connected") {
       toast.success("Microsoft connected", "Your calendar will appear in a moment.");
       qc.invalidateQueries({ queryKey: ["me", "ms-status"] });
       qc.invalidateQueries({ queryKey: ["me", "meetings"] });
+      // Strip on success only — keeps the URL clean once the user has seen
+      // the success state. On failure we leave the params so the admin can
+      // copy the URL bar and reproduce / share the exact error.
+      const next = new URLSearchParams(params);
+      next.delete("ms"); next.delete("detail");
+      setParams(next, { replace: true });
     } else if (ms === "not_configured") {
       toast.error("Microsoft not configured", "Ask an admin to set the Azure AD credentials in Settings → Integrations.");
     } else {
-      const detail = params.get("detail");
       toast.error("Microsoft connection failed", detail ? `${ms} · ${detail}` : "Try again, or check the admin's Azure AD setup.");
     }
-    const next = new URLSearchParams(params);
-    next.delete("ms"); next.delete("detail");
-    setParams(next, { replace: true });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
