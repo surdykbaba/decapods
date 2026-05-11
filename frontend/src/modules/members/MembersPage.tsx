@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { type Presence, presenceLabel, PRESENCE_COLORS } from "@/lib/presence";
 import { confirmAction } from "@/lib/confirm";
+import { ExternalEmailBadge } from "@/components/ExternalEmailBadge";
 
 type MemberStatus = "active" | "invited" | "disabled";
 
@@ -390,12 +391,15 @@ function MemberTable({
                         />
                       </span>
                       <div className="min-w-0">
-                        <Link
-                          to={`/members/${m.id}`}
-                          className="font-bold text-text truncate hover:text-accent transition-colors block"
-                        >
-                          {m.name || "—"}
-                        </Link>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Link
+                            to={`/members/${m.id}`}
+                            className="font-bold text-text truncate hover:text-accent transition-colors"
+                          >
+                            {m.name || "—"}
+                          </Link>
+                          <ExternalEmailBadge email={m.email} size="xs" />
+                        </div>
                         <a href={`mailto:${m.email}`} className="text-[11.5px] text-muted hover:text-accent truncate inline-flex items-center gap-1">
                           <Mail size={10} /> {m.email}
                         </a>
@@ -953,7 +957,10 @@ function InvitationRow({
         {(inv.name || inv.email).charAt(0).toUpperCase()}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold text-text truncate">{inv.name || inv.email}</div>
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-sm font-semibold text-text truncate">{inv.name || inv.email}</span>
+          <ExternalEmailBadge email={inv.email} size="xs" />
+        </div>
         <div className="text-xs text-muted truncate">{inv.email}</div>
       </div>
       <div className="hidden md:flex flex-col items-end text-[11px] text-muted leading-tight">

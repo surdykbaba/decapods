@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Avatar } from "@/components/Avatar";
+import { ExternalEmailBadge } from "@/components/ExternalEmailBadge";
 
 type Balance  = { name: string; paid: boolean; accrued: number; carryover: number; used: number; remaining: number };
 type LeaveReq = { id: string; type_name: string; start_date: string; end_date: string; days: number; status: string; reason: string };
@@ -161,6 +162,7 @@ export function MemberProfilePage() {
               {data.status === "disabled" && (
                 <span className="pill bg-danger/15 text-danger">Disabled</span>
               )}
+              <ExternalEmailBadge email={data.email} showDomain />
             </div>
             <a href={`mailto:${data.email}`} className="text-sm text-muted hover:text-accent inline-flex items-center gap-1.5 mt-1">
               <Mail size={12} /> {data.email}
