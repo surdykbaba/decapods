@@ -182,18 +182,14 @@ export function MembersPage() {
 
   return (
     <div className="space-y-5 max-w-7xl">
-      <header className="flex items-end justify-between flex-wrap gap-4">
-        <div>
-          <div className="text-[11px] uppercase tracking-wider text-accent font-bold">Workspace</div>
-          <h1 className="h1 mt-1 flex items-center gap-2">
-            <Users size={26} className="text-accent" /> Members
-          </h1>
-          <p className="text-sm text-muted mt-1 max-w-2xl">
-            Everyone with an account in this workspace. Roles control what each member can read and write —
-            assign carefully, especially <code className="text-accent">super_admin</code> and{" "}
-            <code className="text-accent">finance</code>.
-          </p>
-        </div>
+      {/* Compact header — the page identity is already covered by the sidebar
+          nav highlight; no need for a giant "Members" billboard up here. */}
+      <header className="flex items-center justify-between flex-wrap gap-3">
+        <p className="text-sm text-muted max-w-2xl">
+          Everyone with an account in this workspace. Roles control what each member can read and write —
+          assign carefully, especially <code className="text-accent">super_admin</code> and{" "}
+          <code className="text-accent">finance</code>.
+        </p>
         <SmartButton variant="primary" onClick={() => setCreateOpen(true)} icon={<Plus size={14} />}>
           Add member
         </SmartButton>
