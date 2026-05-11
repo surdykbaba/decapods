@@ -116,12 +116,54 @@ export function MyWorkPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
-  const tabs: { key: Tab; label: string; icon: React.ComponentType<any> }[] = [
-    { key: "dashboard", label: "Today",     icon: Zap },
-    { key: "tasks",     label: "My tasks",  icon: ListChecks },
-    { key: "updates",   label: "Updates",   icon: MessageSquare },
-    { key: "timesheet", label: "Timesheet", icon: Clock },
-    { key: "profile",   label: "Profile",   icon: Github },
+  // Lightweight counts that drive the tab badges. All cheap (already on the
+  // /me/work payload or a tiny derived count); polled every minute so the
+  // badges stay live without thrashing the page.
+  const { data: badgeData } = useQuery<{
+    counts: { active_tasks: number; overdue_tasks: number; blocked_tasks: number; pending_updates: number; hours_this_week: number };
+    priorities: { id: string; due_on: string | null; status: string }[];
+  }>({
+    queryKey: ["me", "work", "badges"],
+    queryFn: () => api("/api/v1/me/work"),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+  const { data: profileData } = useQuery<{ mfa_enabled?: boolean; mfa_required?: boolean }>({
+    queryKey: ["me", "profile", "badges"],
+    queryFn: () => api("/api/v1/me/profile"),
+    refetchInterval: 5 * 60_000,
+    staleTime: 60_000,
+  });
+
+  // Derive each badge — counts only meaningful "needs you" items so the
+  // numbers actually mean something. Empty → no badge rendered.
+  const badges = useMemo(() => {
+    const c = badgeData?.counts;
+    const todayCount = c ? c.overdue_tasks + c.blocked_tasks : 0;
+    // Tasks tab — total open items the user has on their plate.
+    const tasksCount = c ? c.active_tasks : 0;
+    // Updates — pending daily updates not yet submitted.
+    const updatesCount = c ? c.pending_updates : 0;
+    // Timesheet — "1" if hours logged this week is under a 10h soft floor
+    // and they have active tasks. Nudges, doesn't yell.
+    const timesheetCount = c && c.active_tasks > 0 && c.hours_this_week < 10 ? 1 : 0;
+    // Profile — MFA setup pending while admin-required.
+    const profileCount = profileData?.mfa_required && !profileData?.mfa_enabled ? 1 : 0;
+    return {
+      dashboard: todayCount,
+      tasks:     tasksCount,
+      updates:   updatesCount,
+      timesheet: timesheetCount,
+      profile:   profileCount,
+    };
+  }, [badgeData, profileData]);
+
+  const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; badge?: number; badgeTone?: "danger" | "warn" | "accent" }[] = [
+    { key: "dashboard", label: "Today",     icon: Zap,            badge: badges.dashboard, badgeTone: "danger" },
+    { key: "tasks",     label: "My tasks",  icon: ListChecks,     badge: badges.tasks,     badgeTone: "accent" },
+    { key: "updates",   label: "Updates",   icon: MessageSquare,  badge: badges.updates,   badgeTone: "warn"   },
+    { key: "timesheet", label: "Timesheet", icon: Clock,          badge: badges.timesheet, badgeTone: "warn"   },
+    { key: "profile",   label: "Profile",   icon: Github,         badge: badges.profile,   badgeTone: "danger" },
   ];
 
   return (
@@ -137,17 +179,34 @@ export function MyWorkPage() {
       </header>
 
       <nav className="flex flex-wrap gap-1 p-1 bg-surface border border-border rounded-full w-fit">
-        {tabs.map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-colors ${
-              tab === t.key ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
-            }`}
-          >
-            <t.icon size={14} /> {t.label}
-          </button>
-        ))}
+        {tabs.map((t) => {
+          const active = tab === t.key;
+          const show = (t.badge ?? 0) > 0;
+          // Badge palette — keeps the chip readable against both the
+          // active-accent pill background and the muted resting state.
+          const tone = t.badgeTone ?? "accent";
+          const chipBg = active
+            ? "bg-white text-accent"
+            : tone === "danger" ? "bg-danger text-white"
+            : tone === "warn"   ? "bg-warn   text-white"
+            : "bg-accent text-white";
+          return (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-colors ${
+                active ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+              }`}
+            >
+              <t.icon size={14} /> {t.label}
+              {show && (
+                <span className={`min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold grid place-items-center ${chipBg}`}>
+                  {(t.badge ?? 0) > 9 ? "9+" : t.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </nav>
 
       {tab === "dashboard" && <DashboardTab />}
@@ -992,18 +1051,125 @@ function TaskRowItem({ task, compact }: { task: TaskRow; compact?: boolean }) {
   );
 }
 
+const QUICK_PROMPTS: { label: string; emoji: string; setStatus?: TaskRow["status"]; template: string }[] = [
+  { label: "Progress update", emoji: "🟢", setStatus: "in_progress", template: "Update: " },
+  { label: "I'm blocked",     emoji: "🚧", setStatus: "blocked",     template: "Blocked by: " },
+  { label: "Need review",     emoji: "👀", setStatus: "review",      template: "Ready for review — please look at: " },
+  { label: "Waiting on info", emoji: "⏳",                            template: "Waiting on: " },
+  { label: "Shipped",         emoji: "🚀", setStatus: "done",        template: "Shipped — what landed: " },
+];
+
+function ageInDays(iso?: string): number | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((Date.now() - d.getTime()) / 86_400_000);
+}
+
+function fmtCommentTime(iso: string): string {
+  const d = new Date(iso);
+  const m = Math.floor((Date.now() - d.getTime()) / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.floor(h / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" });
+}
+
+// Lightweight inline-renderer: turns @mentions into accent-coloured pills so
+// blockers like "Blocked by: @Alex" stand out at a glance in the activity feed.
+function renderBody(body: string) {
+  const parts = body.split(/(@[\p{L}0-9._-]+)/u);
+  return parts.map((p, i) =>
+    p.startsWith("@")
+      ? <span key={i} className="text-accent font-semibold">{p}</span>
+      : <span key={i}>{p}</span>,
+  );
+}
+
 function TaskDialog({ task, onClose }: { task: TaskRow; onClose: () => void }) {
   const qc = useQueryClient();
   const [status, setStatus] = useState<TaskRow["status"]>(task.status);
   const [note, setNote] = useState("");
+  const [blockerReason, setBlockerReason] = useState("");
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
 
   const { data: comments } = useQuery<{ items: { id: string; body: string; author: string; created_at: string }[] }>({
     queryKey: ["me-task-comments", task.id], queryFn: () => api(`/api/v1/me/tasks/${task.id}/comments`),
   });
 
+  // Pull workspace members so we can offer an @mention picker in the note
+  // textarea. Cached at the page level since several rows can open the dialog.
+  const { data: membersData } = useQuery<{ items: { id: string; name: string; email: string }[] }>({
+    queryKey: ["members-mention"],
+    queryFn: () => api("/api/v1/members"),
+    staleTime: 5 * 60_000,
+  });
+  const members = membersData?.items ?? [];
+  const mentionMatches = useMemo(() => {
+    const q = mentionQuery.trim().toLowerCase();
+    if (!q) return members.slice(0, 6);
+    return members.filter((m) => (m.name || m.email).toLowerCase().includes(q)).slice(0, 6);
+  }, [members, mentionQuery]);
+
+  function applyPrompt(p: typeof QUICK_PROMPTS[number]) {
+    if (p.setStatus) setStatus(p.setStatus);
+    if (p.setStatus === "blocked") {
+      // Blocker prompt steers the user into the dedicated reason field instead
+      // of the free-form note so it's structured for the activity feed.
+      setBlockerReason((cur) => cur || "");
+      return;
+    }
+    setNote((cur) => {
+      const tpl = p.template;
+      if (cur.trim()) return cur + "\n\n" + tpl;
+      return tpl;
+    });
+  }
+
+  function insertMention(name: string) {
+    // Replace the last "@<partial>" sequence with the full handle.
+    setNote((cur) => {
+      const trimmed = cur.replace(/@[\p{L}0-9._-]*$/u, "");
+      const handle = "@" + name.replace(/\s+/g, "");
+      const sep = trimmed.length > 0 && !trimmed.endsWith(" ") && !trimmed.endsWith("\n") ? " " : "";
+      return trimmed + sep + handle + " ";
+    });
+    setMentionOpen(false);
+  }
+
+  function onNoteChange(v: string) {
+    setNote(v);
+    // Heuristic mention trigger: open the picker when the cursor is just after
+    // "@<word>" and there's no whitespace yet. Closes on space, enter, or
+    // explicit dismiss.
+    const m = v.match(/@([\p{L}0-9._-]*)$/u);
+    if (m) {
+      setMentionQuery(m[1]);
+      setMentionOpen(true);
+    } else {
+      setMentionOpen(false);
+    }
+  }
+
+  // Compose the final comment body so a blocker becomes a structured first
+  // line that the activity feed and any downstream burnout/risk worker can
+  // recognise. Free-form note stays underneath.
+  function composeBody(): string {
+    const parts: string[] = [];
+    if (status === "blocked" && blockerReason.trim()) {
+      parts.push(`🚧 Blocked by: ${blockerReason.trim()}`);
+    }
+    if (note.trim()) parts.push(note.trim());
+    return parts.join("\n\n");
+  }
+
   const update = useMutation({
     mutationFn: () => api(`/api/v1/me/tasks/${task.id}/status`, {
-      method: "POST", body: JSON.stringify({ status, comment: note.trim() }),
+      method: "POST", body: JSON.stringify({ status, comment: composeBody() }),
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["me"] });
@@ -1013,13 +1179,17 @@ function TaskDialog({ task, onClose }: { task: TaskRow; onClose: () => void }) {
   });
   const addComment = useMutation({
     mutationFn: () => api(`/api/v1/me/tasks/${task.id}/comments`, {
-      method: "POST", body: JSON.stringify({ body: note.trim() }),
+      method: "POST", body: JSON.stringify({ body: composeBody() }),
     }),
     onSuccess: () => {
       setNote("");
+      setBlockerReason("");
       qc.invalidateQueries({ queryKey: ["me-task-comments", task.id] });
     },
   });
+
+  const age = ageInDays(task.created_at);
+  const hasMentions = /@[\p{L}0-9._-]+/u.test(composeBody());
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 grid place-items-center p-4" role="dialog" aria-modal="true" onClick={onClose}>
@@ -1028,12 +1198,13 @@ function TaskDialog({ task, onClose }: { task: TaskRow; onClose: () => void }) {
           <div className="min-w-0">
             <div className="text-[11px] uppercase tracking-wider text-muted font-bold">{task.project_name}</div>
             <h2 className="text-lg font-bold text-text mt-0.5">{task.title}</h2>
-            <div className="flex items-center gap-2 mt-1.5 text-xs text-muted">
+            <div className="flex items-center gap-2 mt-1.5 text-xs text-muted flex-wrap">
               <span className="pill" style={{ background: STATUS_COLOR[task.status] + "22", color: STATUS_COLOR[task.status] }}>
                 {STATUS_LABEL[task.status]}
               </span>
               <span>· P{task.priority} · {PRIORITY_LABEL[task.priority]}</span>
               {task.due_on && <span>· Due {new Date(task.due_on).toLocaleDateString("en-US", { day:"numeric", month:"short", year:"numeric" })}</span>}
+              {age !== null && <span>· {age}d old</span>}
             </div>
           </div>
           <button onClick={onClose} className="text-muted hover:text-text p-1"><X size={18} /></button>
@@ -1043,6 +1214,23 @@ function TaskDialog({ task, onClose }: { task: TaskRow; onClose: () => void }) {
           {task.description && (
             <p className="text-sm text-text leading-relaxed whitespace-pre-wrap">{task.description}</p>
           )}
+
+          {/* Quick prompts — one-tap status + template */}
+          <div>
+            <div className="label">Quick update</div>
+            <div className="flex flex-wrap gap-1.5">
+              {QUICK_PROMPTS.map((p) => (
+                <button
+                  key={p.label}
+                  onClick={() => applyPrompt(p)}
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1.5 rounded-full border border-border bg-bg/40 text-text hover:border-accent/40 hover:bg-accent-soft/40 transition-colors"
+                >
+                  <span>{p.emoji}</span>
+                  <span>{p.label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
 
           <div>
             <div className="label">Status</div>
@@ -1064,30 +1252,94 @@ function TaskDialog({ task, onClose }: { task: TaskRow; onClose: () => void }) {
             </div>
           </div>
 
-          <label className="block">
-            <div className="label">Note / comment</div>
+          {/* Dedicated blocker field — appears only when status is blocked so it
+              feels causal rather than always-present clutter. */}
+          {status === "blocked" && (
+            <div className="rounded-xl border border-danger/30 bg-danger/5 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertTriangle size={14} className="text-danger" />
+                <div className="text-sm font-bold text-text">What's blocking you?</div>
+              </div>
+              <textarea
+                className="input min-h-[60px] text-sm bg-surface"
+                value={blockerReason}
+                placeholder="e.g. Waiting on API spec from @Alex · Need staging credentials · Design dependency on PRJ-0007"
+                onChange={(e) => setBlockerReason(e.target.value)}
+              />
+              <div className="text-[11px] text-muted mt-2">
+                This gets stamped on the activity feed as a structured blocker so leads can spot it.
+                Tag a teammate with <span className="text-accent font-semibold">@name</span> to call them out.
+              </div>
+            </div>
+          )}
+
+          <div className="relative">
+            <div className="label flex items-center justify-between">
+              <span>Note</span>
+              <span className="text-[10px] text-muted normal-case tracking-normal">
+                Tip: type <span className="text-accent font-semibold">@</span> to mention a teammate
+              </span>
+            </div>
             <textarea
               className="input min-h-[90px]"
               value={note}
-              placeholder="Optional update — what changed, what's next, what's blocking you?"
-              onChange={(e) => setNote(e.target.value)}
+              placeholder="What changed, what's next, what you learned…"
+              onChange={(e) => onNoteChange(e.target.value)}
+              onBlur={() => setTimeout(() => setMentionOpen(false), 150)}
             />
-          </label>
+            {mentionOpen && mentionMatches.length > 0 && (
+              <div className="absolute z-10 left-0 right-0 mt-1 bg-surface border border-border rounded-xl shadow-card overflow-hidden">
+                <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted px-3 py-2 bg-bg/40">
+                  Mention a teammate
+                </div>
+                <ul className="max-h-[200px] overflow-y-auto">
+                  {mentionMatches.map((m) => (
+                    <li key={m.id}>
+                      <button
+                        onMouseDown={(e) => { e.preventDefault(); insertMention(m.name || m.email.split("@")[0]); }}
+                        className="w-full text-left px-3 py-2 hover:bg-bg flex items-center gap-2 text-sm"
+                      >
+                        <span className="w-6 h-6 rounded-full bg-accent-soft text-accent text-[10px] font-bold grid place-items-center">
+                          {(m.name || m.email)[0]?.toUpperCase()}
+                        </span>
+                        <span className="text-text truncate">{m.name || m.email}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {hasMentions && (
+              <div className="text-[11px] text-muted mt-1.5 inline-flex items-center gap-1">
+                <Bell size={11} /> Mentioned teammates will see this in their attention feed.
+              </div>
+            )}
+          </div>
 
           {/* Comment thread */}
           <div>
             <div className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2">Activity ({comments?.items?.length ?? 0})</div>
             {comments?.items?.length ? (
               <ul className="space-y-2">
-                {comments.items.map((c) => (
-                  <li key={c.id} className="bg-bg/60 border border-border rounded-lg p-3">
-                    <div className="flex items-center justify-between text-[11px] text-muted mb-1">
-                      <strong className="text-text">{c.author || "—"}</strong>
-                      <span>{new Date(c.created_at).toLocaleString()}</span>
-                    </div>
-                    <p className="text-sm text-text whitespace-pre-wrap">{c.body}</p>
-                  </li>
-                ))}
+                {comments.items.map((c) => {
+                  const isBlocker = c.body.startsWith("🚧 Blocked");
+                  return (
+                    <li
+                      key={c.id}
+                      className={`rounded-lg p-3 border ${
+                        isBlocker
+                          ? "bg-danger/5 border-danger/30"
+                          : "bg-bg/60 border-border"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[11px] text-muted mb-1">
+                        <strong className="text-text">{c.author || "—"}</strong>
+                        <span title={new Date(c.created_at).toLocaleString()}>{fmtCommentTime(c.created_at)}</span>
+                      </div>
+                      <p className="text-sm text-text whitespace-pre-wrap">{renderBody(c.body)}</p>
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
               <p className="text-xs text-muted italic">No comments yet.</p>
@@ -1098,7 +1350,7 @@ function TaskDialog({ task, onClose }: { task: TaskRow; onClose: () => void }) {
         <footer className="flex items-center justify-between gap-2 p-4 border-t border-border bg-bg">
           <SmartButton
             variant="outline"
-            disabled={!note.trim()}
+            disabled={!composeBody().trim()}
             loadingLabel="Posting…"
             successLabel="Added"
             icon={<MessageSquare size={14} />}
@@ -1110,7 +1362,7 @@ function TaskDialog({ task, onClose }: { task: TaskRow; onClose: () => void }) {
             <button onClick={onClose} className="btn-outline">Cancel</button>
             <SmartButton
               variant="primary"
-              disabled={status === task.status && !note.trim()}
+              disabled={status === task.status && !composeBody().trim()}
               loadingLabel="Saving…"
               onClick={() => update.mutateAsync()}
             >

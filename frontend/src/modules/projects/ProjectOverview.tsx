@@ -5,6 +5,7 @@ import {
   CheckSquare, Users as UsersIcon, UploadCloud, Plus, Rocket, CheckCircle2, X,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { Avatar } from "@/components/Avatar";
 import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
@@ -262,19 +263,11 @@ export function ProjectOverview() {
           onClose={() => setOpenTaskId(null)}
         />
       )}
-      {fileOpen && (
-        <InfoDialog
-          icon={<UploadCloud size={16} className="text-accent" />}
-          title="Upload a file"
-          body={
-            <>
-              Files attached to this project show up under the{" "}
-              <Link to="files" className="text-accent underline">Files</Link>{" "}
-              tab. Drag-and-drop upload is coming next; for now use the source
-              opportunity's document panel.
-            </>
-          }
+      {fileOpen && id && (
+        <UploadProjectFileDialog
+          projectId={id}
           onClose={() => setFileOpen(false)}
+          onUploaded={() => { setFileOpen(false); qc.invalidateQueries({ queryKey: ["project-files", id] }); }}
         />
       )}
     </div>
@@ -661,6 +654,280 @@ function InviteToProjectDialog({
   );
 }
 
+/* ───────────── UploadProjectFileDialog ─────────────
+ *
+ * Detailed project-file uploader. Captures real metadata so the Files tab
+ * isn't just a heap of binary blobs:
+ *
+ *   • drag-and-drop or click-to-pick (single file)
+ *   • display name (auto-fills from filename)
+ *   • multi-line description
+ *   • kind chip-picker (Architecture, Change request, Scope, Design,
+ *     Contract, Spec, Meeting notes, Reference, Other)
+ *   • visibility picker (Workspace / Project team / Leads only / Private)
+ *   • tags (comma-separated free text, capped server-side)
+ *
+ * Uses native FormData so the browser handles multipart encoding; the api
+ * helper is bypassed for this one request because it auto-sets a JSON
+ * content-type that would break multipart boundary detection.
+ */
+function UploadProjectFileDialog({
+  projectId, onClose, onUploaded,
+}: {
+  projectId: string;
+  onClose: () => void;
+  onUploaded: () => void;
+}) {
+  type Kind = "architecture" | "change_request" | "scope" | "design" | "contract" | "spec" | "meeting_notes" | "reference" | "other";
+  type Visibility = "workspace" | "team" | "leads" | "private";
+
+  const KINDS: { value: Kind; label: string; hint: string }[] = [
+    { value: "architecture",   label: "Architecture",   hint: "Diagrams, system schemas" },
+    { value: "change_request", label: "Change request", hint: "New scope from the client" },
+    { value: "scope",          label: "Scope",          hint: "SOWs, deliverable lists" },
+    { value: "design",         label: "Design",         hint: "Mockups, prototypes" },
+    { value: "contract",       label: "Contract",       hint: "MSA, SOW, addenda" },
+    { value: "spec",           label: "Spec",           hint: "Tech / product specs" },
+    { value: "meeting_notes",  label: "Meeting notes",  hint: "Workshops, syncs" },
+    { value: "reference",      label: "Reference",      hint: "Standards, examples" },
+    { value: "other",          label: "Other",          hint: "Anything else" },
+  ];
+  const VIS: { value: Visibility; label: string; hint: string }[] = [
+    { value: "workspace", label: "Workspace",    hint: "Everyone in the company can see this file" },
+    { value: "team",      label: "Project team", hint: "Only members staffed on this project (recommended)" },
+    { value: "leads",     label: "Leads only",   hint: "PMs and leadership only" },
+    { value: "private",   label: "Private",      hint: "Only you (and admins for compliance)" },
+  ];
+
+  const [file, setFile] = useState<File | null>(null);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [kind, setKind] = useState<Kind>("other");
+  const [visibility, setVisibility] = useState<Visibility>("team");
+  const [tags, setTags] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [drag, setDrag] = useState(false);
+  const inputRef = useState<HTMLInputElement | null>(null);
+
+  function pick(f: File | undefined | null) {
+    if (!f) return;
+    if (f.size > 25 * 1024 * 1024) {
+      setErr("File exceeds 25 MB cap.");
+      return;
+    }
+    setErr(null);
+    setFile(f);
+    if (!name.trim()) setName(f.name.replace(/\.[^.]+$/, ""));
+    // Auto-suggest a kind from the extension to save the user a click. The
+    // chips are still freely editable.
+    const ext = f.name.toLowerCase().split(".").pop() ?? "";
+    if (kind === "other") {
+      if (["pdf"].includes(ext) && /contract|sla|nda|msa|sow/i.test(f.name)) setKind("contract");
+      else if (/change.?request|cr.?[-_]?\d+/i.test(f.name)) setKind("change_request");
+      else if (/architecture|schema|diagram|c4/i.test(f.name)) setKind("architecture");
+      else if (/scope|sow/i.test(f.name)) setKind("scope");
+      else if (["fig", "sketch", "xd", "psd"].includes(ext) || /mock|design/i.test(f.name)) setKind("design");
+      else if (/minutes|notes|meeting/i.test(f.name)) setKind("meeting_notes");
+    }
+  }
+
+  const upload = useMutation({
+    mutationFn: async () => {
+      if (!file) throw new Error("Pick a file first.");
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("name", name.trim() || file.name);
+      fd.append("description", description.trim());
+      fd.append("kind", kind);
+      fd.append("visibility", visibility);
+      fd.append("tags", tags.trim());
+
+      // Bypass api() — it forces Content-Type: application/json which
+      // breaks multipart. Reach into the auth store directly for the token.
+      const { token } = useAuth.getState();
+      const res = await fetch("/api/v1/projects/" + projectId + "/files", {
+        method: "POST",
+        headers: token ? { Authorization: "Bearer " + token } : {},
+        body: fd,
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        let msg = "Upload failed";
+        try { msg = JSON.parse(body).error ?? msg; } catch { /* plain text */ }
+        throw new Error(msg);
+      }
+      return res.json();
+    },
+    onSuccess: () => { toast.success("File uploaded"); onUploaded(); },
+    onError: (e: any) => setErr(e?.message ?? "Could not upload."),
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-xl max-h-[90vh] overflow-y-auto"
+           onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between sticky top-0 bg-surface z-10">
+          <h2 className="text-lg font-bold text-text inline-flex items-center gap-2">
+            <UploadCloud size={18} className="text-accent" /> Upload to project
+          </h2>
+          <button onClick={onClose} className="text-muted hover:text-text p-1.5 rounded hover:bg-bg">
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="p-5 space-y-5">
+          {/* Drop zone */}
+          {!file ? (
+            <label
+              onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+              onDragLeave={() => setDrag(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDrag(false);
+                pick(e.dataTransfer.files?.[0]);
+              }}
+              className={`block border-2 border-dashed rounded-xl px-5 py-8 text-center cursor-pointer transition-colors ${
+                drag ? "border-accent bg-accent-soft/40" : "border-border hover:border-accent/40 hover:bg-bg/30"
+              }`}
+            >
+              <input
+                ref={(r) => inputRef[1](r)}
+                type="file"
+                className="hidden"
+                onChange={(e) => pick(e.target.files?.[0] ?? undefined)}
+              />
+              <UploadCloud className="mx-auto text-accent mb-2" size={28} />
+              <div className="text-sm font-semibold text-text">
+                Drag & drop a file or <span className="text-accent underline">click to browse</span>
+              </div>
+              <div className="text-[11px] text-muted mt-1">Up to 25 MB · any format</div>
+            </label>
+          ) : (
+            <div className="border border-border rounded-xl px-3 py-2.5 flex items-center gap-3 bg-bg/40">
+              <span className="w-10 h-10 rounded-lg bg-accent-soft text-accent grid place-items-center shrink-0">
+                <UploadCloud size={16} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-text truncate">{file.name}</div>
+                <div className="text-[11px] text-muted">
+                  {(file.size / 1024 / 1024).toFixed(2)} MB · {file.type || "unknown type"}
+                </div>
+              </div>
+              <button
+                onClick={() => { setFile(null); setName(""); }}
+                className="p-1.5 rounded hover:bg-surface text-muted hover:text-danger"
+                title="Pick a different file"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
+
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Display name</div>
+            <input
+              className="input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Architecture v2 · Client-portal microservices"
+            />
+          </label>
+
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Description (optional)</div>
+            <textarea
+              className="input min-h-[80px]"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What's inside? Why does it matter? Anything the next person should know before opening it."
+            />
+          </label>
+
+          <div>
+            <div className="text-[11px] text-muted font-medium mb-1.5">Type</div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {KINDS.map((k) => {
+                const active = kind === k.value;
+                return (
+                  <button
+                    key={k.value}
+                    type="button"
+                    onClick={() => setKind(k.value)}
+                    title={k.hint}
+                    className={`px-2.5 py-2 rounded-lg border text-[11.5px] font-semibold text-left transition-colors ${
+                      active
+                        ? "border-accent bg-accent-soft text-accent"
+                        : "border-border text-muted hover:bg-bg/40 hover:text-text"
+                    }`}
+                  >
+                    {k.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-[11px] text-muted font-medium mb-1.5">Visibility</div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+              {VIS.map((v) => {
+                const active = visibility === v.value;
+                return (
+                  <button
+                    key={v.value}
+                    type="button"
+                    onClick={() => setVisibility(v.value)}
+                    className={`px-3 py-2.5 rounded-lg border text-left transition-colors ${
+                      active
+                        ? "border-accent bg-accent-soft text-accent"
+                        : "border-border text-text hover:bg-bg/40"
+                    }`}
+                  >
+                    <div className="text-[12.5px] font-semibold">{v.label}</div>
+                    <div className="text-[11px] text-muted leading-snug">{v.hint}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Tags (comma-separated)</div>
+            <input
+              className="input"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder="phase-1, milestone-3, client-approved"
+            />
+            <div className="text-[10.5px] text-muted mt-1">Up to 8 tags. Helps the Files tab filter and search.</div>
+          </label>
+
+          {err && (
+            <div className="bg-danger/10 border border-danger/30 text-danger text-sm rounded-lg px-3 py-2">
+              {err}
+            </div>
+          )}
+        </div>
+
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2 sticky bottom-0 bg-surface">
+          <button onClick={onClose} className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text">Cancel</button>
+          <SmartButton
+            variant="primary"
+            disabled={!file || upload.isPending}
+            loadingLabel="Uploading…"
+            icon={<UploadCloud size={14} />}
+            onClick={() => upload.mutateAsync()}
+          >
+            Upload file
+          </SmartButton>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+// Kept parked for the file-upload action which currently links to the Files tab
+// instead. Re-wire when in-place uploads land.
 function InfoDialog({
   icon, title, body, onClose,
 }: {
@@ -684,3 +951,5 @@ function InfoDialog({
     </div>
   );
 }
+
+void InfoDialog;
