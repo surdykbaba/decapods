@@ -152,16 +152,206 @@ func (a *Auth) Me(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	roles, _ := c.Get(mw.CtxRoles)
 	var email, name, avatar string
-	_ = a.db.QueryRow(c, `SELECT email, full_name, COALESCE(avatar_url, '') FROM users WHERE id = $1`, uid).
-		Scan(&email, &name, &avatar)
+	var mfaEnabled, mfaRequired bool
+	_ = a.db.QueryRow(c, `SELECT email, full_name, COALESCE(avatar_url, ''), mfa_enabled, COALESCE(mfa_required,false)
+		FROM users WHERE id = $1`, uid).
+		Scan(&email, &name, &avatar, &mfaEnabled, &mfaRequired)
 	c.JSON(http.StatusOK, gin.H{
-		"id":         uid,
-		"tenant_id":  tid,
-		"email":      email,
-		"name":       name,
-		"roles":      roles,
-		"avatar_url": avatar,
+		"id":           uid,
+		"tenant_id":    tid,
+		"email":        email,
+		"name":         name,
+		"roles":        roles,
+		"avatar_url":   avatar,
+		"mfa_enabled":  mfaEnabled,
+		"mfa_required": mfaRequired,
 	})
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Self-service MFA enrollment.
+//
+// Two-step:
+//   1. POST /me/mfa/begin
+//      Generates a fresh TOTP secret + otpauth URL, stores it on
+//      mfa_secrets.pending_secret with a 10-min expiry. Repeated calls
+//      regenerate — useful when a user closes the modal before confirming.
+//   2. POST /me/mfa/confirm  { code }
+//      Verifies the code against the pending secret. On success the pending
+//      secret is promoted to the live secret column, users.mfa_enabled=true,
+//      and any existing challenge rows are cleared.
+//
+// Disabling requires a current TOTP code so a stolen session can't drop MFA
+// silently. Admins can override via the dedicated members endpoint.
+// ───────────────────────────────────────────────────────────────────────────
+
+func (a *Auth) BeginMFAEnrollment(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+
+	var email, tenantName string
+	_ = a.db.QueryRow(c, `SELECT u.email::text, t.name FROM users u JOIN tenants t ON t.id = u.tenant_id WHERE u.id=$1`, uid).
+		Scan(&email, &tenantName)
+	if tenantName == "" {
+		tenantName = "D'Accubin"
+	}
+
+	secret, otpauth, err := auth.GenerateTOTP(tenantName, email)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Upsert the pending secret into mfa_secrets. The live `secret` column is
+	// left untouched until /confirm — until then the user is effectively
+	// still in their previous MFA state.
+	_, err = a.db.Exec(c, `
+		INSERT INTO mfa_secrets (user_id, secret, pending_secret, pending_expires)
+		VALUES ($1, '', $2, now() + interval '10 minutes')
+		ON CONFLICT (user_id) DO UPDATE
+		  SET pending_secret = EXCLUDED.pending_secret,
+		      pending_expires = EXCLUDED.pending_expires`,
+		uid, secret)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	audit.WriteHTTP(c, a.db, c, tid, &uid, "auth.mfa.enroll_started", "user", uid, nil)
+	c.JSON(http.StatusOK, gin.H{
+		"otpauth_url": otpauth,
+		"secret":      secret, // shown for manual entry as a fallback
+		"expires_in":  600,
+	})
+}
+
+func (a *Auth) ConfirmMFAEnrollment(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	var req struct {
+		Code string `json:"code" binding:"required,len=6"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	var pending string
+	err := a.db.QueryRow(c, `
+		SELECT pending_secret FROM mfa_secrets
+		 WHERE user_id=$1 AND pending_secret IS NOT NULL AND pending_expires > now()`, uid).Scan(&pending)
+	if err != nil || pending == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no enrollment in progress — start over"})
+		return
+	}
+	if !auth.VerifyTOTP(pending, req.Code) {
+		audit.WriteHTTP(c, a.db, c, tid, &uid, "auth.mfa.enroll_failed", "user", uid, nil)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid code"})
+		return
+	}
+	// Promote pending → live, flip the user flag, wipe any leftover challenges.
+	tx, err := a.db.Begin(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback(c)
+	if _, err := tx.Exec(c, `
+		UPDATE mfa_secrets
+		   SET secret = pending_secret, pending_secret = NULL, pending_expires = NULL
+		 WHERE user_id = $1`, uid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err := tx.Exec(c, `UPDATE users SET mfa_enabled = true WHERE id = $1`, uid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	_, _ = tx.Exec(c, `DELETE FROM mfa_challenges WHERE user_id = $1`, uid)
+	if err := tx.Commit(c); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	audit.WriteHTTP(c, a.db, c, tid, &uid, "auth.mfa.enrolled", "user", uid, nil)
+	c.JSON(http.StatusOK, gin.H{"ok": true, "mfa_enabled": true})
+}
+
+func (a *Auth) DisableMFA(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	var req struct {
+		Code string `json:"code" binding:"required,len=6"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Refuse if the admin marked the user mfa_required — they have to keep it on.
+	var required bool
+	_ = a.db.QueryRow(c, `SELECT COALESCE(mfa_required,false) FROM users WHERE id=$1`, uid).Scan(&required)
+	if required {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Your admin has made MFA mandatory for this account.",
+			"code":  "mfa_required",
+		})
+		return
+	}
+	var secret string
+	if err := a.db.QueryRow(c, `SELECT secret FROM mfa_secrets WHERE user_id=$1`, uid).Scan(&secret); err != nil || secret == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "MFA is not enabled"})
+		return
+	}
+	if !auth.VerifyTOTP(secret, req.Code) {
+		audit.WriteHTTP(c, a.db, c, tid, &uid, "auth.mfa.disable_failed", "user", uid, nil)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid code"})
+		return
+	}
+	tx, err := a.db.Begin(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback(c)
+	_, _ = tx.Exec(c, `DELETE FROM mfa_secrets   WHERE user_id = $1`, uid)
+	_, _ = tx.Exec(c, `DELETE FROM mfa_challenges WHERE user_id = $1`, uid)
+	if _, err := tx.Exec(c, `UPDATE users SET mfa_enabled = false WHERE id = $1`, uid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := tx.Commit(c); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	audit.WriteHTTP(c, a.db, c, tid, &uid, "auth.mfa.disabled", "user", uid, nil)
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// AdminSetMFARequired — PATCH /api/v1/members/:id/mfa-required { required: bool }
+// Toggles the enforcement flag on another user. The user keeps access (so
+// they can self-enroll) but the SPA and the user's own /me response surface
+// the obligation prominently.
+func (a *Auth) AdminSetMFARequired(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	actor := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad id"})
+		return
+	}
+	var req struct {
+		Required bool `json:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err := a.db.Exec(c, `UPDATE users SET mfa_required=$1 WHERE id=$2 AND tenant_id=$3`,
+		req.Required, id, tid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	audit.WriteHTTP(c, a.db, c, tid, &actor, "auth.mfa.required_changed", "user", id, map[string]any{
+		"required": req.Required,
+	})
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func (a *Auth) jwtConfig() auth.JWTConfig {

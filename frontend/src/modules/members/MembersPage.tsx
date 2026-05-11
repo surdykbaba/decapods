@@ -19,6 +19,7 @@ type Member = {
   name: string;
   status: MemberStatus;
   mfa_enabled: boolean;
+  mfa_required?: boolean;
   last_login_at: string | null;
   created_at: string;
   roles: string[];
@@ -317,6 +318,30 @@ function MemberTable({
   onRemove: (id: string, name: string) => void;
   onReset: (m: Member) => Promise<void> | void;
 }) {
+  const qc = useQueryClient();
+  // Toggle the admin-side "MFA required" flag. Optimistic-merge keeps the
+  // pill in sync before the server roundtrips.
+  const toggleRequired = useMutation({
+    mutationFn: ({ id, required }: { id: string; required: boolean }) =>
+      api(`/api/v1/members/${id}/mfa-required`, {
+        method: "PATCH",
+        body: JSON.stringify({ required }),
+      }),
+    onMutate: async ({ id, required }) => {
+      await qc.cancelQueries({ queryKey: ["members"] });
+      const prev = qc.getQueryData<{ items: Member[] }>(["members"]);
+      if (prev) {
+        qc.setQueryData<{ items: Member[] }>(["members"], {
+          ...prev,
+          items: prev.items.map((m) => (m.id === id ? { ...m, mfa_required: required } : m)),
+        });
+      }
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => { if (ctx?.prev) qc.setQueryData(["members"], ctx.prev); },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["members"] }); },
+  });
+
   return (
     <div className="bg-surface border border-border rounded-2xl overflow-hidden">
       <div className="overflow-x-auto">
@@ -373,9 +398,25 @@ function MemberTable({
                   </td>
                   <td className="px-3 py-3"><span className={`pill ${sm.cls}`}>{sm.icon}{sm.label}</span></td>
                   <td className="px-3 py-3">
-                    {m.mfa_enabled
-                      ? <span className="pill bg-success/15 text-success"><ShieldCheck size={11} /> On</span>
-                      : <span className="pill bg-bg text-muted border border-border">Off</span>}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {m.mfa_enabled
+                        ? <span className="pill bg-success/15 text-success"><ShieldCheck size={11} /> On</span>
+                        : <span className="pill bg-bg text-muted border border-border">Off</span>}
+                      <button
+                        onClick={() => toggleRequired.mutate({ id: m.id, required: !m.mfa_required })}
+                        disabled={toggleRequired.isPending}
+                        title={m.mfa_required
+                          ? "Click to drop the requirement — the member can disable MFA again."
+                          : "Click to require MFA — they'll be nudged on every visit until they enrol."}
+                        className={`pill cursor-pointer transition-colors ${
+                          m.mfa_required
+                            ? "bg-warn/15 text-warn border border-warn/30 hover:bg-warn/25"
+                            : "bg-bg text-muted border border-border hover:border-accent/40 hover:text-accent"
+                        }`}
+                      >
+                        {m.mfa_required ? "Required" : "Optional"}
+                      </button>
+                    </div>
                   </td>
                   <td className="px-3 py-3 text-[12px] text-muted whitespace-nowrap">{fmtRel(m.last_login_at)}</td>
                   <td className="px-3 py-3 text-[12px] text-muted whitespace-nowrap">{fmtRel(m.created_at)}</td>

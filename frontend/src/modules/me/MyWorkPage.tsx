@@ -68,6 +68,8 @@ type Profile = {
   name: string;
   github_username?: string;
   avatar_url?: string;
+  mfa_enabled?: boolean;
+  mfa_required?: boolean;
   roles: string[];
   performance: {
     tasks_done: number;
@@ -1445,6 +1447,14 @@ function ProfileTab() {
         </div>
       </section>
 
+      <div className="lg:col-span-2">
+        <MfaCard
+          enabled={!!data.mfa_enabled}
+          required={!!data.mfa_required}
+          onChanged={() => qc.invalidateQueries({ queryKey: ["me", "profile"] })}
+        />
+      </div>
+
       <section className="bg-surface border border-border rounded-2xl p-5">
         <h2 className="h2 mb-1">Personal stats</h2>
         <p className="text-xs text-muted mb-4">Self-management view, not a leaderboard.</p>
@@ -1490,6 +1500,235 @@ const CATEGORY_LABEL: Record<string, string> = {
   relations: "Relationships & engagements",
   exec_digest: "Executive digests",
 };
+
+/* ───────────── MFA card + setup modal ─────────────
+ *
+ * Self-service two-step enrollment. /me/mfa/begin returns an otpauth URL we
+ * render as a QR code (using a free public chart service to avoid bundling a
+ * QR lib) plus the raw secret for manual entry. /me/mfa/confirm flips the
+ * users.mfa_enabled flag once the 6-digit code verifies.
+ *
+ * Disabling demands a current TOTP — defends against a stolen session
+ * silently dropping MFA. When the admin has marked the user mfa_required,
+ * the Disable button is grayed out with a note explaining why.
+ */
+function MfaCard({ enabled, required, onChanged }: { enabled: boolean; required: boolean; onChanged: () => void }) {
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [disableOpen, setDisableOpen] = useState(false);
+
+  return (
+    <section className="bg-surface border border-border rounded-2xl p-5">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <h2 className="h2 mb-1 flex items-center gap-2">
+            <Sparkles size={14} className="text-accent" /> Two-factor authentication
+          </h2>
+          <p className="text-xs text-muted max-w-md">
+            Adds a 6-digit code from your authenticator app on every sign-in.
+            {required && enabled && (
+              <span className="text-warn font-semibold"> Required by your admin.</span>
+            )}
+          </p>
+        </div>
+        <span className={`pill ${enabled ? "bg-success/15 text-success" : "bg-warn/15 text-warn"}`}>
+          {enabled ? "Enabled" : "Not set up"}
+        </span>
+      </div>
+
+      {/* Required-but-not-enabled banner — louder than the pill alone. */}
+      {required && !enabled && (
+        <div className="mt-3 bg-warn/10 border border-warn/30 rounded-xl px-3 py-2.5 text-[12.5px] text-warn flex items-start gap-2">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <span>
+            Your admin has made MFA mandatory for your account. Set it up below to keep
+            full access to the workspace.
+          </span>
+        </div>
+      )}
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {!enabled && (
+          <SmartButton variant="primary" onClick={() => setSetupOpen(true)}>
+            Set up MFA
+          </SmartButton>
+        )}
+        {enabled && (
+          <>
+            <button
+              onClick={() => setSetupOpen(true)}
+              className="btn-outline text-sm"
+              title="Re-enroll with a fresh secret"
+            >
+              Regenerate code
+            </button>
+            <button
+              onClick={() => setDisableOpen(true)}
+              disabled={required}
+              className="text-sm px-3 py-2 rounded-lg text-danger hover:bg-danger/10 disabled:opacity-40 disabled:cursor-not-allowed"
+              title={required ? "Required by your admin" : "Turn off MFA"}
+            >
+              Disable
+            </button>
+          </>
+        )}
+      </div>
+
+      {setupOpen && (
+        <MfaSetupDialog
+          onClose={() => setSetupOpen(false)}
+          onConfirmed={() => { setSetupOpen(false); onChanged(); }}
+        />
+      )}
+      {disableOpen && (
+        <MfaDisableDialog
+          onClose={() => setDisableOpen(false)}
+          onDisabled={() => { setDisableOpen(false); onChanged(); }}
+        />
+      )}
+    </section>
+  );
+}
+
+function MfaSetupDialog({ onClose, onConfirmed }: { onClose: () => void; onConfirmed: () => void }) {
+  const { data, isLoading } = useQuery<{ otpauth_url: string; secret: string }>({
+    queryKey: ["mfa", "begin"],
+    queryFn: () => api("/api/v1/me/mfa/begin", { method: "POST" }),
+    refetchOnWindowFocus: false,
+  });
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  const confirm = useMutation({
+    mutationFn: () => api("/api/v1/me/mfa/confirm", {
+      method: "POST", body: JSON.stringify({ code }),
+    }),
+    onSuccess: () => {
+      toast.success("MFA enabled", "You'll be asked for a code on every sign-in.");
+      onConfirmed();
+    },
+    onError: (e: any) => setErr(e?.message ?? "Invalid code — try again."),
+  });
+
+  // Render the QR via the open `qrserver.com` chart endpoint. It only sees
+  // the otpauth URL which is already a public token — fine to externalise.
+  const qrSrc = data?.otpauth_url
+    ? `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(data.otpauth_url)}`
+    : "";
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="text-lg font-bold text-text">Set up two-factor</h2>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted"><X size={16} /></button>
+        </header>
+        <div className="p-5 space-y-4">
+          {isLoading || !data ? (
+            <div className="text-center text-sm text-muted py-8">Generating your code…</div>
+          ) : (
+            <>
+              <ol className="space-y-2 text-[12.5px] text-text list-decimal pl-4">
+                <li>Open your authenticator app (Google Authenticator, 1Password, Authy, etc.).</li>
+                <li>Scan the QR code below — or enter the secret manually.</li>
+                <li>Type the 6-digit code the app shows to finish enrolling.</li>
+              </ol>
+
+              <div className="flex flex-col items-center gap-2">
+                {qrSrc && (
+                  <img src={qrSrc} alt="MFA QR code" className="w-[220px] h-[220px] bg-white p-2 rounded-xl border border-border" />
+                )}
+                <div className="text-[11px] text-muted">Or enter manually:</div>
+                <code className="font-mono text-[12px] bg-bg border border-border rounded-md px-2.5 py-1 break-all max-w-full">
+                  {data.secret}
+                </code>
+              </div>
+
+              <label className="block">
+                <div className="text-[11px] text-muted font-medium mb-1">6-digit code</div>
+                <input
+                  className="input text-center font-mono tracking-[0.4em] text-lg"
+                  inputMode="numeric"
+                  pattern="[0-9]{6}"
+                  maxLength={6}
+                  value={code}
+                  onChange={(e) => { setCode(e.target.value.replace(/\D/g, "").slice(0, 6)); setErr(null); }}
+                  autoFocus
+                  placeholder="• • • • • •"
+                />
+              </label>
+              {err && <div className="text-[12px] text-danger">{err}</div>}
+            </>
+          )}
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex justify-end gap-2">
+          <button onClick={onClose} className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text">Cancel</button>
+          <SmartButton
+            variant="primary"
+            disabled={code.length !== 6 || confirm.isPending}
+            onClick={() => confirm.mutateAsync()}
+            loadingLabel="Verifying…"
+            successLabel="Enabled"
+          >
+            Confirm &amp; enable
+          </SmartButton>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function MfaDisableDialog({ onClose, onDisabled }: { onClose: () => void; onDisabled: () => void }) {
+  const [code, setCode] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const disable = useMutation({
+    mutationFn: () => api("/api/v1/me/mfa/disable", {
+      method: "POST", body: JSON.stringify({ code }),
+    }),
+    onSuccess: () => {
+      toast.success("MFA disabled");
+      onDisabled();
+    },
+    onError: (e: any) => setErr(e?.message ?? "Invalid code — try again."),
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="text-lg font-bold text-text">Disable MFA</h2>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted"><X size={16} /></button>
+        </header>
+        <div className="p-5 space-y-3">
+          <p className="text-[12.5px] text-muted">
+            Enter a current 6-digit code from your authenticator to turn off two-factor.
+          </p>
+          <input
+            className="input text-center font-mono tracking-[0.4em] text-lg"
+            inputMode="numeric"
+            pattern="[0-9]{6}"
+            maxLength={6}
+            value={code}
+            onChange={(e) => { setCode(e.target.value.replace(/\D/g, "").slice(0, 6)); setErr(null); }}
+            autoFocus
+            placeholder="• • • • • •"
+          />
+          {err && <div className="text-[12px] text-danger">{err}</div>}
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex justify-end gap-2">
+          <button onClick={onClose} className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text">Cancel</button>
+          <SmartButton
+            variant="danger"
+            disabled={code.length !== 6 || disable.isPending}
+            onClick={() => disable.mutateAsync()}
+            loadingLabel="Disabling…"
+          >
+            Disable MFA
+          </SmartButton>
+        </footer>
+      </div>
+    </div>
+  );
+}
 
 function NotificationPrefsCard() {
   const qc = useQueryClient();

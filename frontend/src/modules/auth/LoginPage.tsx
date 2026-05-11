@@ -93,26 +93,6 @@ export function LoginPage() {
             </button>
           </form>
 
-          <div className="flex items-center gap-3 my-6">
-            <div className="flex-1 h-px bg-border" />
-            <span className="text-xs text-muted">OR</span>
-            <div className="flex-1 h-px bg-border" />
-          </div>
-
-          <div className="space-y-3">
-            <SocialButton onClick={() => alert("Google sign-in is not configured in this preview.")}>
-              <GoogleIcon /> Sign up with Google
-            </SocialButton>
-            <SocialButton onClick={() => alert("SSO is not configured in this preview.")}>
-              <SsoIcon /> Login with SSO
-            </SocialButton>
-          </div>
-
-          <div className="text-center text-sm text-muted mt-6">
-            Not a member?{" "}
-            <Link to="#" className="text-text font-semibold hover:text-accent">Sign up</Link>
-          </div>
-
           <div className="text-center text-[11px] text-muted/80 mt-8 leading-relaxed">
             Logging in signifies that you have read and agree to the{" "}
             <a className="text-accent hover:underline cursor-pointer">Terms of Service</a> and our{" "}
@@ -124,10 +104,6 @@ export function LoginPage() {
       {/* Right — accent panel */}
       <div className="hidden lg:flex bg-accent relative overflow-hidden">
         <div className="absolute inset-6 bg-text rounded-3xl flex flex-col justify-between p-10 text-surface">
-          <div className="flex items-center gap-2">
-            <img src="/brand/logo-dark.png" alt="" className="w-14 h-14 object-contain" />
-          </div>
-
           <div>
             <div className="text-3xl font-extrabold tracking-tight leading-tight">
               Governance, delivery,<br />and finance — together.
@@ -171,44 +147,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function SocialButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="w-full inline-flex items-center justify-center gap-3 border border-border rounded-full px-4 py-3 text-sm font-semibold text-text hover:bg-bg transition-colors"
-    >
-      {children}
-    </button>
-  );
-}
-
 function BrandMark() {
   return (
     <div className="flex items-center">
       <img src="/brand/logo-dark.png" alt="D'Accubin" className="w-14 h-14 object-contain" />
     </div>
-  );
-}
-
-function GoogleIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 48 48">
-      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3a12 12 0 01-11.3 8 12 12 0 01-12-12 12 12 0 0112-12c3 0 5.7 1.1 7.8 3l5.7-5.7A20 20 0 0024 4a20 20 0 100 40 20 20 0 0019.6-23.5z"/>
-      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8A12 12 0 0124 16c3 0 5.7 1.1 7.8 3l5.7-5.7A20 20 0 0024 4a20 20 0 00-17.7 10.7z"/>
-      <path fill="#4CAF50" d="M24 44a20 20 0 0013.5-5.2l-6.2-5.3A12 12 0 0124 36a12 12 0 01-11.3-8l-6.5 5A20 20 0 0024 44z"/>
-      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3a12 12 0 01-4.1 5.5l6.2 5.3c-.4.4 6.6-4.8 6.6-14.8 0-1.3-.1-2.3-.4-3.5z"/>
-    </svg>
-  );
-}
-
-function SsoIcon() {
-  return (
-    <span className="w-[18px] h-[18px] rounded-md bg-accent grid place-items-center text-white">
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="11" width="18" height="11" rx="2" />
-        <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-      </svg>
-    </span>
   );
 }

@@ -506,9 +506,11 @@ func (h *Me) Profile(c *gin.Context) {
 
 	var (
 		email, name, ghUser, avatarURL string
+		mfaEnabled, mfaRequired        bool
 	)
-	_ = h.db.QueryRow(c, `SELECT email, COALESCE(full_name,''), COALESCE(github_username,''), COALESCE(avatar_url,'')
-		FROM users WHERE id=$1`, uid).Scan(&email, &name, &ghUser, &avatarURL)
+	_ = h.db.QueryRow(c, `SELECT email, COALESCE(full_name,''), COALESCE(github_username,''), COALESCE(avatar_url,''),
+		mfa_enabled, COALESCE(mfa_required,false)
+		FROM users WHERE id=$1`, uid).Scan(&email, &name, &ghUser, &avatarURL, &mfaEnabled, &mfaRequired)
 
 	// Activity counters
 	type act struct {
@@ -532,6 +534,8 @@ func (h *Me) Profile(c *gin.Context) {
 		"id": uid, "email": email, "name": name,
 		"github_username": ghUser,
 		"avatar_url":      avatarURL,
+		"mfa_enabled":     mfaEnabled,
+		"mfa_required":    mfaRequired,
 		"roles": rs,
 		"performance": gin.H{
 			"tasks_done":     a.TasksDone,

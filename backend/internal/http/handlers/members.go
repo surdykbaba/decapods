@@ -50,6 +50,7 @@ func (h *Members) List(c *gin.Context) {
 	args := []any{tid}
 	q := `
 		SELECT u.id, u.email, COALESCE(u.full_name,''), u.status, u.mfa_enabled,
+		       COALESCE(u.mfa_required, false),
 		       u.last_login_at, u.created_at, u.last_seen_at,
 		       u.manual_status, u.manual_status_until,
 		       COALESCE(u.avatar_url, ''),
@@ -84,14 +85,14 @@ func (h *Members) List(c *gin.Context) {
 		var (
 			id                          uuid.UUID
 			email, name, status, avatar string
-			mfa                         bool
+			mfa, mfaRequired            bool
 			lastLogin, lastSeen         *time.Time
 			manual                      *string
 			manualUntil                 *time.Time
 			created                     time.Time
 			roles                       []string
 		)
-		if err := rows.Scan(&id, &email, &name, &status, &mfa, &lastLogin, &created, &lastSeen,
+		if err := rows.Scan(&id, &email, &name, &status, &mfa, &mfaRequired, &lastLogin, &created, &lastSeen,
 			&manual, &manualUntil, &avatar, &roles); err == nil {
 			// Single source of truth for presence — see derivePresence in me.go.
 			presence := derivePresence(manual, manualUntil, lastSeen)
@@ -101,7 +102,9 @@ func (h *Members) List(c *gin.Context) {
 			}
 			out = append(out, gin.H{
 				"id": id, "email": email, "name": name, "status": status,
-				"mfa_enabled": mfa, "last_login_at": lastLogin, "created_at": created,
+				"mfa_enabled":  mfa,
+				"mfa_required": mfaRequired,
+				"last_login_at": lastLogin, "created_at": created,
 				"roles": roles,
 				"last_seen_at": lastSeen,
 				"presence":     presence,
