@@ -15,6 +15,7 @@ var DefaultRolePermissions = map[string][]string{
 	"delivery_manager":  {"project:*", "task:*", "milestone:*", "workforce:read", "risk:write"},
 	"project_manager":   {"project:write:self", "task:*:self", "milestone:*:self", "document:write:self"},
 	"engineer":          {"project:read:self", "task:write:self", "time_entry:write:self"},
+	"designer":          {"project:read:self", "task:write:self", "time_entry:write:self", "document:write:self"},
 	"qa":                {"project:read:self", "task:write:self", "qa:*:self"},
 	"auditor":           {"*:read", "audit:read"},
 	"compliance_officer":{"governance:*", "policy:*", "audit:read"},

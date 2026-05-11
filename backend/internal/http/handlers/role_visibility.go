@@ -48,7 +48,7 @@ var NavSections = []struct {
 var DefaultRoleVisibility = map[string][]string{
 	"my_work":      {"*"}, // everyone
 	"pipeline":     {"super_admin", "ceo", "coo", "business_dev", "delivery_manager", "project_manager", "finance"},
-	"projects":     {"super_admin", "ceo", "coo", "delivery_manager", "project_manager", "engineer", "qa", "finance", "auditor", "business_dev"},
+	"projects":     {"super_admin", "ceo", "coo", "delivery_manager", "project_manager", "engineer", "designer", "qa", "finance", "auditor", "business_dev"},
 	"workforce":    {"super_admin", "ceo", "coo", "hr", "hr_manager", "delivery_manager", "project_manager", "finance"},
 	"members":      {"super_admin", "ceo", "coo", "hr", "hr_manager"},
 	"stakeholders": {"super_admin", "ceo", "coo", "business_dev", "delivery_manager", "project_manager"},
