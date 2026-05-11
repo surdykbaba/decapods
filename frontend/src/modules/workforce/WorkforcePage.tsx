@@ -22,21 +22,21 @@ type View = "grid" | "list";
 const COL_META: Record<Bucket, { label: string; tone: string; bar: string; chip: string; pillBg: string }> = {
   available: {
     label: "Available",
-    tone: "from-accent-soft to-accent-soft/40 text-accent border-accent/30",
+    tone: "bg-accent-soft text-accent border-accent/30",
     bar:  "bg-accent",
     chip: "text-accent",
     pillBg: "bg-accent-soft text-accent",
   },
   engaged: {
     label: "Engaged",
-    tone: "from-[#dbeafe] to-[#dbeafe]/40 text-[#1d4ed8] border-[#1d4ed8]/30",
+    tone: "bg-[#dbeafe] text-[#1d4ed8] border-[#1d4ed8]/30",
     bar:  "bg-[#1d4ed8]",
     chip: "text-[#1d4ed8]",
     pillBg: "bg-[#dbeafe] text-[#1d4ed8]",
   },
   overloaded: {
     label: "Overloaded",
-    tone: "from-danger/15 to-danger/5 text-danger border-danger/30",
+    tone: "bg-danger/10 text-danger border-danger/30",
     bar:  "bg-danger",
     chip: "text-danger",
     pillBg: "bg-danger/10 text-danger",
@@ -327,7 +327,7 @@ function CapacityColumn({
   const meta = COL_META[bucket];
   return (
     <div className="flex flex-col">
-      <div className={`rounded-2xl bg-gradient-to-b ${meta.tone} border px-4 py-3 mb-3 flex items-center justify-between`}>
+      <div className={`rounded-2xl ${meta.tone} border px-4 py-3 mb-3 flex items-center justify-between`}>
         <div className="flex items-center gap-2">
           <span className={`w-2 h-2 rounded-full ${meta.bar}`} />
           <span className="text-[14px] font-bold capitalize">{meta.label}</span>

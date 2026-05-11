@@ -236,48 +236,38 @@ export function CampfirePage() {
           column so long posts don't sprawl across ultrawide monitors; the
           "Most engaging this week" hero moves to a compact right rail and
           stays visible across tab switches as a workspace-pulse anchor. */}
-      {/* Constrain the whole row to feed + gap + rail so the rail hugs the
-          feed instead of floating off in whitespace. Centered on wide
-          monitors, edge-flush on smaller ones. */}
-      <div className="mt-2 mx-auto max-w-[1358px] grid grid-cols-1 md:grid-cols-[minmax(0,1054px)_280px] gap-6">
-        <div className="min-w-0 w-full">
-          <div className="flex items-center gap-1 mb-4 p-1 bg-surface/70 backdrop-blur border border-border rounded-full overflow-x-auto w-fit shadow-soft">
-            {tabs.filter((t) => !t.admin || isAdmin).map((t) => {
-              const Icon = t.icon;
-              const active = tab === t.key;
-              return (
-                <button
-                  key={t.key}
-                  onClick={() => setTab(t.key)}
-                  className={`inline-flex items-center gap-2 px-4 py-2 text-[13px] font-semibold whitespace-nowrap rounded-full transition-colors ${
-                    active
-                      ? "bg-accent text-white shadow-soft"
-                      : "text-muted hover:text-text hover:bg-bg/40"
-                  }`}
-                >
-                  <Icon size={14} /> {t.label}
-                </button>
-              );
-            })}
-          </div>
-
-          <div>
-            {tab === "feed"     && <PulseFeed isAdmin={isAdmin} />}
-            {tab === "kudos"    && <Kudos />}
-            {tab === "mood"     && <MoodCheck isAdmin={isAdmin} />}
-            {tab === "help"     && <HelpWall currentUserId={user?.id ?? ""} />}
-            {tab === "rooms"    && <TeamRooms />}
-            {tab === "insights" && isAdmin && <Insights />}
-          </div>
+      {/* Single column, capped at 1054px for comfortable reading on wide
+          monitors. Side rail was removed — the placeholder was creating
+          visual noise when the spotlight had nothing to show. */}
+      <div className="mt-2 mx-auto max-w-[1054px]">
+        <div className="flex items-center gap-1 mb-4 p-1 bg-surface/70 backdrop-blur border border-border rounded-full overflow-x-auto w-fit shadow-soft">
+          {tabs.filter((t) => !t.admin || isAdmin).map((t) => {
+            const Icon = t.icon;
+            const active = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={`inline-flex items-center gap-2 px-4 py-2 text-[13px] font-semibold whitespace-nowrap rounded-full transition-colors ${
+                  active
+                    ? "bg-accent text-white shadow-soft"
+                    : "text-muted hover:text-text hover:bg-bg/40"
+                }`}
+              >
+                <Icon size={14} /> {t.label}
+              </button>
+            );
+          })}
         </div>
 
-        {/* Right rail — compact HeroBanner. Sticky so it stays in view as the
-            feed scrolls; hidden under lg to keep small screens uncluttered. */}
-        <aside className="hidden md:block">
-          <div className="sticky top-4">
-            <HeroBanner compact />
-          </div>
-        </aside>
+        <div>
+          {tab === "feed"     && <PulseFeed isAdmin={isAdmin} />}
+          {tab === "kudos"    && <Kudos />}
+          {tab === "mood"     && <MoodCheck isAdmin={isAdmin} />}
+          {tab === "help"     && <HelpWall currentUserId={user?.id ?? ""} />}
+          {tab === "rooms"    && <TeamRooms />}
+          {tab === "insights" && isAdmin && <Insights />}
+        </div>
       </div>
       </div>{/* close: relative z-10 content layer */}
     </div>
@@ -499,318 +489,6 @@ function groupByDay(posts: Post[]): { label: string; posts: Post[] }[] {
     push(label, p);
   }
   return order.map((label) => ({ label, posts: out[label] }));
-}
-
-/* ───────────── HeroBanner ─────────────
- *
- * A rotating "look at this nice thing" banner that sits at the very top of
- * the Pulse feed. Each slide picks one signal from the Spotlight payload —
- * top kudos receiver, most engaging member, work anniversary, recent
- * celebration post — and renders it with a big avatar, headline, body and a
- * matching gradient. Auto-advances every 7s; arrows + dot indicators let you
- * pause and step through manually. Hides itself entirely when nothing's
- * worth showing.
- */
-
-type HeroSlide = {
-  key: string;
-  tone: "warn" | "success" | "accent" | "magenta";
-  emoji: string;
-  eyebrow: string;
-  headline: React.ReactNode;
-  body: React.ReactNode;
-  avatar?: { name: string; email: string };
-};
-
-const HERO_BADGE_CLASS = "absolute -bottom-2 -right-2 w-9 h-9 rounded-full grid place-items-center text-lg shadow-card";
-
-function HeroBanner({ compact = false }: { compact?: boolean } = {}) {
-  type HeroData = {
-    new_joiners?: { id: string; name: string; email: string; joined_at: string }[];
-    top_kudo?:    { id: string; name: string; email: string; count: number; badge: string; last_note: string };
-    top_engager?: { id: string; name: string; email: string; score: number };
-    anniversaries?: { id: string; name: string; email: string; hire_date: string; years: number }[];
-    celebrations?: { id: string; author_name: string; author_email: string; kind: string; title: string; body: string }[];
-    trending?: { id: string; author_name: string; author_email: string; kind: string; title: string; body: string; reactions: number };
-  };
-  const { data } = useQuery<HeroData>({
-    queryKey: ["campfire", "spotlight"],
-    queryFn: () => api("/api/v1/campfire/spotlight"),
-    refetchInterval: 5 * 60_000,
-  });
-
-  // Build the slide deck from whatever signals we have. Empty arrays / missing
-  // fields just don't produce a slide.
-  const slides = useMemo<HeroSlide[]>(() => {
-    if (!data) return [];
-    const out: HeroSlide[] = [];
-
-    if (data.top_kudo && data.top_kudo.count > 0) {
-      const k = data.top_kudo;
-      out.push({
-        key: "kudo-" + k.id,
-        tone: "magenta",
-        emoji: "🏆",
-        eyebrow: "Kudos magnet · this week",
-        headline: <><span className="text-warn">{k.name || k.email}</span> got {k.count} {k.count === 1 ? "kudos" : "kudos"} this week</>,
-        body: k.last_note
-          ? <em>"{truncate(k.last_note, 140)}"</em>
-          : <>Latest badge: {prettyBadge(k.badge)}. Drop them a thank-you in Recognition.</>,
-        avatar: { name: k.name, email: k.email },
-      });
-    }
-
-    if (data.top_engager && data.top_engager.score >= 5) {
-      const e = data.top_engager;
-      out.push({
-        key: "engager-" + e.id,
-        tone: "accent",
-        emoji: "✨",
-        eyebrow: "Most engaging this week",
-        headline: <><span className="text-accent">{e.name || e.email}</span> is keeping the campfire warm</>,
-        body: <>Posts, comments, kudos and reactions add up to <strong>{e.score}</strong> engagement points in the last 7 days.</>,
-        avatar: { name: e.name, email: e.email },
-      });
-    }
-
-    (data.anniversaries ?? []).slice(0, 2).forEach((a) => {
-      out.push({
-        key: "anniv-" + a.id,
-        tone: "success",
-        emoji: "🎂",
-        eyebrow: `Work anniversary · ${a.years} year${a.years === 1 ? "" : "s"}`,
-        headline: <><span className="text-success">{a.name || a.email}</span> has been with us {a.years} year{a.years === 1 ? "" : "s"}</>,
-        body: <>Marked since {new Date(a.hire_date).toLocaleDateString(undefined, { day: "numeric", month: "long" })}. Send some appreciation 👏</>,
-        avatar: { name: a.name, email: a.email },
-      });
-    });
-
-    (data.new_joiners ?? []).slice(0, 2).forEach((j) => {
-      out.push({
-        key: "joiner-" + j.id,
-        tone: "accent",
-        emoji: "🎉",
-        eyebrow: "New joiner",
-        headline: <>Welcome <span className="text-accent">{j.name || j.email}</span> to the team</>,
-        body: <>Joined {new Date(j.joined_at).toLocaleDateString(undefined, { day: "numeric", month: "long" })}. Say hi in <strong>#general</strong>.</>,
-        avatar: { name: j.name, email: j.email },
-      });
-    });
-
-    (data.celebrations ?? []).slice(0, 2).forEach((c) => {
-      out.push({
-        key: "celeb-" + c.id,
-        tone: "warn",
-        emoji: kindEmoji(c.kind),
-        eyebrow: prettyKind(c.kind),
-        headline: c.title || c.body.slice(0, 80),
-        body: c.title && c.body ? truncate(c.body, 140) : <>From <strong>{c.author_name || c.author_email}</strong></>,
-        avatar: { name: c.author_name, email: c.author_email },
-      });
-    });
-
-    if (data.trending && data.trending.reactions >= 3) {
-      const t = data.trending;
-      out.push({
-        key: "trending-" + t.id,
-        tone: "warn",
-        emoji: "🔥",
-        eyebrow: "Trending right now",
-        headline: t.title || truncate(t.body, 80),
-        body: <><strong>{t.reactions}</strong> reaction{t.reactions === 1 ? "" : "s"} on {t.author_name || t.author_email}'s post.</>,
-        avatar: { name: t.author_name, email: t.author_email },
-      });
-    }
-
-    return out;
-  }, [data]);
-
-  const [idx, setIdx] = useState(0);
-  const [paused, setPaused] = useState(false);
-
-  // Reset if the deck shrinks below the active index.
-  useEffect(() => { if (idx >= slides.length && slides.length > 0) setIdx(0); }, [idx, slides.length]);
-
-  // Auto-rotate every 7s while not paused. The hover-pause lets people read
-  // a slide without it sliding out from under them.
-  useEffect(() => {
-    if (paused || slides.length <= 1) return;
-    const t = setInterval(() => setIdx((i) => (i + 1) % slides.length), 7000);
-    return () => clearInterval(t);
-  }, [paused, slides.length]);
-
-  // In compact (sidebar) mode we never collapse to null — an empty rail looks
-  // like a broken layout. Render a quiet placeholder so the column still has
-  // presence while the spotlight warms up or simply has nothing to celebrate.
-  if (slides.length === 0) {
-    if (!compact) return null;
-    return (
-      <div
-        className="relative overflow-hidden rounded-3xl px-5 py-6 text-center text-white"
-        style={{ background: "#107B97" }}
-      >
-        <div className="text-3xl">✨</div>
-        <div className="text-[11px] uppercase tracking-[0.14em] font-bold text-white/75 mt-2">
-          Workspace pulse
-        </div>
-        <div className="text-[13px] font-semibold mt-1 leading-snug">
-          Nothing to spotlight yet
-        </div>
-        <div className="text-[12px] text-white/80 mt-1 leading-snug">
-          Kudos, posts and reactions show up here once the team starts firing.
-        </div>
-      </div>
-    );
-  }
-  const s = slides[Math.min(idx, slides.length - 1)];
-
-  // Compact mode: vertical stack tuned for a 320px sidebar slot. The full
-  // banner reads horizontally with a big avatar tile beside the text; that
-  // layout dies at narrow widths, so we restack avatar-on-top and shrink the
-  // typography. Same data, same rotation, just laid out for a rail.
-  // Both variants use the brand solid (#107B97) — we dropped the rotating
-  // gradient deck in favour of one consistent workspace identity colour.
-  return compact ? (
-    <div
-      className="relative overflow-hidden rounded-3xl shadow-card text-white"
-      style={{ background: "#107B97" }}
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
-    >
-      <div aria-hidden className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-white/10 pointer-events-none" />
-      <div aria-hidden className="absolute -bottom-12 -left-10 w-40 h-40 rounded-full bg-white/5 pointer-events-none" />
-
-      <div className="relative px-5 py-5 flex flex-col items-center text-center gap-3">
-        {s.avatar && (
-          <div className="relative shrink-0">
-            <span className="block rounded-full ring-2 ring-white/30">
-              <Avatar name={s.avatar.name} email={s.avatar.email} size={64} />
-            </span>
-            <span className={`${HERO_BADGE_CLASS} bg-white text-text border border-white/60`}>{s.emoji}</span>
-          </div>
-        )}
-        <div className="min-w-0 w-full">
-          <div className="text-[10px] uppercase tracking-[0.14em] font-bold text-white/75">
-            {s.eyebrow}
-          </div>
-          <div className="text-[15px] font-extrabold leading-tight mt-1 break-words">
-            {s.headline}
-          </div>
-          <div className="text-[12px] text-white/85 mt-1.5 leading-snug break-words">
-            {s.body}
-          </div>
-        </div>
-      </div>
-
-      {/* Compact nav — dots only, no arrow buttons (the rail is too narrow). */}
-      {slides.length > 1 && (
-        <div className="relative pb-3 flex items-center justify-center gap-1.5">
-          {slides.map((sl, i) => (
-            <button
-              key={sl.key}
-              onClick={() => setIdx(i)}
-              aria-label={`Slide ${i + 1}`}
-              className={`h-1.5 rounded-full transition-all ${
-                i === idx ? "w-5 bg-white" : "w-1.5 bg-white/40 hover:bg-white/60"
-              }`}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  ) : (
-    <div
-      className="relative overflow-hidden rounded-3xl shadow-card text-white"
-      style={{ background: "#107B97" }}
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
-    >
-      <div aria-hidden className="absolute -top-12 -right-12 w-48 h-48 rounded-full bg-white/10 pointer-events-none" />
-      <div aria-hidden className="absolute -bottom-16 -left-12 w-56 h-56 rounded-full bg-white/5 pointer-events-none" />
-
-      <div className="relative px-5 py-6 sm:px-8 sm:py-8 flex items-center gap-5 sm:gap-7">
-        {s.avatar && (
-          <div className="relative shrink-0">
-            <span className="block rounded-full ring-2 ring-white/30">
-              <Avatar name={s.avatar.name} email={s.avatar.email} size={80} />
-            </span>
-            <span className={`${HERO_BADGE_CLASS} bg-white text-text border border-white/60`}>{s.emoji}</span>
-          </div>
-        )}
-
-        <div className="min-w-0 flex-1">
-          <div className="text-[10.5px] uppercase tracking-[0.14em] font-bold text-white/75">
-            {s.eyebrow}
-          </div>
-          <div className="text-xl sm:text-2xl font-extrabold leading-tight mt-1">
-            {s.headline}
-          </div>
-          <div className="text-[13.5px] text-white/85 mt-1.5 max-w-2xl leading-snug">
-            {s.body}
-          </div>
-        </div>
-      </div>
-
-      {/* Nav controls — only render when there's more than one slide. */}
-      {slides.length > 1 && (
-        <>
-          <div className="absolute bottom-3 right-4 flex items-center gap-2">
-            {slides.map((sl, i) => (
-              <button
-                key={sl.key}
-                onClick={() => setIdx(i)}
-                aria-label={`Slide ${i + 1}`}
-                className={`h-1.5 rounded-full transition-all ${
-                  i === idx ? "w-6 bg-white" : "w-1.5 bg-white/40 hover:bg-white/60"
-                }`}
-              />
-            ))}
-          </div>
-          <button
-            onClick={() => setIdx((i) => (i - 1 + slides.length) % slides.length)}
-            aria-label="Previous"
-            className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 text-white grid place-items-center shadow-soft"
-          >
-            ‹
-          </button>
-          <button
-            onClick={() => setIdx((i) => (i + 1) % slides.length)}
-            aria-label="Next"
-            className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 text-white grid place-items-center shadow-soft"
-          >
-            ›
-          </button>
-        </>
-      )}
-    </div>
-  );
-}
-
-// Tiny helpers used only by the hero banner.
-function truncate(s: string, n: number): string {
-  s = (s || "").trim();
-  return s.length > n ? s.slice(0, n - 1) + "…" : s;
-}
-function prettyBadge(b: string): string {
-  return b.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-}
-function prettyKind(k: string): string {
-  switch (k) {
-    case "win":         return "Project win";
-    case "celebration": return "Team celebration";
-    case "anniversary": return "Anniversary post";
-    case "birthday":    return "Birthday";
-    default:            return "From the feed";
-  }
-}
-function kindEmoji(k: string): string {
-  switch (k) {
-    case "win":         return "🏅";
-    case "celebration": return "🎉";
-    case "anniversary": return "🥂";
-    case "birthday":    return "🎂";
-    default:            return "🔥";
-  }
 }
 
 // SpotlightCard — sits above the composer and surfaces who joined, who's out,
