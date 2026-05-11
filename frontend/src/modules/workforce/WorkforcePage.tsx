@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import {
-  Coffee, MessageCircle, Plus, Paperclip, Users as UsersIcon, AlertTriangle,
+  Coffee, MessageCircle, Paperclip, Users as UsersIcon, AlertTriangle,
   ArrowUpRight, LayoutGrid, List as ListIcon, X, ExternalLink, FolderKanban,
   PanelRightClose, PanelRightOpen,
 } from "lucide-react";
@@ -327,19 +327,9 @@ function CapacityColumn({
   const meta = COL_META[bucket];
   return (
     <div className="flex flex-col">
-      <div className={`rounded-2xl ${meta.tone} border px-4 py-3 mb-3 flex items-center justify-between`}>
-        <div className="flex items-center gap-2">
-          <span className={`w-2 h-2 rounded-full ${meta.bar}`} />
-          <span className="text-[14px] font-bold capitalize">{meta.label}</span>
-          <span className="text-[13px] font-bold opacity-70">— {people.length}</span>
-        </div>
-        <button
-          className="w-7 h-7 grid place-items-center rounded-full bg-surface border border-border text-muted hover:text-text"
-          aria-label="Add to bucket"
-          title="Coming soon"
-        >
-          <Plus size={14} />
-        </button>
+      <div className={`rounded-2xl ${meta.tone} border px-4 py-3 mb-3 flex items-center gap-2`}>
+        <span className="text-[14px] font-bold capitalize">{meta.label}</span>
+        <span className="text-[13px] font-bold opacity-70">— {people.length}</span>
       </div>
 
       <div className="space-y-3 min-h-[80px]">
