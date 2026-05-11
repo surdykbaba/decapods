@@ -19,7 +19,7 @@ import {
   Flame, Megaphone, Trophy, PartyPopper, UserPlus, Cake, Sparkles,
   StickyNote, Newspaper, MessageCircle, Pin, X, Send, Heart, ThumbsUp,
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
-  Wrench, Briefcase, Hash, Activity, Plus, Loader2, CalendarDays, TrendingUp, Plane,
+  Wrench, Briefcase, Hash, Activity, Plus, Loader2, CalendarDays,
 } from "lucide-react";
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -368,8 +368,6 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <div className="space-y-4">
-      <SpotlightCard />
-
       {/* Post composer trigger — loud on purpose. The old subtle "Share
           something…" pill read like search and nobody clicked it. Now it's
           a coloured CTA card with quick-prompt chips below so the user sees
@@ -489,101 +487,6 @@ function groupByDay(posts: Post[]): { label: string; posts: Post[] }[] {
     push(label, p);
   }
   return order.map((label) => ({ label, posts: out[label] }));
-}
-
-// SpotlightCard — sits above the composer and surfaces who joined, who's out,
-// and what the team has rallied behind this week. Hidden entirely when the
-// backend returns nothing worth showing, so it never feels like dead weight.
-function SpotlightCard() {
-  type Spotlight = {
-    new_joiners: { id: string; name: string; email: string; joined_at: string }[];
-    on_leave:    { id: string; name: string; email: string; back_on: string }[];
-    trending?:   { id: string; author_name: string; author_email: string; kind: string; title: string; body: string; reactions: number };
-  };
-  const { data } = useQuery<Spotlight>({
-    queryKey: ["campfire", "spotlight"],
-    queryFn: () => api("/api/v1/campfire/spotlight"),
-    refetchInterval: 5 * 60_000,
-  });
-  if (!data) return null;
-  const joiners = data.new_joiners ?? [];
-  const onLeave = data.on_leave ?? [];
-  const trend = data.trending;
-  if (joiners.length === 0 && onLeave.length === 0 && !trend) return null;
-
-  return (
-    <div
-      className="relative rounded-3xl p-5 grid grid-cols-1 md:grid-cols-3 gap-5 shadow-card overflow-hidden text-white"
-      style={{ background: "#107B97" }}
-    >
-      <div aria-hidden className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-white/10 pointer-events-none" />
-      <div aria-hidden className="absolute -bottom-12 -left-8 w-44 h-44 rounded-full bg-white/5 pointer-events-none" />
-      <SpotlightCol
-        icon={<UserPlus size={14} className="text-white" />}
-        title={joiners.length ? `Welcome ${joiners.length === 1 ? "our newest" : "our newest"} ${joiners.length === 1 ? "joiner" : "joiners"}` : "No new joiners yet"}
-      >
-        {joiners.length === 0
-          ? <span className="text-[12px] text-white/80">Invite someone from Members.</span>
-          : (
-            <div className="flex flex-wrap items-center gap-2 mt-1">
-              {joiners.slice(0, 4).map((j) => (
-                <span key={j.id} className="inline-flex items-center gap-2 text-[12px]" title={j.email}>
-                  <Avatar name={j.name} email={j.email} size={22} />
-                  <span className="font-semibold text-white">{(j.name || j.email).split(" ")[0]}</span>
-                </span>
-              ))}
-              {joiners.length > 4 && <span className="text-[11px] text-white/75">+{joiners.length - 4}</span>}
-            </div>
-          )}
-      </SpotlightCol>
-
-      <SpotlightCol
-        icon={<Plane size={14} className="text-white" />}
-        title={onLeave.length ? `${onLeave.length} on leave today` : "Everyone's in today"}
-      >
-        {onLeave.length === 0
-          ? <span className="text-[12px] text-white/80">Full attendance.</span>
-          : (
-            <div className="flex flex-wrap items-center gap-2 mt-1">
-              {onLeave.slice(0, 4).map((p) => (
-                <span key={p.id} className="inline-flex items-center gap-2 text-[12px]" title={`Back ${new Date(p.back_on).toLocaleDateString()}`}>
-                  <Avatar name={p.name} email={p.email} size={22} />
-                  <span className="font-semibold text-white">{(p.name || p.email).split(" ")[0]}</span>
-                </span>
-              ))}
-              {onLeave.length > 4 && <span className="text-[11px] text-white/75">+{onLeave.length - 4}</span>}
-            </div>
-          )}
-      </SpotlightCol>
-
-      <SpotlightCol
-        icon={<TrendingUp size={14} className="text-white" />}
-        title={trend ? "Trending this week" : "Nothing trending yet"}
-      >
-        {trend ? (
-          <div className="mt-1">
-            <div className="text-[12px] text-white font-semibold line-clamp-2">{trend.title || trend.body}</div>
-            <div className="text-[11px] text-white/75 mt-0.5">
-              {trend.author_name || trend.author_email} · {trend.reactions} reaction{trend.reactions === 1 ? "" : "s"}
-            </div>
-          </div>
-        ) : (
-          <span className="text-[12px] text-white/80">React to posts to surface what the team loves.</span>
-        )}
-      </SpotlightCol>
-    </div>
-  );
-}
-
-function SpotlightCol({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <div className="flex items-center gap-1.5 text-[10.5px] uppercase tracking-wider font-bold text-white/85">
-        {icon} {title}
-      </div>
-      {children}
-    </div>
-  );
 }
 
 // ComposerHints — three tap-and-paste prompts under the post composer to defeat
