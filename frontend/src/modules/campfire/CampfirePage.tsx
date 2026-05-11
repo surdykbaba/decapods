@@ -19,7 +19,7 @@ import {
   Flame, Megaphone, Trophy, PartyPopper, UserPlus, Cake, Sparkles,
   StickyNote, Newspaper, MessageCircle, Pin, X, Send, Heart, ThumbsUp,
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
-  Wrench, Briefcase, Hash, Activity, Plus, Loader2, CalendarDays,
+  Wrench, Briefcase, Hash, Activity, Plus, Loader2, CalendarDays, Calendar,
 } from "lucide-react";
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -368,6 +368,8 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
 
   return (
     <div className="space-y-4">
+      <UpcomingEventsBanner />
+
       {/* Post composer trigger — loud on purpose. The old subtle "Share
           something…" pill read like search and nobody clicked it. Now it's
           a coloured CTA card with quick-prompt chips below so the user sees
@@ -487,6 +489,131 @@ function groupByDay(posts: Post[]): { label: string; posts: Post[] }[] {
     push(label, p);
   }
   return order.map((label) => ({ label, posts: out[label] }));
+}
+
+/* UpcomingEventsBanner — slim, warm strip above the composer.
+ *
+ * Surfaces three categories of "what's coming up" that the spotlight endpoint
+ * already exposes: work anniversaries in the next 14 days, teammates returning
+ * from leave, and recent joiners. Each item gets an emoji, a friendly headline
+ * and a relative-time hint. Hides itself entirely when there's nothing on the
+ * horizon — no point shouting an empty bulletin. */
+type SpotlightForEvents = {
+  new_joiners?:   { id: string; name: string; email: string; joined_at: string }[];
+  on_leave?:      { id: string; name: string; email: string; back_on: string }[];
+  anniversaries?: { id: string; name: string; email: string; hire_date: string; years: number }[];
+};
+
+type UpcomingEvent = {
+  key: string;
+  emoji: string;
+  title: React.ReactNode;
+  when: string;
+  avatar: { name: string; email: string };
+  whenSort: number; // days from today; smaller = sooner
+};
+
+function fmtWhenDays(days: number): string {
+  if (days <= 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days < 7)   return `in ${days} days`;
+  if (days < 14)  return `in ${Math.round(days / 7)} week`;
+  return `in ${Math.round(days / 7)} weeks`;
+}
+
+function UpcomingEventsBanner() {
+  const { data } = useQuery<SpotlightForEvents>({
+    queryKey: ["campfire", "spotlight"],
+    queryFn: () => api("/api/v1/campfire/spotlight"),
+    refetchInterval: 5 * 60_000,
+  });
+
+  const events = useMemo<UpcomingEvent[]>(() => {
+    if (!data) return [];
+    const out: UpcomingEvent[] = [];
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+
+    (data.anniversaries ?? []).forEach((a) => {
+      // Hire date for *this* year's anniversary window.
+      const hd = new Date(a.hire_date);
+      const thisYear = new Date(new Date().getFullYear(), hd.getMonth(), hd.getDate());
+      const days = Math.round((thisYear.getTime() - now) / day);
+      out.push({
+        key: "anniv-" + a.id,
+        emoji: "🎂",
+        title: <><span className="font-bold">{a.name || a.email}</span> · {a.years}-year anniversary</>,
+        when: fmtWhenDays(days),
+        avatar: { name: a.name, email: a.email },
+        whenSort: Math.max(0, days),
+      });
+    });
+
+    (data.on_leave ?? []).forEach((p) => {
+      const back = new Date(p.back_on);
+      const days = Math.round((back.getTime() - now) / day);
+      out.push({
+        key: "back-" + p.id,
+        emoji: "✈️",
+        title: <><span className="font-bold">{p.name || p.email}</span> back from leave</>,
+        when: fmtWhenDays(days),
+        avatar: { name: p.name, email: p.email },
+        whenSort: Math.max(0, days) + 0.1,
+      });
+    });
+
+    (data.new_joiners ?? []).forEach((j) => {
+      const joined = new Date(j.joined_at);
+      const days = Math.round((now - joined.getTime()) / day);
+      out.push({
+        key: "join-" + j.id,
+        emoji: "👋",
+        title: <><span className="font-bold">{j.name || j.email}</span> just joined</>,
+        when: days <= 0 ? "today" : `${days}d ago`,
+        avatar: { name: j.name, email: j.email },
+        whenSort: -1 + days * 0.01, // joiners always pin to the front
+      });
+    });
+
+    return out.sort((a, b) => a.whenSort - b.whenSort).slice(0, 4);
+  }, [data]);
+
+  if (events.length === 0) return null;
+
+  return (
+    <div className="relative overflow-hidden rounded-3xl shadow-soft text-white" style={{ background: "#107B97" }}>
+      <div aria-hidden className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-white/10 pointer-events-none" />
+      <div aria-hidden className="absolute -bottom-12 -left-8 w-44 h-44 rounded-full bg-white/5 pointer-events-none" />
+
+      <div className="relative p-4 sm:p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <Calendar size={14} className="text-white/90" />
+          <span className="text-[11px] uppercase tracking-[0.14em] font-bold text-white/85">
+            What's coming up
+          </span>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          {events.map((e) => (
+            <div
+              key={e.key}
+              className="inline-flex items-center gap-2 bg-white/12 hover:bg-white/20 transition-colors border border-white/20 rounded-2xl pl-1.5 pr-3 py-1.5 min-w-0"
+              title={`${typeof e.title === "string" ? e.title : ""} · ${e.when}`}
+            >
+              <span className="ring-2 ring-white/30 rounded-full block shrink-0">
+                <Avatar name={e.avatar.name} email={e.avatar.email} size={24} />
+              </span>
+              <span className="text-[13px] leading-tight truncate max-w-[260px]">
+                <span className="mr-1">{e.emoji}</span>
+                {e.title}
+              </span>
+              <span className="text-[11px] font-semibold text-white/80 shrink-0">· {e.when}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ComposerHints — three tap-and-paste prompts under the post composer to defeat
