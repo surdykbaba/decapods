@@ -100,6 +100,22 @@ func New(d Deps) http.Handler {
 	authed.PUT("/settings/teams",            mw.RequirePermission("governance:write"), teamsIntegration.Put)
 	authed.POST("/settings/teams/test/:id",  mw.RequirePermission("governance:write"), teamsIntegration.Test)
 
+	// Microsoft / Entra ID integration.
+	//   • /settings/microsoft — admin-only credentials.
+	//   • /me/microsoft/*    — per-user connect / disconnect / status.
+	//   • /me/meetings       — calendar feed pulled via Graph.
+	//   • /auth/microsoft/callback — public; verified via HMAC-signed state.
+	msAdmin := handlers.NewMicrosoftAdmin(d.DB, d.Cfg)
+	authed.GET("/settings/microsoft", mw.RequirePermission("governance:write"), msAdmin.Get)
+	authed.PUT("/settings/microsoft", mw.RequirePermission("governance:write"), msAdmin.Put)
+
+	msOAuth := handlers.NewMicrosoftOAuth(d.DB, d.Cfg)
+	authed.GET("/me/microsoft/start",       msOAuth.Start)
+	authed.POST("/me/microsoft/disconnect", msOAuth.Disconnect)
+	authed.GET("/me/microsoft/status",      msOAuth.Status)
+	authed.GET("/me/meetings",              msOAuth.Meetings)
+	api.GET("/auth/microsoft/callback",     msOAuth.Callback)
+
 	rv := handlers.NewRoleVisibility(d.DB)
 	authed.GET("/settings/role-visibility", rv.Get)
 	authed.PUT("/settings/role-visibility", mw.RequirePermission("governance:write"), rv.Put)
