@@ -1652,98 +1652,228 @@ function ProfileTab() {
   if (isLoading || !data) return <div className="text-muted">Loading…</div>;
   const p = data.performance;
 
+  // Derived insights — we don't fetch new endpoints, we squeeze meaning out of
+  // the fields the profile already returns. Self-management framing only.
+  const avgHoursPerWeek = (p.hours_last_30 / (30 / 7));
+  const updateStreakPct = Math.min(100, Math.round((p.updates_last_7 / 7) * 100));
+  const workloadHealth: { tone: "good" | "warn" | "bad"; label: string; hint: string } =
+    p.tasks_overdue === 0 && p.blocked_now === 0
+      ? { tone: "good", label: "On top of things", hint: "Nothing overdue, nothing blocked." }
+      : p.tasks_overdue > 2 || p.blocked_now > 1
+        ? { tone: "bad", label: "Needs attention", hint: `${p.tasks_overdue} overdue · ${p.blocked_now} blocked.` }
+        : { tone: "warn", label: "A few loose ends", hint: `${p.tasks_overdue} overdue · ${p.blocked_now} blocked.` };
+  const healthChip = {
+    good: "bg-success/10 text-success border-success/30",
+    warn: "bg-warn/10 text-warn border-warn/30",
+    bad:  "bg-danger/10 text-danger border-danger/30",
+  }[workloadHealth.tone];
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-      <section className="bg-surface border border-border rounded-2xl p-5 lg:col-span-2">
-        <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
-          <h2 className="h2">Profile</h2>
-          {/* Jump to the public-facing member profile (what teammates see) —
-              richer KPIs, workload, leave balances, projects. */}
+    <div className="space-y-4">
+      {/* ============ Identity hero ============ */}
+      <section className="relative overflow-hidden bg-gradient-to-br from-accent-soft/40 via-surface to-warn/10 border border-border rounded-2xl p-5 sm:p-6">
+        <div className="absolute -top-16 -right-12 w-56 h-56 bg-accent/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="relative flex flex-col sm:flex-row sm:items-center gap-5">
+          <div className="shrink-0">
+            <AvatarUploader name={data.name} email={data.email} src={data.avatar_url} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-[1.4rem] sm:text-[1.6rem] font-extrabold tracking-tight text-text leading-tight truncate">
+                {data.name || "—"}
+              </h2>
+              <span className={`inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full border ${healthChip}`}>
+                <Activity size={11} /> {workloadHealth.label}
+              </span>
+            </div>
+            <div className="text-sm text-muted mt-0.5 truncate">{data.email}</div>
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              {data.roles.map((r) => (
+                <span key={r} className="pill bg-accent-soft text-accent">{r}</span>
+              ))}
+              {data.roles.length === 0 && (
+                <span className="text-xs text-muted">No roles assigned.</span>
+              )}
+              {data.mfa_enabled && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/30">
+                  <Sparkles size={10} /> MFA on
+                </span>
+              )}
+              {!data.mfa_enabled && data.mfa_required && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-warn/10 text-warn border border-warn/30">
+                  <AlertTriangle size={10} /> MFA required
+                </span>
+              )}
+              {data.github_username && (
+                <a
+                  href={`https://github.com/${data.github_username}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-bg text-muted border border-border hover:text-text"
+                >
+                  <Github size={10} /> {data.github_username}
+                </a>
+              )}
+            </div>
+            <div className="text-xs text-muted mt-2">{workloadHealth.hint}</div>
+          </div>
           <Link
             to={`/members/${data.id}`}
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-accent hover:underline"
+            className="shrink-0 inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-accent hover:underline self-start"
           >
-            View full profile <ArrowRight size={13} />
+            View public profile <ArrowRight size={13} />
           </Link>
         </div>
+      </section>
 
-        <div className="mb-5 pb-5 border-b border-border">
-          <AvatarUploader name={data.name} email={data.email} src={data.avatar_url} />
-        </div>
+      {/* ============ Insight tiles ============ */}
+      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <InsightTile
+          icon={<CheckCircle2 size={14} />}
+          label="Tasks completed"
+          value={p.tasks_done.toString()}
+          sub="Lifetime — every one shipped."
+          tone="good"
+        />
+        <InsightTile
+          icon={<AlertTriangle size={14} />}
+          label="Overdue right now"
+          value={p.tasks_overdue.toString()}
+          sub={p.tasks_overdue === 0 ? "Clear runway." : "Knock these out first."}
+          tone={p.tasks_overdue === 0 ? "good" : "bad"}
+        />
+        <InsightTile
+          icon={<PauseCircle size={14} />}
+          label="Blocked"
+          value={p.blocked_now.toString()}
+          sub={p.blocked_now === 0 ? "Nothing waiting on others." : "Unblock or escalate."}
+          tone={p.blocked_now === 0 ? "good" : "warn"}
+        />
+        <InsightTile
+          icon={<Clock size={14} />}
+          label="Avg hours / week"
+          value={`${avgHoursPerWeek.toFixed(1)}h`}
+          sub={`${p.hours_last_30.toFixed(1)}h logged over 30 days.`}
+          tone="info"
+        />
+      </section>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <label className="block">
-            <div className="label">Display name</div>
-            <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label className="block">
-            <div className="label">Email</div>
-            <input className="input bg-bg" value={data.email} readOnly />
-          </label>
-          <label className="block md:col-span-2">
-            <div className="label">GitHub username</div>
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-bg border border-border rounded-l-xl text-sm text-muted">
-                <Github size={14} /> github.com/
-              </span>
-              <input
-                className="input rounded-l-none"
-                value={github}
-                onChange={(e) => setGithub(e.target.value)}
-                placeholder="your-handle"
-              />
-            </div>
-            <div className="text-xs text-muted mt-1">
-              Linking your GitHub lets the system attribute commits, PRs, and reviews to you.
-            </div>
-          </label>
+      {/* ============ Update cadence — full-width meter ============ */}
+      <section className="bg-surface border border-border rounded-2xl p-5">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <div>
-            <div className="label">Roles</div>
-            <div className="flex flex-wrap gap-1.5">
-              {data.roles.map((r) => <span key={r} className="pill bg-accent-soft text-accent">{r}</span>)}
-              {data.roles.length === 0 && <span className="text-xs text-muted">No roles assigned.</span>}
+            <div className="text-[13px] font-semibold text-text flex items-center gap-1.5">
+              <FileText size={13} className="text-accent" /> Update cadence (last 7 days)
             </div>
+            <p className="text-xs text-muted mt-0.5">
+              A daily heartbeat keeps blockers visible to your manager early.
+            </p>
+          </div>
+          <div className="text-right">
+            <div className="text-2xl font-extrabold text-text leading-none">{p.updates_last_7}<span className="text-sm font-bold text-muted">/7</span></div>
+            <div className="text-[11px] font-semibold text-muted">days submitted</div>
           </div>
         </div>
-        <div className="mt-5 flex items-center justify-end gap-3">
-          {!dirty && !save.isPending && (
-            <span className="text-xs text-muted">No changes yet</span>
-          )}
-          <SmartButton
-            variant="primary"
-            disabled={!dirty}
-            onClick={() => save.mutateAsync()}
-            loadingLabel="Saving…"
-            successLabel="Saved"
-          >
-            Save changes
-          </SmartButton>
+        <div className="mt-3 h-2 rounded-full bg-bg border border-border overflow-hidden">
+          <div
+            className={`h-full transition-all ${updateStreakPct >= 70 ? "bg-success" : updateStreakPct >= 40 ? "bg-warn" : "bg-danger"}`}
+            style={{ width: `${updateStreakPct}%` }}
+          />
         </div>
       </section>
 
-      <div className="lg:col-span-2">
-        <MfaCard
-          enabled={!!data.mfa_enabled}
-          required={!!data.mfa_required}
-          onChanged={() => qc.invalidateQueries({ queryKey: ["me", "profile"] })}
-        />
+      {/* ============ Two-column: edit details + MFA ============ */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        <section className="bg-surface border border-border rounded-2xl p-5 lg:col-span-3">
+          <h2 className="h2 mb-1">Edit details</h2>
+          <p className="text-xs text-muted mb-4">
+            Email is set by your workspace admin — reach out if it's wrong.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <label className="block">
+              <div className="label">Display name</div>
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <label className="block">
+              <div className="label">Email</div>
+              <input className="input bg-bg" value={data.email} readOnly />
+            </label>
+            <label className="block md:col-span-2">
+              <div className="label">GitHub username</div>
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 px-3 py-2.5 bg-bg border border-border rounded-l-xl text-sm text-muted">
+                  <Github size={14} /> github.com/
+                </span>
+                <input
+                  className="input rounded-l-none"
+                  value={github}
+                  onChange={(e) => setGithub(e.target.value)}
+                  placeholder="your-handle"
+                />
+              </div>
+              <div className="text-xs text-muted mt-1">
+                Linking your GitHub lets the system attribute commits, PRs, and reviews to you.
+              </div>
+            </label>
+          </div>
+          <div className="mt-5 flex items-center justify-end gap-3">
+            {!dirty && !save.isPending && (
+              <span className="text-xs text-muted">No changes yet</span>
+            )}
+            <SmartButton
+              variant="primary"
+              disabled={!dirty}
+              onClick={() => save.mutateAsync()}
+              loadingLabel="Saving…"
+              successLabel="Saved"
+            >
+              Save changes
+            </SmartButton>
+          </div>
+        </section>
+
+        <div className="lg:col-span-2">
+          <MfaCard
+            enabled={!!data.mfa_enabled}
+            required={!!data.mfa_required}
+            onChanged={() => qc.invalidateQueries({ queryKey: ["me", "profile"] })}
+          />
+        </div>
       </div>
 
-      <section className="bg-surface border border-border rounded-2xl p-5">
-        <h2 className="h2 mb-1">Personal stats</h2>
-        <p className="text-xs text-muted mb-4">Self-management view, not a leaderboard.</p>
-        <ul className="space-y-3">
-          <PerfRow label="Tasks completed (lifetime)"   value={p.tasks_done}     tone="good" />
-          <PerfRow label="Currently overdue"            value={p.tasks_overdue}  tone={p.tasks_overdue ? "bad" : "good"} />
-          <PerfRow label="Currently blocked"            value={p.blocked_now}    tone={p.blocked_now ? "warn" : "good"} />
-          <PerfRow label="Updates submitted (last 7d)"  value={p.updates_last_7} tone="info" />
-          <PerfRow label="Hours logged (last 30d)"      value={`${p.hours_last_30.toFixed(1)}h`} tone="neutral" />
-        </ul>
-      </section>
+      <NotificationPrefsCard />
+    </div>
+  );
+}
 
-      <div className="lg:col-span-3">
-        <NotificationPrefsCard />
+/* Stat tile for the Profile insights row. Tone is purely cosmetic — the icon
+ * bubble picks up the colour and the rest stays neutral so a screen full of
+ * tiles doesn't read like a traffic light. */
+function InsightTile({
+  icon, label, value, sub, tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub: string;
+  tone: "good" | "warn" | "bad" | "info";
+}) {
+  const bubble = {
+    good: "bg-success/10 text-success",
+    warn: "bg-warn/10 text-warn",
+    bad:  "bg-danger/10 text-danger",
+    info: "bg-accent-soft text-accent",
+  }[tone];
+  return (
+    <div className="bg-surface border border-border rounded-2xl p-4 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${bubble}`}>
+          {icon}
+        </span>
+        <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted">{label}</span>
       </div>
+      <div className="text-[1.5rem] font-extrabold text-text leading-none">{value}</div>
+      <div className="text-[11.5px] text-muted leading-snug">{sub}</div>
     </div>
   );
 }
@@ -2067,18 +2197,6 @@ function NotificationPrefsCard() {
         </ul>
       )}
     </section>
-  );
-}
-
-function PerfRow({ label, value, tone }: { label: string; value: React.ReactNode; tone: "good" | "warn" | "bad" | "info" | "neutral" }) {
-  const cls = {
-    good: "text-success", warn: "text-warn", bad: "text-danger", info: "text-accent", neutral: "text-text",
-  }[tone];
-  return (
-    <li className="flex items-center justify-between text-sm">
-      <span className="text-muted">{label}</span>
-      <span className={`font-bold ${cls}`}>{value}</span>
-    </li>
   );
 }
 
