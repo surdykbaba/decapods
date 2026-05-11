@@ -1,9 +1,10 @@
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
  Briefcase, FolderKanban, Users, Banknote,
   Settings, LifeBuoy, Search, UserCheck,
   Sun, Moon, LogOut, ChevronDown,
   Handshake, UsersRound, Network, UserCog, Folder, Plane,
+  ShieldCheck, Menu, X, ClipboardCheck,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useMemo, useState } from "react";
@@ -36,6 +37,7 @@ const navTop: NavItem[] = [
   { section: "finance",      to: "/finance",      label: "Finance",      icon: Banknote },
   { section: "files",        to: "/files",        label: "Files & media", icon: Folder },
   { section: "leave",        to: "/leave",        label: "Leave",        icon: Plane },
+  { section: "attendance",   to: "/attendance",   label: "Attendance",   icon: ClipboardCheck },
   // Campfire intentionally lives in the top-bar as an animated flame badge —
   // not in the sidebar. The CampfireBell component is the only entry point.
   { section: "settings",     to: "/settings",     label: "Settings",     icon: Settings },
@@ -44,9 +46,16 @@ const navTop: NavItem[] = [
 export function Shell() {
   const { user, setUser, logout } = useAuth();
   const nav2 = useNavigate();
+  const loc = useLocation();
   const theme = useTheme();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
+  // Mobile drawer — false on desktop (>=md) because the sidebar is statically
+  // rendered there; only matters on small screens.
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  // Close the drawer whenever the user navigates so they don't have to dismiss
+  // it manually after picking a destination.
+  useEffect(() => { setDrawerOpen(false); }, [loc.pathname]);
 
   // Mount the global heartbeat as soon as the user is authenticated. Pings
   // /me/heartbeat every minute while the tab is visible so directory pages
@@ -95,9 +104,35 @@ export function Shell() {
 
   return (
     <div className="h-full flex bg-bg">
-      {/* Sidebar */}
-      <aside className="w-[256px] shrink-0 flex flex-col px-3 py-4">
-        <BrandLogo />
+      {/* Mobile drawer scrim — only visible when open + below md breakpoint. */}
+      {drawerOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={() => setDrawerOpen(false)}
+          aria-hidden
+        />
+      )}
+
+      {/* Sidebar
+       * — Desktop: static column on the left.
+       * — Mobile (<md): slides in from the left as an overlay when drawerOpen.
+       * The same markup serves both via responsive position/transform. */}
+      <aside
+        className={`fixed md:static inset-y-0 left-0 z-50 w-[256px] shrink-0 flex flex-col px-3 py-4 bg-bg
+          transform transition-transform duration-200 ease-out
+          ${drawerOpen ? "translate-x-0 shadow-card" : "-translate-x-full"}
+          md:translate-x-0 md:shadow-none`}
+      >
+        <div className="flex items-center justify-between md:block">
+          <BrandLogo />
+          <button
+            onClick={() => setDrawerOpen(false)}
+            className="md:hidden p-2 rounded-lg hover:bg-surface text-muted"
+            aria-label="Close menu"
+          >
+            <X size={18} />
+          </button>
+        </div>
 
         <button
           onClick={() => setPaletteOpen(true)}
@@ -126,6 +161,27 @@ export function Shell() {
               <span className="flex-1">{n.label}</span>
             </NavLink>
           ))}
+
+          {user?.roles?.includes("super_admin") && (
+            <>
+              <div className="mt-4 mb-1 px-3.5 text-[10px] uppercase tracking-[0.08em] font-bold text-muted/70">
+                Super admin
+              </div>
+              <NavLink
+                to="/admin/audit"
+                className={({ isActive }) =>
+                  `flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-semibold transition-colors ${
+                    isActive
+                      ? "bg-accent text-white shadow-soft"
+                      : "text-muted hover:text-text hover:bg-surface"
+                  }`
+                }
+              >
+                <ShieldCheck size={18} />
+                <span className="flex-1">System audit</span>
+              </NavLink>
+            </>
+          )}
         </nav>
 
         {/* Identity (sidebar footer) */}
@@ -201,11 +257,20 @@ export function Shell() {
         </div>
       </aside>
 
-      {/* Main panel */}
-      <main className="flex-1 min-w-0 p-3 pl-0">
-        <div className="h-full bg-surface rounded-3xl shadow-card border border-border flex flex-col overflow-hidden">
+      {/* Main panel — full width on mobile (no left gap), padded on desktop. */}
+      <main className="flex-1 min-w-0 p-0 md:p-3 md:pl-0 w-full">
+        <div className="h-full bg-surface md:rounded-3xl md:shadow-card md:border md:border-border flex flex-col overflow-hidden">
           {/* Top bar */}
-          <header className="h-[68px] px-6 flex items-center gap-2 shrink-0">
+          <header className="h-[60px] md:h-[68px] px-3 md:px-6 flex items-center gap-2 shrink-0 border-b border-border md:border-b-0">
+            {/* Hamburger — mobile only. */}
+            <button
+              onClick={() => setDrawerOpen(true)}
+              className="md:hidden p-2 -ml-1 rounded-lg hover:bg-bg text-text"
+              aria-label="Open menu"
+            >
+              <Menu size={20} />
+            </button>
+
             <div className="flex-1" />
 
             <StatusBadge />
@@ -214,8 +279,8 @@ export function Shell() {
             <NotificationsBell />
           </header>
 
-          {/* Content */}
-          <div className="flex-1 min-h-0 overflow-auto px-8 pb-8">
+          {/* Content — narrower side-padding on mobile so cards breathe. */}
+          <div className="flex-1 min-h-0 overflow-auto px-4 pb-6 md:px-8 md:pb-8">
             <Outlet />
           </div>
         </div>

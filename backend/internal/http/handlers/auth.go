@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/decapods/pgdp/backend/internal/audit"
 	"github.com/decapods/pgdp/backend/internal/auth"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
 	"github.com/decapods/pgdp/backend/internal/platform/config"
@@ -49,10 +50,15 @@ func (a *Auth) Login(c *gin.Context) {
 		WHERE u.email = $1 AND u.deleted_at IS NULL
 		GROUP BY u.id`, req.Email)
 	if err := row.Scan(&userID, &tenantID, &hash, &mfaEnabled, &roles); err != nil {
+		// Unknown email — no tenant context, so we can't write to audit_log
+		// (tenant_id is NOT NULL). The application logs still capture the
+		// attempt via the access log middleware.
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 	if err := auth.VerifyPassword(req.Password, hash); err != nil {
+		audit.WriteHTTP(c, a.db, c, tenantID, &userID, "auth.login.failure", "user", userID,
+			map[string]any{"email": req.Email, "reason": "bad_password"})
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
@@ -60,6 +66,8 @@ func (a *Auth) Login(c *gin.Context) {
 		ch := uuid.NewString()
 		_, _ = a.db.Exec(c, `INSERT INTO mfa_challenges (id, user_id, expires_at) VALUES ($1, $2, $3)`,
 			ch, userID, time.Now().Add(5*time.Minute))
+		audit.WriteHTTP(c, a.db, c, tenantID, &userID, "auth.mfa.challenge_issued", "user", userID,
+			map[string]any{"email": req.Email})
 		c.JSON(http.StatusOK, mfaChallenge{Challenge: ch})
 		return
 	}
@@ -68,6 +76,8 @@ func (a *Auth) Login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "token issue"})
 		return
 	}
+	audit.WriteHTTP(c, a.db, c, tenantID, &userID, "auth.login.success", "user", userID,
+		map[string]any{"email": req.Email, "roles": roles})
 	c.JSON(http.StatusOK, tok)
 }
 
@@ -98,6 +108,7 @@ func (a *Auth) VerifyMFA(c *gin.Context) {
 		return
 	}
 	if !auth.VerifyTOTP(secret, req.Code) {
+		audit.WriteHTTP(c, a.db, c, tenantID, &userID, "auth.mfa.failure", "user", userID, nil)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid code"})
 		return
 	}
@@ -107,6 +118,8 @@ func (a *Auth) VerifyMFA(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "token issue"})
 		return
 	}
+	audit.WriteHTTP(c, a.db, c, tenantID, &userID, "auth.login.success", "user", userID,
+		map[string]any{"via": "mfa", "roles": roles})
 	c.JSON(http.StatusOK, tok)
 }
 

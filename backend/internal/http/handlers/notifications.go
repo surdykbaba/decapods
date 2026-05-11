@@ -49,6 +49,18 @@ func (h *Notifications) List(c *gin.Context) {
 	out := []item{}
 	now := time.Now().UTC()
 
+	// Load dismissed item ids for this user so we can hide them from the feed.
+	dismissed := map[string]struct{}{}
+	if dRows, err := h.db.Query(c, `SELECT item_id FROM notification_dismissals WHERE user_id=$1`, uid); err == nil {
+		defer dRows.Close()
+		for dRows.Next() {
+			var s string
+			if err := dRows.Scan(&s); err == nil {
+				dismissed[s] = struct{}{}
+			}
+		}
+	}
+
 	// 1. Tasks: overdue, due today, blocked.
 	rows, _ := h.db.Query(c, `
 		SELECT t.id, t.title, t.status, t.due_on, p.id, p.name
@@ -238,6 +250,18 @@ func (h *Notifications) List(c *gin.Context) {
 		}
 	}
 
+	// Filter out items the user has explicitly dismissed.
+	if len(dismissed) > 0 {
+		filtered := out[:0]
+		for _, it := range out {
+			if _, hide := dismissed[it.ID]; hide {
+				continue
+			}
+			filtered = append(filtered, it)
+		}
+		out = filtered
+	}
+
 	// Unread = synthetic items (always "unread") + unread outbox rows.
 	unread := 0
 	for _, it := range out {
@@ -250,6 +274,57 @@ func (h *Notifications) List(c *gin.Context) {
 		"items":  out,
 		"unread": unread,
 	})
+}
+
+// Dismiss — POST /notifications/:id/dismiss.
+// Hides the item from this user's feed. Works for both synthetic ids (e.g.
+// "task:overdue:<uuid>") and outbox ids. For outbox items we also stamp
+// read_at so unread counts elsewhere stay consistent.
+func (h *Notifications) Dismiss(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	raw := c.Param("id")
+	if raw == "" {
+		c.JSON(400, gin.H{"error": "missing id"})
+		return
+	}
+	_, _ = h.db.Exec(c,
+		`INSERT INTO notification_dismissals (user_id, item_id)
+		 VALUES ($1, $2) ON CONFLICT DO NOTHING`, uid, raw)
+	if strings.HasPrefix(raw, "outbox:") {
+		if id, err := uuid.Parse(strings.TrimPrefix(raw, "outbox:")); err == nil {
+			_, _ = h.db.Exec(c,
+				`UPDATE notification_outbox SET read_at=COALESCE(read_at, now())
+				 WHERE id=$1 AND user_id=$2`, id, uid)
+		}
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// DismissAll — POST /notifications/dismiss-all.
+// Bulk-dismisses every currently-visible item for this user by inserting one
+// row per item id passed in. Falls back to no-op if the body is missing.
+func (h *Notifications) DismissAll(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if err := c.BindJSON(&body); err != nil || len(body.IDs) == 0 {
+		c.JSON(200, gin.H{"ok": true})
+		return
+	}
+	tx, err := h.db.Begin(c)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback(c)
+	for _, id := range body.IDs {
+		_, _ = tx.Exec(c,
+			`INSERT INTO notification_dismissals (user_id, item_id)
+			 VALUES ($1, $2) ON CONFLICT DO NOTHING`, uid, id)
+	}
+	_ = tx.Commit(c)
+	c.JSON(200, gin.H{"ok": true})
 }
 
 // outboxSeverity maps an event kind to a UI severity bucket. Falls back to

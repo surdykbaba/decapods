@@ -36,6 +36,7 @@ var NavSections = []struct {
 	{"finance",       "Finance"},
 	{"files",         "Files & media"},
 	{"leave",         "Leave"},
+	{"attendance",    "Attendance"},
 	{"campfire",      "Campfire"},
 	{"settings",      "Settings"},
 }
@@ -57,6 +58,9 @@ var DefaultRoleVisibility = map[string][]string{
 	"files":        {"*"}, // everyone — same default as my_work
 	"leave":        {"*"}, // everyone can request leave; visibility of others' is gated by handlers
 	"campfire":     {"*"}, // everyone — Campfire is the workspace social layer
+	// Attendance — HR-class only. Reveals appraisal scorecards + per-member
+	// device + activity data. Locked behind governance:write at the API.
+	"attendance":   {"super_admin", "ceo", "coo", "hr", "hr_manager"},
 	// Settings is admin-class by default — most settings panels write
 	// tenant-wide config and we don't want a project_manager to land on a
 	// "forbidden" page they can't action. Workspaces that need broader read

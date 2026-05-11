@@ -47,6 +47,7 @@ type TaskInput struct {
 	Status      string    `json:"status"`
 	Priority    int       `json:"priority"`
 	DueOn       string    `json:"due_on"`
+	StartOn     string    `json:"start_on"`
 }
 
 type Project struct {
@@ -398,27 +399,32 @@ func (s *Service) UpdateLinks(ctx context.Context, id uuid.UUID, links []map[str
 
 func (s *Service) Board(ctx context.Context, id uuid.UUID) (map[string]any, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, title, COALESCE(description,''), status, priority, assignee_id, due_on
-		FROM tasks WHERE project_id=$1 AND deleted_at IS NULL
-		ORDER BY priority ASC, due_on ASC NULLS LAST, created_at DESC`, id)
+		SELECT t.id, t.title, COALESCE(t.description,''), t.status, t.priority,
+		       t.assignee_id, t.due_on, t.start_on, t.created_at,
+		       (SELECT COUNT(*) FROM task_comments c WHERE c.task_id = t.id) AS comments_count
+		FROM tasks t WHERE t.project_id=$1 AND t.deleted_at IS NULL
+		ORDER BY t.priority ASC, t.due_on ASC NULLS LAST, t.created_at DESC`, id)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	// Include "blocked" — the status enum supports it and the kanban needs
+	// somewhere to render those cards instead of silently folding them in.
 	cols := map[string][]map[string]any{
-		"todo": {}, "in_progress": {}, "review": {}, "done": {},
+		"todo": {}, "in_progress": {}, "blocked": {}, "review": {}, "done": {},
 	}
 	for rows.Next() {
 		var (
-			tid       uuid.UUID
-			assignee  *uuid.UUID
-			title     string
-			desc      string
-			status    string
-			prio      int
-			due       *time.Time
+			tid             uuid.UUID
+			assignee        *uuid.UUID
+			title, desc     string
+			status          string
+			prio            int
+			due, start      *time.Time
+			created         time.Time
+			commentsCount   int
 		)
-		if err := rows.Scan(&tid, &title, &desc, &status, &prio, &assignee, &due); err != nil {
+		if err := rows.Scan(&tid, &title, &desc, &status, &prio, &assignee, &due, &start, &created, &commentsCount); err != nil {
 			continue
 		}
 		bucket := status
@@ -426,8 +432,10 @@ func (s *Service) Board(ctx context.Context, id uuid.UUID) (map[string]any, erro
 			bucket = "todo"
 		}
 		cols[bucket] = append(cols[bucket], map[string]any{
-			"id": tid, "title": title, "description": desc,
-			"priority": prio, "assignee_id": assignee, "due_on": due,
+			"id": tid, "title": title, "description": desc, "status": status,
+			"priority": prio, "assignee_id": assignee,
+			"due_on": due, "start_on": start, "created_at": created,
+			"comments_count": commentsCount,
 		})
 	}
 	return map[string]any{"columns": cols}, nil
@@ -449,12 +457,13 @@ func (s *Service) AddTask(ctx context.Context, projectID uuid.UUID, in TaskInput
 	id := uuid.New()
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO tasks (id, project_id, milestone_id, title, description, assignee_id,
-		                   status, priority, due_on, created_by)
+		                   status, priority, due_on, start_on, created_by)
 		VALUES ($1,$2, NULLIF($3,'00000000-0000-0000-0000-000000000000')::uuid, $4, $5,
 		        NULLIF($6,'00000000-0000-0000-0000-000000000000')::uuid,
-		        COALESCE(NULLIF($7,''),'todo'), COALESCE($8, 3), NULLIF($9,'')::date, $10)`,
+		        COALESCE(NULLIF($7,''),'todo'), COALESCE($8, 3),
+		        NULLIF($9,'')::date, NULLIF($10,'')::date, $11)`,
 		id, projectID, in.MilestoneID, in.Title, in.Description, in.AssigneeID,
-		in.Status, in.Priority, in.DueOn, in.CreatedBy)
+		in.Status, in.Priority, in.DueOn, in.StartOn, in.CreatedBy)
 	return id, err
 }
 

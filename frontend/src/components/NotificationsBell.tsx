@@ -1,13 +1,16 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import {
   Bell, FileText, ListChecks, Clock,
   ThumbsUp, MessageSquare, Activity, ShieldAlert, CheckCircle2,
+  Check, X, CheckCheck, Trash2,
 } from "lucide-react";
 
-// Live attention item — derived from current state, never an audit log entry.
+// Live attention item — derived from current state, or pulled from the
+// notification_outbox. Outbox items carry an OutboxID and a Read flag so the
+// frontend can mark them seen explicitly; synthetic items auto-clear.
 type Attention = {
   id: string;
   kind: string;
@@ -16,6 +19,8 @@ type Attention = {
   body: string;
   link: string;
   at: string;
+  outbox_id?: string;
+  read?: boolean;
 };
 
 type Resp = { items: Attention[]; unread: number };
@@ -55,6 +60,7 @@ export function NotificationsBell() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const nav = useNavigate();
+  const qc = useQueryClient();
 
   const { data } = useQuery<Resp>({
     queryKey: ["notifications"],
@@ -73,7 +79,52 @@ export function NotificationsBell() {
   }, [open]);
 
   const items = data?.items ?? [];
-  const count = items.length;
+  const count = data?.unread ?? items.filter((i) => !i.read).length;
+
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["notifications"] });
+
+  const markRead = useMutation({
+    mutationFn: (id: string) =>
+      api(`/api/v1/notifications/${encodeURIComponent(id)}/read`, { method: "POST" }),
+    onSuccess: invalidate,
+  });
+
+  const dismiss = useMutation({
+    mutationFn: (id: string) =>
+      api(`/api/v1/notifications/${encodeURIComponent(id)}/dismiss`, { method: "POST" }),
+    onMutate: async (id: string) => {
+      await qc.cancelQueries({ queryKey: ["notifications"] });
+      const prev = qc.getQueryData<Resp>(["notifications"]);
+      if (prev) {
+        qc.setQueryData<Resp>(["notifications"], {
+          ...prev,
+          items: prev.items.filter((i) => i.id !== id),
+          unread: prev.items.find((i) => i.id === id && !i.read)
+            ? Math.max(0, prev.unread - 1)
+            : prev.unread,
+        });
+      }
+      return { prev };
+    },
+    onError: (_e, _id, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["notifications"], ctx.prev);
+    },
+    onSettled: invalidate,
+  });
+
+  const markAllRead = useMutation({
+    mutationFn: () => api(`/api/v1/notifications/read-all`, { method: "POST" }),
+    onSuccess: invalidate,
+  });
+
+  const dismissAll = useMutation({
+    mutationFn: () =>
+      api(`/api/v1/notifications/dismiss-all`, {
+        method: "POST",
+        body: JSON.stringify({ ids: items.map((i) => i.id) }),
+      }),
+    onSuccess: invalidate,
+  });
 
   // Group items by severity for visual hierarchy.
   const sections: { title: string; items: Attention[] }[] = (() => {
@@ -88,6 +139,7 @@ export function NotificationsBell() {
   })();
 
   function onItemClick(n: Attention) {
+    if (n.outbox_id && !n.read) markRead.mutate(n.id);
     setOpen(false);
     if (n.link) nav(n.link);
   }
@@ -109,12 +161,32 @@ export function NotificationsBell() {
 
       {open && (
         <div className="absolute right-0 top-full mt-2 z-50 w-[400px] bg-surface border border-border rounded-xl shadow-card overflow-hidden">
-          <header className="flex items-center justify-between px-4 py-3 border-b border-border">
-            <div>
+          <header className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border">
+            <div className="min-w-0">
               <div className="text-sm font-bold text-text">Needs your attention</div>
               <div className="text-[11px] text-muted">Items auto-clear when resolved</div>
             </div>
-            {count === 0 && (
+            {items.length > 0 ? (
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => markAllRead.mutate()}
+                  disabled={markAllRead.isPending || count === 0}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline disabled:opacity-40 disabled:no-underline"
+                  title="Mark all as read"
+                >
+                  <CheckCheck size={12} /> Read all
+                </button>
+                <span className="text-muted/40">·</span>
+                <button
+                  onClick={() => dismissAll.mutate()}
+                  disabled={dismissAll.isPending}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-muted hover:text-danger disabled:opacity-40"
+                  title="Clear all"
+                >
+                  <Trash2 size={12} /> Clear
+                </button>
+              </div>
+            ) : (
               <span className="inline-flex items-center gap-1 text-xs text-success">
                 <CheckCircle2 size={13} /> All clear
               </span>
@@ -139,23 +211,51 @@ export function NotificationsBell() {
                     {sec.title} · {sec.items.length}
                   </div>
                   <ul>
-                    {sec.items.map((n) => (
-                      <li key={n.id}>
-                        <button
-                          onClick={() => onItemClick(n)}
-                          className="w-full text-left px-4 py-3 flex gap-3 hover:bg-bg transition-colors border-b border-border last:border-0"
+                    {sec.items.map((n) => {
+                      const isRead = !!n.read;
+                      return (
+                        <li
+                          key={n.id}
+                          className={`group relative flex gap-3 px-4 py-3 hover:bg-bg transition-colors border-b border-border last:border-0 ${isRead ? "opacity-70" : ""}`}
                         >
-                          <span className={`w-8 h-8 rounded-full grid place-items-center shrink-0 ${toneCls(n.severity)}`}>
-                            {iconFor(n.kind)}
-                          </span>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-semibold text-text truncate">{n.title}</div>
-                            {n.body && <div className="text-xs text-muted truncate mt-0.5">{n.body}</div>}
-                            <div className="text-[11px] text-muted/70 mt-1">{relativeTime(n.at)}</div>
+                          <button
+                            onClick={() => onItemClick(n)}
+                            className="flex gap-3 text-left flex-1 min-w-0"
+                          >
+                            <span className={`w-8 h-8 rounded-full grid place-items-center shrink-0 ${toneCls(n.severity)}`}>
+                              {iconFor(n.kind)}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className={`text-sm truncate ${isRead ? "font-medium text-muted" : "font-semibold text-text"}`}>
+                                {n.title}
+                              </div>
+                              {n.body && <div className="text-xs text-muted truncate mt-0.5">{n.body}</div>}
+                              <div className="text-[11px] text-muted/70 mt-1">{relativeTime(n.at)}</div>
+                            </div>
+                          </button>
+                          <div className="flex flex-col gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {n.outbox_id && !isRead && (
+                              <button
+                                onClick={(e) => { e.stopPropagation(); markRead.mutate(n.id); }}
+                                className="p-1 rounded hover:bg-surface text-muted hover:text-accent"
+                                title="Mark as read"
+                                aria-label="Mark as read"
+                              >
+                                <Check size={13} />
+                              </button>
+                            )}
+                            <button
+                              onClick={(e) => { e.stopPropagation(); dismiss.mutate(n.id); }}
+                              className="p-1 rounded hover:bg-surface text-muted hover:text-danger"
+                              title="Dismiss"
+                              aria-label="Dismiss"
+                            >
+                              <X size={13} />
+                            </button>
                           </div>
-                        </button>
-                      </li>
-                    ))}
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               ))

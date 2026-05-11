@@ -26,8 +26,22 @@ export function useHeartbeat() {
       lastSentRef.current = Date.now();
       // Fire and forget. Failures (offline, server down) are silent — next
       // success bumps the timestamp and the user just shows "X minutes ago"
-      // until then.
-      api("/api/v1/me/heartbeat", { method: "POST" }).catch(() => {});
+      // until then. Device metadata rides along so the HR attendance
+      // dashboard can show real timezone/screen/locale info per session.
+      let body: Record<string, string> = {};
+      try {
+        body = {
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? "",
+          locale: navigator.language ?? "",
+          screen: typeof window !== "undefined" && window.screen
+            ? `${window.screen.width}x${window.screen.height}`
+            : "",
+        };
+      } catch { /* defensive — older browsers / restrictive WebViews */ }
+      api("/api/v1/me/heartbeat", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }).catch(() => {});
     };
 
     const start = () => {

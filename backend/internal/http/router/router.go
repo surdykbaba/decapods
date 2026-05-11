@@ -99,6 +99,11 @@ func New(d Deps) http.Handler {
 	authed.GET("/notifications", notif.List)
 	authed.POST("/notifications/:id/read", notif.MarkRead)
 	authed.POST("/notifications/read-all", notif.MarkAllRead)
+	authed.POST("/notifications/:id/dismiss", notif.Dismiss)
+	authed.POST("/notifications/dismiss-all", notif.DismissAll)
+
+	sysAudit := handlers.NewSystemAudit(d.DB)
+	authed.GET("/admin/audit", sysAudit.List)
 
 	// Personal portal — every endpoint here is scoped to the logged-in user.
 	me := handlers.NewMe(d.DB)
@@ -288,6 +293,15 @@ func New(d Deps) http.Handler {
 	authed.GET("/campfire/insights", mw.RequirePermission("governance:write"), cf.Insights)
 	authed.GET("/campfire/unread",     cf.Unread)
 	authed.POST("/campfire/mark-seen", cf.MarkSeen)
+
+	// Attendance — HR / leadership only. The data is collected automatically
+	// from heartbeats, tasks, mood etc.; staff don't punch a clock.
+	att := handlers.NewAttendance(d.DB)
+	authed.GET("/attendance/today",        mw.RequirePermission("governance:write"), att.Today)
+	authed.GET("/attendance/trend",        mw.RequirePermission("governance:write"), att.Trend)
+	authed.GET("/attendance/insights",     mw.RequirePermission("governance:write"), att.Insights)
+	authed.GET("/attendance/appraisal",    mw.RequirePermission("governance:write"), att.Appraisal)
+	authed.GET("/attendance/member/:id",   mw.RequirePermission("governance:write"), att.Member)
 
 	return r
 }

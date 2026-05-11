@@ -654,13 +654,117 @@ func derivePresence(manual *string, manualUntil *time.Time, lastSeen *time.Time)
 	return "offline"
 }
 
+// Heartbeat — bumps users.last_seen_at AND attendance_sessions.
+//
+// The session model: a contiguous block while heartbeats arrive < 10 min apart
+// counts as one session. So we either extend the existing open session (a row
+// for this user whose last_seen_at is within the gap) or open a new one.
+//
+// Optional body: { timezone, locale, screen } captured client-side so the HR
+// dashboard can show real device context. User-Agent + IP come from the
+// request directly.
 func (h *Me) Heartbeat(c *gin.Context) {
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+
+	// Soft-bind: missing / invalid body still produces a valid heartbeat.
+	var body struct {
+		Timezone string `json:"timezone"`
+		Locale   string `json:"locale"`
+		Screen   string `json:"screen"`
+	}
+	_ = c.ShouldBindJSON(&body)
+
+	ua := c.Request.UserAgent()
+	ip := c.ClientIP()
+	platform, os, browser := parseUA(ua)
+
 	if _, err := h.db.Exec(c, `UPDATE users SET last_seen_at = now() WHERE id = $1`, uid); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Find an open session — same user, last_seen_at within 10 minutes.
+	// Postgres handles the gap arithmetic in a single round trip.
+	var openID uuid.UUID
+	err := h.db.QueryRow(c, `
+		SELECT id FROM attendance_sessions
+		 WHERE user_id=$1 AND last_seen_at > now() - interval '10 minutes'
+		 ORDER BY last_seen_at DESC LIMIT 1`, uid).Scan(&openID)
+	if err == nil {
+		// Extend the open session. UA/platform/os/browser only re-write if
+		// the previous row didn't have them (don't churn the row on every
+		// ping with identical values).
+		_, _ = h.db.Exec(c, `
+			UPDATE attendance_sessions
+			   SET last_seen_at = now(),
+			       user_agent  = COALESCE(NULLIF(user_agent,''), $1),
+			       ip_address  = COALESCE(ip_address, NULLIF($2,'')::inet),
+			       platform    = COALESCE(NULLIF(platform,''), $3),
+			       os          = COALESCE(NULLIF(os,''), $4),
+			       browser     = COALESCE(NULLIF(browser,''), $5),
+			       timezone    = COALESCE(NULLIF(timezone,''), NULLIF($6,'')),
+			       locale      = COALESCE(NULLIF(locale,''), NULLIF($7,'')),
+			       screen      = COALESCE(NULLIF(screen,''), NULLIF($8,''))
+			 WHERE id=$9`,
+			ua, ip, platform, os, browser,
+			body.Timezone, body.Locale, body.Screen, openID)
+	} else {
+		// Open a new session.
+		_, _ = h.db.Exec(c, `
+			INSERT INTO attendance_sessions
+			  (tenant_id, user_id, user_agent, ip_address, platform, os, browser, timezone, locale, screen)
+			VALUES ($1,$2,$3, NULLIF($4,'')::inet, $5,$6,$7, NULLIF($8,''), NULLIF($9,''), NULLIF($10,''))`,
+			tid, uid, ua, ip, platform, os, browser, body.Timezone, body.Locale, body.Screen)
+	}
+
 	c.JSON(200, gin.H{"ok": true, "last_seen_at": time.Now().UTC()})
+}
+
+// parseUA is a tiny zero-dep User-Agent classifier. Anything fancier (full
+// device DB, version numbers) lives behind a feature flag in `analytics` —
+// HR just needs the broad shape for desktop/mobile split charts.
+func parseUA(ua string) (platform, osName, browser string) {
+	low := strings.ToLower(ua)
+	switch {
+	case strings.Contains(low, "iphone"), strings.Contains(low, "android") && strings.Contains(low, "mobile"):
+		platform = "mobile"
+	case strings.Contains(low, "ipad"), strings.Contains(low, "tablet"):
+		platform = "tablet"
+	case strings.Contains(low, "bot"), strings.Contains(low, "crawl"), strings.Contains(low, "spider"):
+		platform = "bot"
+	case ua == "":
+		platform = "other"
+	default:
+		platform = "desktop"
+	}
+	switch {
+	case strings.Contains(low, "mac os"), strings.Contains(low, "macintosh"):
+		osName = "macOS"
+	case strings.Contains(low, "windows"):
+		osName = "Windows"
+	case strings.Contains(low, "iphone"), strings.Contains(low, "ipad"), strings.Contains(low, "ios"):
+		osName = "iOS"
+	case strings.Contains(low, "android"):
+		osName = "Android"
+	case strings.Contains(low, "linux"):
+		osName = "Linux"
+	default:
+		osName = "other"
+	}
+	switch {
+	case strings.Contains(low, "edg/"):
+		browser = "Edge"
+	case strings.Contains(low, "chrome/"):
+		browser = "Chrome"
+	case strings.Contains(low, "safari/") && !strings.Contains(low, "chrome/"):
+		browser = "Safari"
+	case strings.Contains(low, "firefox/"):
+		browser = "Firefox"
+	default:
+		browser = "other"
+	}
+	return
 }
 
 // SetMyStatus lets a user pick a manual presence override. Body:

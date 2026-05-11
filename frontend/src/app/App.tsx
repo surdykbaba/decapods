@@ -25,6 +25,7 @@ import { GovernancePoliciesPage } from "@/modules/governance/PoliciesPage";
 import { AuditPage } from "@/modules/governance/AuditPage";
 import { GitHubPage } from "@/modules/integrations/GitHubPage";
 import { AdminUsersPage } from "@/modules/admin/UsersPage";
+import { SystemAuditPage } from "@/modules/admin/SystemAuditPage";
 import { WorkflowPage } from "@/modules/settings/WorkflowPage";
 import { TeamRatesPage } from "@/modules/settings/TeamRatesPage";
 import { RolesPermissionsPage } from "@/modules/settings/RolesPermissionsPage";
@@ -32,6 +33,7 @@ import { MyWorkPage } from "@/modules/me/MyWorkPage";
 import { FilesPage } from "@/modules/files/FilesPage";
 import { LeavePage } from "@/modules/leave/LeavePage";
 import { CampfirePage } from "@/modules/campfire/CampfirePage";
+import { AttendancePage } from "@/modules/attendance/AttendancePage";
 import { ArchivedProjectsPage } from "@/modules/settings/ArchivedProjectsPage";
 import { VendorsPage } from "@/modules/vendors/VendorsPage";
 import { VendorDetailPage } from "@/modules/vendors/VendorDetailPage";
@@ -70,6 +72,7 @@ export function App() {
         <Route path="/files"   element={<FilesPage />} />
         <Route path="/leave"   element={<LeavePage />} />
         <Route path="/campfire" element={<CampfirePage />} />
+        <Route path="/attendance" element={<AttendancePage />} />
         <Route path="/pipeline" element={<PipelinePage />} />
         <Route path="/pipeline/new" element={<OpportunityWizard />} />
         <Route path="/pipeline/:id" element={<OpportunityDetail />} />
@@ -114,6 +117,7 @@ export function App() {
         <Route path="/integrations/github" element={<Navigate to="/settings/integrations/github" replace />} />
 
         <Route path="/admin/users" element={<AdminUsersPage />} />
+        <Route path="/admin/audit" element={<SystemAuditPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
