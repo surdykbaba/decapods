@@ -5,6 +5,7 @@ import { api } from "@/lib/api";
 import {
   Coffee, MessageCircle, Plus, Paperclip, Users as UsersIcon, AlertTriangle,
   ArrowUpRight, LayoutGrid, List as ListIcon, X, ExternalLink, FolderKanban,
+  PanelRightClose, PanelRightOpen,
 } from "lucide-react";
 
 type Person = {
@@ -74,6 +75,7 @@ function relWeek(iso?: string): string {
 }
 
 const VIEW_KEY = "workforce-view";
+const RAIL_KEY = "workforce-rail-hidden";
 
 export function WorkforcePage() {
   const { data, isLoading } = useQuery<{ people: Person[] }>({
@@ -83,10 +85,19 @@ export function WorkforcePage() {
   const people = data?.people ?? [];
   const [view, setView] = useState<View>(() => (localStorage.getItem(VIEW_KEY) as View) || "grid");
   const [openId, setOpenId] = useState<string | null>(null);
+  const [railHidden, setRailHidden] = useState<boolean>(() => localStorage.getItem(RAIL_KEY) === "1");
 
   function pickView(v: View) {
     setView(v);
     localStorage.setItem(VIEW_KEY, v);
+  }
+
+  function toggleRail() {
+    setRailHidden((prev) => {
+      const next = !prev;
+      localStorage.setItem(RAIL_KEY, next ? "1" : "0");
+      return next;
+    });
   }
 
   const grouped = useMemo(() => {
@@ -127,10 +138,21 @@ export function WorkforcePage() {
             Buckets are computed from the last 8 weeks of logged hours against a 40h baseline.
           </p>
         </div>
-        <ViewToggle view={view} onChange={pickView} />
+        <div className="flex items-center gap-2">
+          <ViewToggle view={view} onChange={pickView} />
+          <button
+            onClick={toggleRail}
+            title={railHidden ? "Show standup panel" : "Hide standup panel"}
+            aria-label={railHidden ? "Show standup panel" : "Hide standup panel"}
+            className="hidden lg:inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full bg-surface border border-border text-muted hover:text-text transition-colors"
+          >
+            {railHidden ? <PanelRightOpen size={13} /> : <PanelRightClose size={13} />}
+            {railHidden ? "Show panel" : "Hide panel"}
+          </button>
+        </div>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5">
+      <div className={`grid grid-cols-1 gap-5 ${railHidden ? "" : "lg:grid-cols-[minmax(0,1fr)_320px]"}`}>
         {/* Main board (left) */}
         <div>
           {isLoading ? (
@@ -168,15 +190,18 @@ export function WorkforcePage() {
           )}
         </div>
 
-        {/* Right rail */}
-        <div className="space-y-5">
-          <CapacityHero
-            headcount={totals.headcount}
-            avgUtilization={totals.avg}
-            totalHours={totals.totalHours}
-          />
-          <StandupCard items={standupItems} />
-        </div>
+        {/* Right rail — hide-able. State persists in localStorage so the
+            choice rides with the user across sessions. */}
+        {!railHidden && (
+          <div className="space-y-5">
+            <CapacityHero
+              headcount={totals.headcount}
+              avgUtilization={totals.avg}
+              totalHours={totals.totalHours}
+            />
+            <StandupCard items={standupItems} />
+          </div>
+        )}
       </div>
 
       {openPerson && (
