@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -83,8 +84,11 @@ func (h *MicrosoftOAuth) Callback(c *gin.Context) {
 	landing := publicLandingURL(h.cfg, "/my-work?ms=" )
 
 	if errParam != "" {
-		// User cancelled or Microsoft rejected — bounce back with a hint.
-		c.Redirect(http.StatusFound, landing+"error&detail="+errParam)
+		// User cancelled or Microsoft rejected. Pass through a friendly
+		// summary so the SPA toast has something actionable instead of just
+		// "invalid_request".
+		detail := friendlyMSError(errParam, c.Query("error_description"))
+		c.Redirect(http.StatusFound, landing+"error&detail="+url.QueryEscape(detail))
 		return
 	}
 	if code == "" || state == "" {
@@ -226,6 +230,34 @@ type errStr string
 func (e errStr) Error() string { return string(e) }
 
 const errMSNotConnected errStr = "microsoft account not connected"
+
+// friendlyMSError turns Microsoft's verbose AADSTSxxxxx error_description
+// into a one-line, actionable message that fits in a toast. Falls back to the
+// raw error code if we don't have a tailored hint — better than nothing, and
+// the admin can search the code if they need to dig further.
+func friendlyMSError(code, description string) string {
+	switch {
+	case strings.Contains(description, "AADSTS50194"):
+		return "Azure app is single-tenant. Paste your Directory (tenant) ID into Tenant hint in Settings → Microsoft Calendar."
+	case strings.Contains(description, "AADSTS700016"):
+		return "Client ID isn't recognised in your tenant. Double-check it's the Application (client) ID GUID, not the secret."
+	case strings.Contains(description, "AADSTS50011"):
+		return "Redirect URI mismatch. Register https://myaccubin.com/api/v1/auth/microsoft/callback in Azure → Authentication."
+	case strings.Contains(description, "AADSTS65001"):
+		return "Consent required. An admin needs to grant tenant-wide consent for the calendar scopes."
+	case code == "access_denied":
+		return "Sign-in was cancelled."
+	}
+	// Trim to keep the URL (and the toast) sane.
+	desc := strings.TrimSpace(description)
+	if desc == "" {
+		return code
+	}
+	if len(desc) > 180 {
+		desc = desc[:177] + "…"
+	}
+	return desc
+}
 
 func derefStr(s *string) string {
 	if s == nil {
