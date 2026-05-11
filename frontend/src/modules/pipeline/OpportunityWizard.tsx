@@ -187,10 +187,18 @@ function toTitleCase(input: string): string {
       const lower = tok.toLowerCase();
       const isMiddleWord = i > 0 && i < wordCount - 1;
       if (isMiddleWord && TITLE_CASE_LOWER.has(lower)) return lower;
-      // Capitalise first letter; keep the rest as the user typed it (handles
-      // mixed-case names like "McDonald" or "iCONIC" gracefully if they
-      // explicitly typed it that way).
-      return lower.charAt(0).toUpperCase() + lower.slice(1);
+      // Uppercase the first *letter* in the token, not just position 0 —
+      // tokens that start with punctuation/digits (e.g. "(acme" or "3M")
+      // were slipping through unchanged because charAt(0).toUpperCase()
+      // is a no-op on non-letters. Lowercase everything else so a user
+      // typing "ABC LTD" gets "Abc Ltd" instead of leaving stray caps.
+      const firstLetterIdx = lower.search(/[a-z]/);
+      if (firstLetterIdx < 0) return lower;
+      return (
+        lower.slice(0, firstLetterIdx) +
+        lower.charAt(firstLetterIdx).toUpperCase() +
+        lower.slice(firstLetterIdx + 1)
+      );
     })
     .join("");
 }
