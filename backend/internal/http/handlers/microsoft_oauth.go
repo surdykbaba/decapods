@@ -127,7 +127,16 @@ func (h *MicrosoftOAuth) Callback(c *gin.Context) {
 		c.Redirect(http.StatusFound, landing+"error&detail="+url.QueryEscape(friendlyMSError("exchange_failed", err.Error())))
 		return
 	}
-	account, oid, _ := microsoft.FetchProfile(c.Request.Context(), tok.AccessToken)
+	account, oid, profileErr := microsoft.FetchProfile(c.Request.Context(), tok.AccessToken)
+	if profileErr != nil {
+		// We have a valid access token but Graph /me rejected it — almost
+		// always a missing User.Read permission on the Azure app, or the
+		// token's scopes don't include it. Bail loudly so the admin can fix
+		// the registration instead of staring at a silent not-connected.
+		c.Redirect(http.StatusFound, landing+"error&detail="+url.QueryEscape(
+			friendlyMSError("graph_profile_failed", profileErr.Error())))
+		return
+	}
 
 	if _, err := h.db.Exec(c, `
 		INSERT INTO ms_oauth_tokens
@@ -172,15 +181,22 @@ func (h *MicrosoftOAuth) Status(c *gin.Context) {
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	var (
-		account *string
-		exp     *time.Time
+		account     *string
+		exp         *time.Time
+		hasToken    bool
 	)
-	_ = h.db.QueryRow(c, `SELECT ms_account, expires_at FROM ms_oauth_tokens WHERE user_id=$1`, uid).
-		Scan(&account, &exp)
+	// connected = there's a stored row with a non-empty access token. Reading
+	// access_token presence (rather than ms_account != NULL) means a partial
+	// success — token saved but Graph profile fetch failed — still reports as
+	// connected so the user can retry meetings without a full re-auth.
+	_ = h.db.QueryRow(c, `
+		SELECT ms_account, expires_at, COALESCE(NULLIF(access_token,''),'') <> ''
+		  FROM ms_oauth_tokens WHERE user_id=$1`, uid).
+		Scan(&account, &exp, &hasToken)
 	cfg := loadMicrosoftConfig(c, h.db, h.cfg, tid)
 	c.JSON(http.StatusOK, gin.H{
 		"configured": cfg.Configured,
-		"connected":  account != nil,
+		"connected":  hasToken,
 		"account":    derefStr(account),
 		"expires_at": exp,
 	})
@@ -269,6 +285,20 @@ func friendlyMSError(code, description string) string {
 		return "Auth grant rejected. Usually means the redirect URI registered in Azure doesn't match https://myaccubin.com/api/v1/auth/microsoft/callback exactly."
 	case code == "access_denied":
 		return "Sign-in was cancelled."
+	// Graph profile lookup failures — happen *after* a successful token
+	// exchange when the access token doesn't have the right delegated
+	// permissions. The Azure app registration usually needs User.Read added
+	// (and sometimes admin consent) under API permissions → Microsoft Graph.
+	case code == "graph_profile_failed" && strings.Contains(description, "InvalidAuthenticationToken"):
+		return "Token rejected by Microsoft Graph. Add User.Read delegated permission to the Azure app (API permissions → Microsoft Graph) and grant admin consent."
+	case code == "graph_profile_failed" && strings.Contains(description, "Forbidden"):
+		return "Microsoft Graph denied /me access. The Azure app is missing User.Read or admin consent for it hasn't been granted."
+	case code == "graph_profile_failed":
+		d := strings.TrimSpace(description)
+		if len(d) > 140 {
+			d = d[:139] + "…"
+		}
+		return "Microsoft accepted the sign-in but Graph profile lookup failed: " + d
 	}
 	// Trim to keep the URL (and the toast) sane.
 	desc := strings.TrimSpace(description)
