@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { MentionInput } from "@/modules/campfire/MentionInput";
+import { SmartBody } from "@/modules/campfire/smartBody";
 import {
   CheckCircle2, Hourglass, Clock, AlertCircle, Ban,
   Calendar as CalendarIcon, MessageSquare, User as UserIcon, X, Send,
@@ -408,7 +410,11 @@ export function TaskDrawer({
                         <span className="text-sm font-semibold text-text">{c.author_name || c.author_email || "Someone"}</span>
                         <span className="text-[10px] text-muted">{relTime(c.created_at)}</span>
                       </div>
-                      <p className="text-sm text-text mt-0.5 whitespace-pre-wrap">{c.body}</p>
+                      {/* SmartBody handles emoji, sticker shortcodes,
+                          @mentions and inline URL embeds — same renderer
+                          Campfire uses, so comments behave consistently
+                          everywhere. */}
+                      <SmartBody className="text-sm text-text mt-0.5" text={c.body} />
                     </div>
                   </li>
                 ))}
@@ -419,24 +425,26 @@ export function TaskDrawer({
 
         <footer className="px-5 py-3 border-t border-border">
           <div className="flex items-end gap-2">
-            <textarea
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder="Write a comment…"
-              rows={2}
-              className="input flex-1 resize-none"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && draft.trim()) {
-                  addComment.mutate(draft.trim());
-                }
-              }}
-            />
+            {/* MentionInput gives us emoji + sticker picker, @mention
+                autocomplete, and Enter-to-send for free — same widget as
+                every Campfire surface, so the comment box behaves
+                identically across the app. */}
+            <div className="flex-1 min-w-0">
+              <MentionInput
+                value={draft}
+                onChange={setDraft}
+                placeholder="Write a comment… (@ to mention, emoji button bottom-right, Enter to send)"
+                minRows={2}
+                className="input flex-1 resize-none min-h-[60px]"
+                onSubmit={() => draft.trim() && addComment.mutate(draft.trim())}
+              />
+            </div>
             <button
               onClick={() => draft.trim() && addComment.mutate(draft.trim())}
               disabled={!draft.trim() || addComment.isPending}
-              className="p-2.5 rounded-lg bg-accent text-white disabled:opacity-50"
+              className="p-2.5 rounded-lg bg-accent text-white disabled:opacity-50 shrink-0"
               aria-label="Send comment"
-              title="Send (⌘↵)"
+              title="Send"
             >
               <Send size={14} />
             </button>
