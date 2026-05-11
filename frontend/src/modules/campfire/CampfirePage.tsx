@@ -224,7 +224,6 @@ export function CampfirePage() {
                    bg-gradient-to-b from-sky-200 via-sky-100 to-bg
                    dark:from-accent/30 dark:via-accent/10 dark:to-bg"
       />
-      <CloudDeco />
       <div className="relative z-10">
 
       <header className="flex items-end justify-between flex-wrap gap-4 mb-6">
@@ -273,47 +272,6 @@ export function CampfirePage() {
       </div>
       </div>{/* close: relative z-10 content layer */}
     </div>
-  );
-}
-
-// CloudDeco — five drifting cloud SVGs across the top of the page. Each
-// cloud is three overlapping ellipses with a soft shadow filter that gives
-// it real puffiness. Animation is a slow horizontal drift (40-60s loops)
-// so the eye picks up movement without it becoming a distraction.
-function CloudDeco() {
-  return (
-    <div aria-hidden className="absolute inset-x-0 top-0 h-[420px] z-0 pointer-events-none overflow-hidden">
-      <svg width="0" height="0" className="absolute">
-        <defs>
-          <filter id="cloud-puff" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="0.6" />
-          </filter>
-        </defs>
-      </svg>
-      <Cloud className="top-2  right-6   w-[320px] opacity-95 dark:opacity-30" drift="animate-cloud-drift-a" />
-      <Cloud className="top-20 left-4    w-[260px] opacity-90 dark:opacity-25" drift="animate-cloud-drift-b" />
-      <Cloud className="top-36 right-1/3 w-[220px] opacity-85 dark:opacity-20" drift="animate-cloud-drift-c" />
-      <Cloud className="top-52 left-1/4  w-[200px] opacity-80 dark:opacity-20" drift="animate-cloud-drift-a" />
-      <Cloud className="top-8  left-1/2  w-[180px] opacity-75 dark:opacity-15" drift="animate-cloud-drift-b" />
-    </div>
-  );
-}
-
-function Cloud({ className, drift }: { className: string; drift: string }) {
-  return (
-    <svg
-      viewBox="0 0 200 80"
-      className={`absolute ${className} ${drift}`}
-      style={{ filter: "drop-shadow(0 4px 12px rgba(15, 23, 42, 0.08))" }}
-    >
-      <g filter="url(#cloud-puff)" fill="white">
-        <ellipse cx="55"  cy="52" rx="50" ry="22" />
-        <ellipse cx="100" cy="40" rx="45" ry="26" />
-        <ellipse cx="145" cy="52" rx="42" ry="20" />
-        <ellipse cx="80"  cy="58" rx="40" ry="18" />
-        <ellipse cx="125" cy="58" rx="38" ry="16" />
-      </g>
-    </svg>
   );
 }
 
