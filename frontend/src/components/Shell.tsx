@@ -4,7 +4,7 @@ import {
   Settings, LifeBuoy, Search, UserCheck,
   Sun, Moon, LogOut, ChevronDown,
   Handshake, UserCog, Folder, Plane,
-  ShieldCheck, Menu, X, ClipboardCheck, CalendarCheck, Lock,
+  ShieldCheck, Menu, X, ClipboardCheck, Lock,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useMemo, useState } from "react";
@@ -39,7 +39,7 @@ const navTop: NavItem[] = [
   { section: "finance",      to: "/finance",      label: "Finance",      icon: Banknote },
   { section: "files",        to: "/files",        label: "Files & media", icon: Folder },
   { section: "leave",        to: "/leave",        label: "Leave",        icon: Plane },
-  { section: "attendance",   to: "/attendance",   label: "Attendance",   icon: ClipboardCheck },
+  { section: "attendance",   to: "/attendance",   label: "Attendance & check-ins", icon: ClipboardCheck },
   // Campfire intentionally lives in the top-bar as an animated flame badge —
   // not in the sidebar. The CampfireBell component is the only entry point.
   { section: "settings",     to: "/settings",     label: "Settings",     icon: Settings },
@@ -163,22 +163,6 @@ export function Shell() {
               <span className="flex-1">{n.label}</span>
             </NavLink>
           ))}
-
-          {user?.roles?.some((r) => ["super_admin", "hr", "ceo", "coo"].includes(r)) && (
-            <NavLink
-              to="/admin/daily-checkins"
-              className={({ isActive }) =>
-                `flex items-center gap-3 px-3.5 py-3 rounded-xl text-[15px] font-semibold transition-colors ${
-                  isActive
-                    ? "bg-accent text-white shadow-soft"
-                    : "text-muted hover:text-text hover:bg-surface"
-                }`
-              }
-            >
-              <CalendarCheck size={18} />
-              <span className="flex-1">Daily check-ins</span>
-            </NavLink>
-          )}
 
           {user?.roles?.includes("super_admin") && (
             <NavLink

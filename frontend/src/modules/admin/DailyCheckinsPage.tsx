@@ -71,7 +71,11 @@ function fmtTime(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function DailyCheckinsPage() {
+// CheckinsPanel — the page body, factored out so AttendancePage can mount it
+// as a tab inside the merged "Daily HR" view without duplicating the table /
+// filter logic. The standalone page is now a thin wrapper that adds the
+// header + role guard.
+export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
   const me = useAuth((s) => s.user);
   const allowed = !!me?.roles?.some((r) => ROLES_ALLOWED.includes(r));
 
@@ -123,15 +127,17 @@ export function DailyCheckinsPage() {
   if (!allowed) return <Navigate to="/" replace />;
 
   return (
-    <div className="space-y-5 max-w-7xl">
-      <div>
-        <h1 className="h1 flex items-center gap-2">
-          <ShieldCheck size={22} className="text-accent" /> Daily check-ins
-        </h1>
-        <p className="text-sm text-muted mt-1">
-          Mood, what shipped, what's next — by person, by day. Drives compliance + appraisal.
-        </p>
-      </div>
+    <div className={embedded ? "space-y-5" : "space-y-5 max-w-7xl"}>
+      {!embedded && (
+        <div>
+          <h1 className="h1 flex items-center gap-2">
+            <ShieldCheck size={22} className="text-accent" /> Daily check-ins
+          </h1>
+          <p className="text-sm text-muted mt-1">
+            Mood, what shipped, what's next — by person, by day. Drives compliance + appraisal.
+          </p>
+        </div>
+      )}
 
       {/* ============ Insight strip ============ */}
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -406,6 +412,13 @@ export function DailyCheckinsPage() {
       </section>
     </div>
   );
+}
+
+// Thin wrapper for the standalone /admin/daily-checkins route — keeps the
+// URL valid for anyone with bookmarks, but the canonical home is now the
+// merged Attendance "Check-ins" tab.
+export function DailyCheckinsPage() {
+  return <CheckinsPanel />;
 }
 
 function InsightTile({

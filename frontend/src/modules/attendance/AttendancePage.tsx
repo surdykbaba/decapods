@@ -17,7 +17,9 @@ import {
   ClipboardCheck, Activity, TrendingUp, AlertTriangle, CheckCircle2,
   Clock, Laptop, Smartphone, Tablet, Target, Sparkles, Award,
   LayoutGrid, List as ListIcon, ChevronRight, ChevronDown,
+  CalendarDays,
 } from "lucide-react";
+import { CheckinsPanel } from "@/modules/admin/DailyCheckinsPage";
 
 /* ─── types ─── */
 
@@ -92,7 +94,7 @@ const TONE_BG: Record<TodayRow["tone"], string> = {
 
 /* ─── page ─── */
 
-type Tab = "today" | "trend" | "warnings" | "appraisal";
+type Tab = "today" | "trend" | "checkins" | "warnings" | "appraisal";
 
 type Warning = {
   id: string;
@@ -123,6 +125,7 @@ export function AttendancePage() {
   const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; badge?: number }[] = [
     { key: "today",     label: "Today",      icon: Activity },
     { key: "trend",     label: "Trend",      icon: TrendingUp },
+    { key: "checkins",  label: "Check-ins",  icon: CalendarDays },
     { key: "warnings",  label: "Warnings",   icon: AlertTriangle, badge: openWarnings.length || undefined },
     { key: "appraisal", label: "Appraisals", icon: Award },
   ];
@@ -133,12 +136,13 @@ export function AttendancePage() {
         <div>
           <div className="text-[11px] uppercase tracking-wider text-accent font-bold">People ops</div>
           <h1 className="h1 mt-1 flex items-center gap-2">
-            <ClipboardCheck size={26} className="text-accent" /> Attendance
+            <ClipboardCheck size={26} className="text-accent" /> Attendance & check-ins
           </h1>
           <p className="text-sm text-muted mt-1 max-w-2xl">
-            Automatic, signal-driven. Heartbeats from the app track presence;
-            tasks, mood and kudos feed the appraisal scorecards. No punch clock —
-            staff just use the platform.
+            One HR view — automatic attendance from heartbeats + declared
+            morning check-ins side by side. Today, Trend and Warnings are
+            derived from presence; Check-ins is what each member said about
+            their day; Appraisals fold both signals into a scorecard.
           </p>
         </div>
       </header>
@@ -189,6 +193,7 @@ export function AttendancePage() {
 
       {tab === "today"     && <TodayTab />}
       {tab === "trend"     && <TrendTab />}
+      {tab === "checkins"  && <CheckinsPanel embedded />}
       {tab === "warnings"  && <WarningsTab />}
       {tab === "appraisal" && <AppraisalTab />}
     </div>
