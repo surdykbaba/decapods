@@ -3,9 +3,21 @@
 // trend, streaks, attachment archive and what they shipped, day by day.
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays, AlertCircle, Link2, CheckCircle2, Flame, Smile, ListChecks, Activity, Pencil, Plus, X, Trash2, Loader2 } from "lucide-react";
+import {
+  CalendarDays, AlertCircle, Link2, CheckCircle2, Flame, Smile, ListChecks,
+  Activity, Pencil, Plus, X, Trash2, Loader2, TrendingUp, TrendingDown,
+  Sparkles, Filter, Search,
+} from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "@/lib/toast";
+
+// Mood semantics — used to colour the rhythm strip + derive "best day" facts.
+// Anything in POSITIVE_MOODS counts toward "great day" signals; NEGATIVE_MOODS
+// flag a rough day. Anything else is neutral.
+const POSITIVE_MOODS = new Set(["😄", "🙂"]);
+const NEGATIVE_MOODS = new Set(["😕", "😩"]);
+const MOODS = ["😄", "🙂", "😐", "😕", "😩"] as const;
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
 type Attachment = { kind: "link" | "file"; name: string; url: string };
 
@@ -38,8 +50,22 @@ function fmtDay(iso: string): string {
 }
 
 export function MyCheckinsTab() {
+  const qc = useQueryClient();
   const [windowDays, setWindowDays] = useState(30);
   const [editingDay, setEditingDay] = useState<Row | null>(null);
+  // Timeline filters — let the user slice their own history without leaving
+  // the page. All client-side because the dataset is small (windowDays bound).
+  const [moodFilter, setMoodFilter] = useState<"all" | string>("all");
+  const [missedOnly, setMissedOnly] = useState(false);
+  const [searchQ, setSearchQ] = useState("");
+  // Pagination for the timeline list — keeps long ranges navigable.
+  const TIMELINE_PAGE_SIZES = [7, 14, 30, 0] as const; // 0 = All
+  const [pageSize, setPageSize] = useState<number>(() => {
+    const v = parseInt(localStorage.getItem("me-checkins-page-size") ?? "14", 10);
+    return Number.isFinite(v) ? v : 14;
+  });
+  const [page, setPage] = useState(0);
+
   const { data, isLoading } = useQuery<Resp>({
     queryKey: ["me", "daily-checkins", windowDays],
     queryFn: () => api(`/api/v1/me/daily-checkins?days=${windowDays}`),
@@ -103,6 +129,165 @@ export function MyCheckinsTab() {
     return entries.sort((a, b) => b[1] - a[1])[0];
   }, [insights]);
 
+  // Rhythm — oldest → newest for the strip. We fill in any missing dates in
+  // the window with synthetic "missed" rows so the user can see real gaps
+  // rather than getting a confusingly-jagged strip.
+  const rhythm = useMemo<Row[]>(() => {
+    const byDay = new Map(items.map((r) => [r.day, r]));
+    const out: Row[] = [];
+    const today = new Date(todayISO + "T00:00:00").getTime();
+    for (let i = windowDays - 1; i >= 0; i--) {
+      const d = new Date(today - i * 86_400_000);
+      const iso = d.toISOString().slice(0, 10);
+      out.push(byDay.get(iso) ?? {
+        day: iso, mood: null, focus_note: null, yesterday_note: null,
+        attachments: [], posted_to_campfire: false, missed: true, tasks_done: 0,
+      });
+    }
+    return out;
+  }, [items, windowDays, todayISO]);
+
+  // Smart facts — auto-derived insights only surfaced when there's enough
+  // signal to back them up. Returns the chips the SmartFacts strip renders.
+  const facts = useMemo(() => {
+    const out: { icon: React.ReactNode; label: string; value: string; tone: "good" | "warn" | "info" }[] = [];
+    if (items.length < 3) return out;
+
+    // Longest streak in the window. Items are newest-first; flip and scan.
+    let longest = 0, run = 0;
+    for (const r of [...items].reverse()) {
+      if (!r.missed) { run++; longest = Math.max(longest, run); } else { run = 0; }
+    }
+    if (longest >= 2) {
+      out.push({
+        icon: <Flame size={11} />,
+        label: "Longest streak",
+        value: `${longest}d`,
+        tone: longest >= 5 ? "good" : "info",
+      });
+    }
+
+    // Most-missed weekday — counts of `missed=true` grouped by getDay(). Only
+    // surfaces if one weekday clearly stands out (>= 2 misses and >= 40% of
+    // total misses) so we don't fingerpoint Tuesdays for one bad week.
+    const missByDow: number[] = Array(7).fill(0);
+    let totalMissed = 0;
+    items.forEach((r) => {
+      if (r.missed) {
+        const dow = new Date(r.day + "T00:00:00").getDay();
+        missByDow[dow]++;
+        totalMissed++;
+      }
+    });
+    if (totalMissed >= 2) {
+      const maxDow = missByDow.indexOf(Math.max(...missByDow));
+      if (missByDow[maxDow] >= 2 && missByDow[maxDow] / totalMissed >= 0.4) {
+        out.push({
+          icon: <AlertCircle size={11} />,
+          label: "Most missed",
+          value: WEEKDAYS[maxDow],
+          tone: "warn",
+        });
+      }
+    }
+
+    // Best-mood weekday — most positive-mood rows by getDay(). Counterpart to
+    // most-missed: a tiny positive nudge.
+    const posByDow: number[] = Array(7).fill(0);
+    let totalPos = 0;
+    items.forEach((r) => {
+      if (r.mood && POSITIVE_MOODS.has(r.mood)) {
+        const dow = new Date(r.day + "T00:00:00").getDay();
+        posByDow[dow]++;
+        totalPos++;
+      }
+    });
+    if (totalPos >= 3) {
+      const maxDow = posByDow.indexOf(Math.max(...posByDow));
+      if (posByDow[maxDow] >= 2) {
+        out.push({
+          icon: <Smile size={11} />,
+          label: "Best mood day",
+          value: WEEKDAYS[maxDow],
+          tone: "good",
+        });
+      }
+    }
+
+    // Mood trend — compare first vs second half of the window. We score moods
+    // (+1 positive, -1 negative, 0 neutral) and look at the delta in average.
+    if (items.length >= 6) {
+      const score = (m?: string | null) => m && POSITIVE_MOODS.has(m) ? 1 : m && NEGATIVE_MOODS.has(m) ? -1 : 0;
+      const sorted = [...items].sort((a, b) => a.day.localeCompare(b.day));
+      const mid = Math.floor(sorted.length / 2);
+      const avg = (xs: Row[]) => xs.length ? xs.reduce((s, r) => s + score(r.mood), 0) / xs.length : 0;
+      const delta = avg(sorted.slice(mid)) - avg(sorted.slice(0, mid));
+      if (Math.abs(delta) >= 0.25) {
+        out.push({
+          icon: delta > 0 ? <TrendingUp size={11} /> : <TrendingDown size={11} />,
+          label: "Mood trend",
+          value: delta > 0 ? "Lifting" : "Dipping",
+          tone: delta > 0 ? "good" : "warn",
+        });
+      }
+    }
+
+    return out;
+  }, [items]);
+
+  // Filtered + paged timeline. Server gives us newest-first already; we keep
+  // that order so the most recent day is always row #1 on page #1.
+  const filtered = useMemo(() => {
+    let xs = items;
+    if (missedOnly) xs = xs.filter((r) => r.missed);
+    if (moodFilter !== "all") xs = xs.filter((r) => r.mood === moodFilter);
+    const q = searchQ.trim().toLowerCase();
+    if (q) xs = xs.filter((r) =>
+      (r.focus_note ?? "").toLowerCase().includes(q)
+      || (r.yesterday_note ?? "").toLowerCase().includes(q)
+      || r.day.includes(q),
+    );
+    return xs;
+  }, [items, missedOnly, moodFilter, searchQ]);
+  useEffect(() => { setPage(0); }, [missedOnly, moodFilter, searchQ, pageSize, windowDays]);
+  const total = filtered.length;
+  const effectivePageSize = pageSize === 0 ? Math.max(1, total) : pageSize;
+  const totalPages = Math.max(1, Math.ceil(total / effectivePageSize));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageRows = useMemo(
+    () => (pageSize === 0 ? filtered : filtered.slice(safePage * pageSize, safePage * pageSize + pageSize)),
+    [filtered, safePage, pageSize],
+  );
+  const firstShown = total === 0 ? 0 : (pageSize === 0 ? 1 : safePage * pageSize + 1);
+  const lastShown  = pageSize === 0 ? total : Math.min(total, safePage * pageSize + pageSize);
+  function pickPageSize(n: number) {
+    setPageSize(n);
+    localStorage.setItem("me-checkins-page-size", String(n));
+  }
+
+  // Quick-log mood from the Today hero card. Doesn't open the editor — saves
+  // immediately and toasts a soft nudge to add notes later. Reuses today's
+  // existing notes/attachments so this never clobbers content silently.
+  const quickMood = useMutation({
+    mutationFn: (mood: string) => api("/api/v1/me/huddle", {
+      method: "POST",
+      body: JSON.stringify({
+        day: todayISO,
+        mood,
+        focus_note: todayRow.focus_note ?? "",
+        yesterday_note: todayRow.yesterday_note ?? "",
+        attachments: todayRow.attachments ?? [],
+        post_to_campfire: false,
+      }),
+    }),
+    onSuccess: (_d, mood) => {
+      toast.success(`Logged ${mood}`, "Open the editor to add what you shipped + what's next.");
+      qc.invalidateQueries({ queryKey: ["me", "daily-checkins"] });
+      qc.invalidateQueries({ queryKey: ["me-huddle"] });
+    },
+    onError: (e: any) => toast.error("Could not save mood", e?.message),
+  });
+
   return (
     <div className="space-y-5">
       <div className="flex items-end justify-between gap-3 flex-wrap">
@@ -114,32 +299,52 @@ export function MyCheckinsTab() {
             Your morning huddle history — mood, what you shipped, what's next, all in one place.
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {/* Primary CTA — always reachable from this tab so first-time users
-              have a clear path to checking in. Switches label once today's
-              row has content so it never overwrites silently. */}
-          <button
-            type="button"
-            onClick={() => setEditingDay(todayRow)}
-            className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90"
-            title={todayHasContent ? "Open today's check-in editor" : "Log your check-in for today"}
-          >
-            {todayHasContent ? <Pencil size={13} /> : <Plus size={13} />}
-            {todayHasContent ? "Edit today's check-in" : "Check in for today"}
-          </button>
-          <select
-            value={windowDays}
-            onChange={(e) => setWindowDays(parseInt(e.target.value, 10))}
-            className="input max-w-[180px]"
-          >
-            <option value={7}>Last 7 days</option>
-            <option value={14}>Last 14 days</option>
-            <option value={30}>Last 30 days</option>
-            <option value={90}>Last 90 days</option>
-            <option value={180}>Last 6 months</option>
-          </select>
-        </div>
+        <select
+          value={windowDays}
+          onChange={(e) => setWindowDays(parseInt(e.target.value, 10))}
+          className="input max-w-[180px]"
+        >
+          <option value={7}>Last 7 days</option>
+          <option value={14}>Last 14 days</option>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+          <option value={180}>Last 6 months</option>
+        </select>
       </div>
+
+      {/* Today hero — front-and-centre. Empty state offers a one-click emoji
+          quick-log; once today has content the hero becomes a summary card
+          with an Edit button. Carries the primary CTA so the standalone
+          header button is no longer needed. */}
+      <TodayHero
+        row={todayRow}
+        hasContent={todayHasContent}
+        onOpen={() => setEditingDay(todayRow)}
+        onPickMood={(m) => quickMood.mutate(m)}
+        saving={quickMood.isPending}
+      />
+
+      {/* Smart facts — auto-derived nudges. Only chips with backing signal
+          appear, so the strip is empty when there isn't a story to tell. */}
+      {facts.length > 0 && (
+        <div className="flex items-center flex-wrap gap-2">
+          <span className="inline-flex items-center gap-1 text-[10.5px] uppercase tracking-wider font-bold text-muted">
+            <Sparkles size={11} /> Smart facts
+          </span>
+          {facts.map((f, i) => {
+            const cls = f.tone === "good" ? "bg-success/10 text-success border-success/30"
+              : f.tone === "warn" ? "bg-warn/10 text-warn border-warn/30"
+              : "bg-accent-soft text-accent border-accent/30";
+            return (
+              <span key={i} className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[12px] font-semibold ${cls}`}>
+                {f.icon}
+                <span className="text-muted/80 font-medium">{f.label}:</span>
+                <span>{f.value}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
 
       {/* Insight strip */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -173,12 +378,80 @@ export function MyCheckinsTab() {
         />
       </div>
 
+      {/* Rhythm strip — one square per day in the window, oldest left → newest
+          right. Colour encodes whether the day was checked in, and the click
+          target opens the editor for that day (if still inside the back-fill
+          window). Lets the user see their pattern without scrolling. */}
+      <section className="bg-surface border border-border rounded-2xl p-4 space-y-2">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="text-[12px] font-bold text-text inline-flex items-center gap-1.5">
+            <Activity size={12} className="text-accent" /> Rhythm
+            <span className="font-normal text-muted">· last {windowDays} days</span>
+          </div>
+          <div className="inline-flex items-center gap-3 text-[10.5px] text-muted">
+            <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-success/70" /> Checked in</span>
+            <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-warn/40" /> No mood</span>
+            <span className="inline-flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-danger/40" /> Missed</span>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {rhythm.map((r) => {
+            const isToday = r.day === todayISO;
+            const editable = isEditable(r.day);
+            const cls = r.missed
+              ? "bg-danger/30 hover:bg-danger/40"
+              : r.mood
+                ? "bg-success/60 hover:bg-success/80"
+                : "bg-warn/40 hover:bg-warn/60";
+            return (
+              <button
+                key={r.day}
+                type="button"
+                disabled={!editable}
+                onClick={() => setEditingDay(r)}
+                title={`${fmtDay(r.day)}${r.mood ? " · " + r.mood : ""}${r.missed ? " · missed" : ""}`}
+                className={`w-5 h-5 rounded-sm transition-all ${cls} ${isToday ? "ring-2 ring-accent ring-offset-1 ring-offset-surface" : ""} ${editable ? "cursor-pointer" : "cursor-default opacity-80"}`}
+              />
+            );
+          })}
+        </div>
+      </section>
+
       {/* Timeline */}
       <section className="bg-surface border border-border rounded-2xl overflow-hidden">
-        <header className="px-5 py-3 border-b border-border flex items-center gap-2">
+        <header className="px-5 py-3 border-b border-border flex items-center gap-2 flex-wrap">
           <CalendarDays size={14} className="text-accent" />
           <div className="text-sm font-bold text-text">Timeline</div>
-          <span className="text-[11px] text-muted ml-auto">From {data?.from ?? "—"}</span>
+          <span className="text-[11px] text-muted">From {data?.from ?? "—"}</span>
+
+          <div className="ml-auto flex items-center gap-2 flex-wrap">
+            <div className="relative">
+              <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+              <input
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+                placeholder="Search notes…"
+                className="pl-7 pr-2 py-1 text-[12px] bg-bg border border-border rounded-lg w-[160px] focus:outline-none focus:border-accent"
+              />
+            </div>
+            <select
+              value={moodFilter}
+              onChange={(e) => setMoodFilter(e.target.value)}
+              className="bg-bg border border-border rounded-lg px-2 py-1 text-[12px] font-semibold text-text"
+              title="Filter by mood"
+            >
+              <option value="all">All moods</option>
+              {MOODS.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+            <label className="inline-flex items-center gap-1.5 text-[12px] text-muted select-none">
+              <input
+                type="checkbox"
+                checked={missedOnly}
+                onChange={(e) => setMissedOnly(e.target.checked)}
+              />
+              <Filter size={11} /> Missed only
+            </label>
+          </div>
         </header>
         {isLoading ? (
           <div className="p-10 text-center text-muted text-sm">Loading…</div>
@@ -193,9 +466,11 @@ export function MyCheckinsTab() {
               <Plus size={13} /> Check in for today
             </button>
           </div>
+        ) : pageRows.length === 0 ? (
+          <div className="p-10 text-center text-muted text-sm">No days match these filters.</div>
         ) : (
           <ul className="divide-y divide-border">
-            {items.map((r) => (
+            {pageRows.map((r) => (
               <li key={r.day} className={`px-5 py-3 ${r.missed ? "bg-danger/5" : ""}`}>
                 <div className="flex items-start gap-4">
                   <div className="w-[120px] shrink-0">
@@ -265,6 +540,50 @@ export function MyCheckinsTab() {
               </li>
             ))}
           </ul>
+        )}
+        {/* Pager — only when filtered set actually exceeds one page worth. */}
+        {total > 0 && (
+          <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-border bg-bg/30 text-xs flex-wrap">
+            <div className="text-muted inline-flex items-center gap-3 flex-wrap">
+              <span>
+                Showing <span className="font-semibold text-text">{firstShown}</span>–
+                <span className="font-semibold text-text">{lastShown}</span> of{" "}
+                <span className="font-semibold text-text">{total.toLocaleString()}</span> day{total === 1 ? "" : "s"}
+              </span>
+              <label className="inline-flex items-center gap-1.5">
+                Rows
+                <select
+                  value={pageSize}
+                  onChange={(e) => pickPageSize(parseInt(e.target.value, 10))}
+                  className="bg-surface border border-border rounded-lg px-2 py-1 text-[12px] font-semibold text-text"
+                >
+                  {TIMELINE_PAGE_SIZES.map((n) => (
+                    <option key={n} value={n}>{n === 0 ? "All" : n}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={safePage === 0 || pageSize === 0}
+                className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:bg-bg/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-text"
+              >
+                ← Prev
+              </button>
+              <span className="text-muted px-1">
+                Page <span className="font-semibold text-text">{pageSize === 0 ? 1 : safePage + 1}</span> of{" "}
+                <span className="font-semibold text-text">{pageSize === 0 ? 1 : totalPages}</span>
+              </span>
+              <button
+                onClick={() => setPage((p) => p + 1)}
+                disabled={pageSize === 0 || safePage + 1 >= totalPages}
+                className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:bg-bg/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-text"
+              >
+                Next →
+              </button>
+            </div>
+          </div>
         )}
       </section>
 
@@ -480,6 +799,104 @@ function CheckinEditor({ row, onClose }: { row: Row; onClose: () => void }) {
         </footer>
       </div>
     </div>
+  );
+}
+
+// TodayHero — the primary action surface on this tab. Renders one of three
+// states:
+//
+//   1. Empty (today not yet logged): big quick-pick emoji row + "Add notes"
+//      link that opens the full editor.
+//   2. Logged today: green-tinted summary card showing mood + focus snippet
+//      + an Edit button.
+//   3. Missed today (only after the current day rolls past without a save):
+//      we still treat this as "empty" so the user can back-fill in one tap.
+function TodayHero({
+  row, hasContent, onOpen, onPickMood, saving,
+}: {
+  row: Row;
+  hasContent: boolean;
+  onOpen: () => void;
+  onPickMood: (m: string) => void;
+  saving: boolean;
+}) {
+  // Friendly date header — "Tuesday, 12 May" feels more like a journal entry
+  // than the ISO row keys we use everywhere else.
+  const friendly = new Date(row.day + "T00:00:00").toLocaleDateString(undefined, {
+    weekday: "long", day: "numeric", month: "long",
+  });
+
+  if (hasContent) {
+    return (
+      <section className="bg-success/5 border border-success/30 rounded-2xl p-5">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div className="min-w-0">
+            <div className="text-[10.5px] uppercase tracking-wider font-bold text-success inline-flex items-center gap-1">
+              <CheckCircle2 size={11} /> Checked in today
+            </div>
+            <h3 className="text-lg font-extrabold text-text leading-tight mt-1">
+              {row.mood ? <span className="text-xl mr-1.5">{row.mood}</span> : null}
+              {friendly}
+            </h3>
+            {row.focus_note && (
+              <p className="text-sm text-text mt-2 max-w-2xl whitespace-pre-wrap leading-snug line-clamp-3">
+                {row.focus_note}
+              </p>
+            )}
+            {(row.attachments?.length ?? 0) > 0 && (
+              <div className="text-[11.5px] text-muted mt-2 inline-flex items-center gap-1">
+                <Link2 size={10} /> {row.attachments!.length} attachment{row.attachments!.length === 1 ? "" : "s"}
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={onOpen}
+            className="inline-flex items-center gap-1.5 text-sm font-bold bg-surface border border-border px-4 py-2 rounded-full hover:border-accent/40 hover:text-accent"
+          >
+            <Pencil size={13} /> Edit today's check-in
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="bg-accent-soft/40 border border-accent/30 rounded-2xl p-5">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-[10.5px] uppercase tracking-wider font-bold text-accent inline-flex items-center gap-1">
+            <Sparkles size={11} /> Today
+          </div>
+          <h3 className="text-lg font-extrabold text-text leading-tight mt-1">{friendly}</h3>
+          <p className="text-[12.5px] text-muted mt-1">
+            Tap a mood to log it now — you can add what you shipped and what's next any time today.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onOpen}
+          className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90"
+        >
+          <Plus size={13} /> Add notes
+        </button>
+      </div>
+      <div className="mt-4 flex items-center gap-1.5 flex-wrap">
+        {MOODS.map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => onPickMood(m)}
+            disabled={saving}
+            className="px-3 py-2.5 rounded-xl text-2xl border border-transparent bg-surface hover:border-accent/40 hover:scale-110 transition-all disabled:opacity-50 disabled:cursor-wait"
+            title={`Log ${m}`}
+          >
+            {m}
+          </button>
+        ))}
+        {saving && <Loader2 size={14} className="animate-spin text-muted ml-1" />}
+      </div>
+    </section>
   );
 }
 
