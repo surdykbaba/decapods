@@ -9,7 +9,7 @@ import { useMemo, useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
 import {
-  ShieldCheck, AlertCircle, Link2, CheckCircle2, Calendar, Filter, Flame,
+  ShieldCheck, AlertCircle, Link2, CheckCircle2, Filter, Flame,
   Smile, Users as UsersIcon, ListChecks, Activity,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -67,10 +67,6 @@ function fmtDay(iso: string): string {
   const d = new Date(iso + "T00:00:00");
   return d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
-function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
 // CheckinsPanel — the page body, factored out so AttendancePage can mount it
 // as a tab inside the merged "Daily HR" view without duplicating the table /
 // filter logic. The standalone page is now a thin wrapper that adds the
@@ -90,7 +86,7 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
   // page 5 of an empty filtered list is hostile UX.
   useEffect(() => { setPage(0); }, [userFilter, missedOnly, windowDays, pageSize]);
 
-  const { data, isLoading } = useQuery<Resp>({
+  const { data } = useQuery<Resp>({
     enabled: allowed,
     queryKey: ["admin", "daily-checkins", windowDays, userFilter, missedOnly, page, pageSize],
     queryFn: () => {
@@ -113,10 +109,18 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
   const compliance = data?.compliance ?? [];
   const insights = data?.insights;
   const total = data?.total ?? 0;
-  const effectivePageSize = pageSize === 0 ? Math.max(1, total) : pageSize;
-  const totalPages = Math.max(1, Math.ceil(total / effectivePageSize));
-  const firstShown = total === 0 ? 0 : (pageSize === 0 ? 1 : page * pageSize + 1);
-  const lastShown = pageSize === 0 ? total : Math.min(total, page * pageSize + items.length);
+  // Pagination now scopes the *compliance summary* (one row per member).
+  // Day-by-day rows live in the drill-down drawer so they don't need their
+  // own page strip.
+  const complianceTotal = compliance.length;
+  const effectivePageSize = pageSize === 0 ? Math.max(1, complianceTotal) : pageSize;
+  const totalPages = Math.max(1, Math.ceil(complianceTotal / effectivePageSize));
+  const firstShown = complianceTotal === 0 ? 0 : (pageSize === 0 ? 1 : page * pageSize + 1);
+  const lastShown = pageSize === 0 ? complianceTotal : Math.min(complianceTotal, page * pageSize + Math.min(pageSize, complianceTotal - page * pageSize));
+  const pagedCompliance = useMemo(
+    () => (pageSize === 0 ? compliance : compliance.slice(page * pageSize, page * pageSize + pageSize)),
+    [compliance, page, pageSize],
+  );
 
   const topMood = useMemo(() => {
     if (!insights?.mood_counts) return null;
@@ -215,13 +219,15 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
         </div>
       </section>
 
-      {/* ============ Compliance summary ============ */}
+      {/* ============ Check-ins (one table) ============ */}
       <section className="bg-surface border border-border rounded-2xl overflow-hidden">
         <header className="px-5 py-3 border-b border-border flex items-center justify-between">
           <div className="text-sm font-bold text-text inline-flex items-center gap-2">
-            <ListChecks size={14} className="text-accent" /> Compliance summary
+            <ListChecks size={14} className="text-accent" /> Check-ins
           </div>
-          <div className="text-[11px] text-muted">Sorted by most missed first · whole team</div>
+          <div className="text-[11px] text-muted">
+            Sorted by most missed first · click a row for the day-by-day timeline
+          </div>
         </header>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -239,7 +245,7 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
             <tbody className="divide-y divide-border">
               {compliance.length === 0 ? (
                 <tr><td colSpan={7} className="px-4 py-6 text-center text-muted text-sm">No data yet</td></tr>
-              ) : compliance.map((p) => {
+              ) : pagedCompliance.map((p) => {
                 const t = p.done + p.missed;
                 const pct = t > 0 ? Math.round((p.done / t) * 100) : 0;
                 const tone = pct >= 80 ? "text-success" : pct >= 50 ? "text-warn" : "text-danger";
@@ -292,127 +298,13 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
             </tbody>
           </table>
         </div>
-      </section>
-
-      {/* ============ Detail table ============ */}
-      <section className="bg-surface border border-border rounded-2xl overflow-hidden">
-        <header className="px-5 py-3 border-b border-border flex items-center gap-2">
-          <Calendar size={14} className="text-accent" />
-          <div className="text-sm font-bold text-text">Day-by-day detail</div>
-        </header>
-        {isLoading ? (
-          <div className="p-10 text-center text-muted text-sm">Loading check-ins…</div>
-        ) : items.length === 0 ? (
-          <div className="p-10 text-center text-muted text-sm">No matching rows.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-bg/40 text-[11px] uppercase tracking-wider text-muted">
-                <tr>
-                  <th className="text-left px-4 py-2 font-semibold">Day</th>
-                  <th className="text-left px-4 py-2 font-semibold">Member</th>
-                  <th className="text-left px-4 py-2 font-semibold">Mood</th>
-                  <th className="text-left px-4 py-2 font-semibold">Yesterday</th>
-                  <th className="text-left px-4 py-2 font-semibold">Today</th>
-                  <th className="text-left px-4 py-2 font-semibold">Attachments</th>
-                  <th className="text-left px-4 py-2 font-semibold">First seen</th>
-                  <th className="text-left px-4 py-2 font-semibold">Shipped</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {items.map((r, idx) => (
-                  <tr key={`${r.user_id}-${r.day}-${idx}`} className={`align-top hover:bg-bg/40 ${r.missed ? "bg-danger/5" : ""}`}>
-                    <td className="px-4 py-2 whitespace-nowrap text-xs">
-                      <div className="font-semibold text-text">{fmtDay(r.day)}</div>
-                      <div className="text-[10.5px] text-muted/80">{r.day}</div>
-                    </td>
-                    <td className="px-4 py-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          // Find the member's row in the compliance summary
-                          // so the drawer has the full streak / last-mood /
-                          // tasks-shipped picture, not just one day.
-                          const c = compliance.find((x) => x.user_id === r.user_id);
-                          if (c) setDrilldown(c);
-                        }}
-                        className="text-left hover:text-accent"
-                        title="Open member drill-down"
-                      >
-                        <div className="font-semibold text-text">{r.user_name || "—"}</div>
-                        <div className="text-[11px] text-muted">{r.email}</div>
-                      </button>
-                    </td>
-                    <td className="px-4 py-2 text-base">
-                      {r.missed ? (
-                        <span className="text-[11px] text-danger font-semibold inline-flex items-center gap-1">
-                          <AlertCircle size={11} /> Missed
-                        </span>
-                      ) : (r.mood || <span className="text-muted text-xs">—</span>)}
-                    </td>
-                    <td className="px-4 py-2 max-w-[220px]">
-                      <div className="text-[12.5px] text-text whitespace-pre-wrap leading-snug line-clamp-4">
-                        {r.yesterday_note || <span className="text-muted">—</span>}
-                      </div>
-                    </td>
-                    <td className="px-4 py-2 max-w-[220px]">
-                      <div className="text-[12.5px] text-text whitespace-pre-wrap leading-snug line-clamp-4">
-                        {r.focus_note || <span className="text-muted">—</span>}
-                      </div>
-                      {r.posted_to_campfire && (
-                        <span className="inline-flex items-center gap-1 text-[10.5px] text-accent mt-1">
-                          <CheckCircle2 size={10} /> Shared to Campfire
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-2">
-                      {(r.attachments?.length ?? 0) === 0 ? (
-                        <span className="text-muted text-xs">—</span>
-                      ) : (
-                        <ul className="space-y-1">
-                          {r.attachments!.slice(0, 3).map((a, i) => (
-                            <li key={i}>
-                              <a
-                                href={a.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 text-[12px] text-accent hover:underline max-w-[180px] truncate"
-                              >
-                                <Link2 size={10} /> {a.name}
-                              </a>
-                            </li>
-                          ))}
-                          {(r.attachments?.length ?? 0) > 3 && (
-                            <li className="text-[10.5px] text-muted">+{r.attachments!.length - 3} more</li>
-                          )}
-                        </ul>
-                      )}
-                    </td>
-                    <td className="px-4 py-2 text-[11.5px] text-muted whitespace-nowrap">
-                      {r.first_seen_at ? fmtTime(r.first_seen_at) : <span>—</span>}
-                    </td>
-                    <td className="px-4 py-2 text-sm">
-                      {r.tasks_done > 0 ? (
-                        <span className="inline-flex items-center gap-1 text-success font-semibold">
-                          <ListChecks size={11} /> {r.tasks_done}
-                        </span>
-                      ) : (
-                        <span className="text-muted">0</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {items.length > 0 && (
+        {compliance.length > 0 && (
           <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-border bg-bg/30 text-xs flex-wrap">
             <div className="text-muted inline-flex items-center gap-3 flex-wrap">
               <span>
                 Showing <span className="font-semibold text-text">{firstShown}</span>–
                 <span className="font-semibold text-text">{lastShown}</span> of{" "}
-                <span className="font-semibold text-text">{total.toLocaleString()}</span>
+                <span className="font-semibold text-text">{complianceTotal.toLocaleString()}</span> members
               </span>
               <label className="inline-flex items-center gap-1.5">
                 Rows
