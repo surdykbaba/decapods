@@ -3,7 +3,7 @@ import { NavLink, Outlet, useParams, Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft, Activity, List as ListIcon, LayoutGrid, Calendar as CalendarIcon,
-  Folder, Share2, Sparkles, Pencil, Check, X,
+  Folder, Share2, Sparkles, Pencil, Check, X, Archive, AlertTriangle, Clock,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Avatar } from "@/components/Avatar";
@@ -17,6 +17,11 @@ type Project = {
   health: string;
   budget?: number;
   opportunity_id?: string | null;
+  // Optional dates — present on the list endpoint; the detail GET also
+  // includes them. We use end_date as the canonical target delivery so the
+  // header can render a "Target delivery" badge / overdue alert.
+  start_date?: string | null;
+  end_date?: string | null;
 };
 
 type Stakeholder = {
@@ -174,6 +179,55 @@ export function ProjectShell() {
           </button>
         </div>
       </header>
+
+      {/* Closed-project banner — makes the "edits still work" fact explicit
+          so users don't assume read-only and avoid the page. Also a reminder
+          that task creation is blocked, paired with a quick re-open hint. */}
+      {project?.status === "closed" && (
+        <div className="bg-bg/40 border border-border rounded-2xl px-4 py-3 flex items-center gap-3">
+          <span className="w-8 h-8 rounded-lg grid place-items-center bg-success/10 text-success shrink-0">
+            <Archive size={14} />
+          </span>
+          <div className="text-[12.5px] text-text">
+            <span className="font-semibold">This project is closed.</span>{" "}
+            <span className="text-muted">
+              Project details, documents and tasks stay editable for corrections — but
+              <span className="font-semibold text-text"> no new tasks can be created</span> until it's re-opened
+              via the source Pipeline opportunity.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Target delivery indicator — surfaces the end_date as a real status
+          signal (on track / approaching / overdue) so the header always
+          answers "are we late?" without leaving the page. Hidden when the
+          project has no target or is already finished. */}
+      {project && project.end_date && !["paid", "closed"].includes(project.status) && (() => {
+        const tgt = new Date(project.end_date + (project.end_date.length === 10 ? "T00:00:00" : "")).getTime();
+        const days = Math.ceil((tgt - Date.now()) / 86_400_000);
+        const tgtFmt = new Date(tgt).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+        let tone: "good" | "warn" | "bad" = "good";
+        let label = `On track · ${days}d to target`;
+        let icon: React.ReactNode = <Clock size={14} />;
+        if (days < 0) {
+          tone = "bad"; label = `${Math.abs(days)}d past target`; icon = <AlertTriangle size={14} />;
+        } else if (days <= 7) {
+          tone = "warn"; label = `Approaching target · ${days}d left`; icon = <AlertTriangle size={14} />;
+        }
+        const cls = tone === "bad"  ? "bg-danger/10 text-danger border-danger/30"
+                  : tone === "warn" ? "bg-warn/10 text-warn border-warn/30"
+                  : "bg-success/10 text-success border-success/30";
+        return (
+          <div className={`rounded-2xl border px-4 py-2.5 flex items-center gap-3 ${cls}`}>
+            <span className="shrink-0">{icon}</span>
+            <div className="text-[12.5px] flex-1">
+              <span className="font-bold">{label}</span>
+              <span className="opacity-80"> · target delivery {tgtFmt}</span>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Tab bar */}
       <nav className="flex flex-wrap items-center gap-1 border-b border-border">

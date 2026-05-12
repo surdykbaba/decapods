@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import {
   Wallet, FileText, AlertTriangle, CheckCircle2, ArrowRight, TrendingUp,
-  Receipt, ArrowDownToLine, Clock, FolderKanban,
+  Receipt, ArrowDownToLine, Clock, FolderKanban, Target, CalendarClock,
 } from "lucide-react";
 
 type Summary = {
@@ -69,9 +69,30 @@ function fmtRel(iso: string | null): string {
   return d.toLocaleDateString("en-US", { day: "numeric", month: "short" });
 }
 
+type DeliveryProject = {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
+  end_date: string | null;
+  client_name: string;
+  tasks: number;
+  tasks_done: number;
+};
+
+const FINISHED_STATUSES = ["invoiced", "paid", "closed"];
+
 export function FinancePage() {
   const { data, isLoading } = useQuery<Summary>({
     queryKey: ["finance", "summary"], queryFn: () => api("/api/v1/finance/summary"),
+  });
+  // Delivery health pulls from the same projects list the Projects page uses.
+  // We compute target-vs-actual entirely client-side so this view stays in
+  // lockstep with what HR / PMs already see, with no new endpoint to feed.
+  const { data: projectsData } = useQuery<{ items: DeliveryProject[] }>({
+    queryKey: ["projects", "for-finance-delivery"],
+    queryFn: () => api("/api/v1/projects"),
+    staleTime: 60_000,
   });
 
   if (isLoading || !data) return <div className="text-muted">Loading…</div>;
@@ -132,6 +153,62 @@ export function FinancePage() {
           </div>
         </section>
       )}
+
+      {/* Delivery health — target end-date vs today, banded into On track /
+          Approaching (≤7d) / Overdue. Shows portfolio-level counts at the
+          top and a focused list of the at-risk projects beneath. Hidden
+          when we have nothing to show. */}
+      {projectsData && (() => {
+        const active = (projectsData.items ?? []).filter((p) => !FINISHED_STATUSES.includes(p.status));
+        if (active.length === 0) return null;
+        type Banded = DeliveryProject & { days: number | null; band: "on_track" | "approaching" | "overdue" | "no_target" };
+        const banded: Banded[] = active.map((p) => {
+          if (!p.end_date) return { ...p, days: null, band: "no_target" };
+          const t = new Date(p.end_date + (p.end_date.length === 10 ? "T00:00:00" : "")).getTime();
+          const days = Math.ceil((t - Date.now()) / 86_400_000);
+          const band = days < 0 ? "overdue" : days <= 7 ? "approaching" : "on_track";
+          return { ...p, days, band };
+        });
+        const onTrack    = banded.filter((b) => b.band === "on_track").length;
+        const approaching = banded.filter((b) => b.band === "approaching");
+        const overdue    = banded.filter((b) => b.band === "overdue");
+        const noTarget   = banded.filter((b) => b.band === "no_target").length;
+        // The headline list — overdue first (worst), then approaching by days
+        // ascending so the closest-to-target sits at the top.
+        const focus = [
+          ...overdue.sort((a, b) => (a.days ?? 0) - (b.days ?? 0)),
+          ...approaching.sort((a, b) => (a.days ?? 0) - (b.days ?? 0)),
+        ].slice(0, 8);
+        return (
+          <section className="bg-surface border border-border rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <h2 className="h2 flex items-center gap-2">
+                <Target size={16} className="text-accent" /> Delivery health
+              </h2>
+              <Link to="/projects" className="text-xs font-semibold text-accent hover:underline inline-flex items-center gap-1">
+                All projects <ArrowRight size={11} />
+              </Link>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <DeliveryStat tone="good" label="On track"    value={onTrack}            sub="more than a week to target" />
+              <DeliveryStat tone="warn" label="Approaching" value={approaching.length} sub="due within 7 days" />
+              <DeliveryStat tone="bad"  label="Overdue"     value={overdue.length}     sub="past target date" />
+              <DeliveryStat tone="neutral" label="No target" value={noTarget}          sub="end date not set" />
+            </div>
+            {focus.length === 0 ? (
+              <EmptyHint
+                icon={<CheckCircle2 size={20} className="text-success" />}
+                title="Every active engagement is on track"
+                body="Nothing is approaching or past its target delivery date."
+              />
+            ) : (
+              <ul className="divide-y divide-border">
+                {focus.map((p) => <DeliveryRow key={p.id} p={p} />)}
+              </ul>
+            )}
+          </section>
+        );
+      })()}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Aging chart */}
@@ -364,5 +441,82 @@ function EmptyHint({ icon, title, body }: { icon: React.ReactNode; title: string
       <div className="text-sm font-bold text-text">{title}</div>
       <p className="text-xs text-muted mt-1 max-w-sm mx-auto">{body}</p>
     </div>
+  );
+}
+
+// DeliveryStat — small tile used inside the Delivery health section. Same
+// visual language as the existing Kpi tile up top, just narrower and tone-
+// banded so the four bands (good / warn / bad / neutral) read instantly.
+function DeliveryStat({
+  label, value, sub, tone,
+}: { label: string; value: number; sub: string; tone: "good" | "warn" | "bad" | "neutral" }) {
+  const valueCls = { good: "text-success", warn: "text-warn", bad: "text-danger", neutral: "text-text" }[tone];
+  const bubble = {
+    good:    "bg-success/10 text-success",
+    warn:    "bg-warn/10 text-warn",
+    bad:     "bg-danger/10 text-danger",
+    neutral: "bg-bg text-muted",
+  }[tone];
+  return (
+    <div className="bg-bg/40 border border-border rounded-xl p-3 flex flex-col gap-1.5">
+      <div className="flex items-center justify-between">
+        <span className={`inline-flex items-center justify-center w-6 h-6 rounded-md ${bubble}`}>
+          <Target size={11} />
+        </span>
+        <span className="text-[10.5px] uppercase tracking-wider font-bold text-muted">{label}</span>
+      </div>
+      <div className={`text-2xl font-extrabold leading-none ${valueCls}`}>{value}</div>
+      <div className="text-[11px] text-muted leading-snug">{sub}</div>
+    </div>
+  );
+}
+
+// DeliveryRow — one project entry inside the focus list. Renders the
+// project code/name with client, a coloured "Xd late / Xd left" pill, and
+// a quick progress bar derived from the same task counts the Projects list
+// shows. Clicking jumps to the project detail page.
+function DeliveryRow({ p }: { p: DeliveryProject & { days: number | null; band: "on_track" | "approaching" | "overdue" | "no_target" } }) {
+  const completion = p.tasks === 0 ? 0 : Math.round((p.tasks_done / p.tasks) * 100);
+  const dayLabel =
+    p.days === null ? "No target"
+    : p.days < 0    ? `${Math.abs(p.days)}d overdue`
+    : p.days === 0  ? "Due today"
+    : `${p.days}d left`;
+  const pillCls =
+    p.band === "overdue"     ? "bg-danger/15 text-danger border-danger/30"
+    : p.band === "approaching" ? "bg-warn/15 text-warn border-warn/30"
+    : "bg-bg text-muted border-border";
+  return (
+    <li className="py-3 flex items-center gap-3">
+      <span className={`w-9 h-9 rounded-lg grid place-items-center shrink-0 ${
+        p.band === "overdue" ? "bg-danger/10 text-danger" : "bg-warn/10 text-warn"
+      }`}>
+        <CalendarClock size={14} />
+      </span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+          <span className="text-[11px] font-mono font-semibold text-muted shrink-0">{p.code}</span>
+          <Link to={`/projects/${p.id}`} className="text-sm font-bold text-text hover:text-accent truncate">
+            {p.name}
+          </Link>
+          <span className={`pill border text-[10px] uppercase tracking-wide font-bold whitespace-nowrap ${pillCls}`}>
+            {dayLabel}
+          </span>
+        </div>
+        <div className="text-[11.5px] text-muted truncate">
+          {p.client_name || "Unassigned"}
+          {p.end_date && <span> · target {new Date(p.end_date).toLocaleDateString(undefined, { day: "numeric", month: "short" })}</span>}
+          {p.tasks > 0 && <span> · {completion}% complete</span>}
+        </div>
+      </div>
+      {p.tasks > 0 && (
+        <div className="h-1.5 w-24 bg-bg/60 rounded-full overflow-hidden shrink-0">
+          <div
+            className={`h-full ${completion === 100 ? "bg-success" : completion >= 50 ? "bg-accent" : "bg-warn"}`}
+            style={{ width: `${completion}%` }}
+          />
+        </div>
+      )}
+    </li>
   );
 }
