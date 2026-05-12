@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Sun, Flame, Clock, AlertCircle, X, Send, Plane, ChevronRight } from "lucide-react";
+import { Sun, Flame, Clock, AlertCircle, X, Send, Plane, ChevronRight, Link2, Paperclip, Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toast } from "@/lib/toast";
@@ -15,11 +15,15 @@ type HuddleTask = {
   status: string;
 };
 
+type HuddleAttachment = { kind: "link" | "file"; name: string; url: string };
+
 type HuddleResp = {
   today: string;
   done_today: boolean;
   mood?: string;
   focus_note?: string;
+  yesterday_note?: string;
+  attachments?: HuddleAttachment[];
   standup_at: string;
   tasks_due_today: HuddleTask[];
   tasks_overdue: HuddleTask[];
@@ -61,6 +65,9 @@ export function MorningHuddle() {
   const [open, setOpen] = useState(false);
   const [mood, setMood] = useState("");
   const [focus, setFocus] = useState("");
+  const [yesterday, setYesterday] = useState("");
+  const [attachments, setAttachments] = useState<HuddleAttachment[]>([]);
+  const [linkDraft, setLinkDraft] = useState("");
   const [share, setShare] = useState(true);
 
   const { data, isLoading } = useQuery<HuddleResp>({
@@ -84,12 +91,20 @@ export function MorningHuddle() {
   // Hydrate the form if the user has already started a check-in today (e.g.
   // they reopen the sheet from the manual trigger after submitting).
   useEffect(() => {
-    if (data?.mood)       setMood(data.mood);
-    if (data?.focus_note) setFocus(data.focus_note);
-  }, [data?.mood, data?.focus_note]);
+    if (data?.mood)            setMood(data.mood);
+    if (data?.focus_note)      setFocus(data.focus_note);
+    if (data?.yesterday_note)  setYesterday(data.yesterday_note);
+    if (data?.attachments)     setAttachments(data.attachments);
+  }, [data?.mood, data?.focus_note, data?.yesterday_note, data?.attachments]);
 
   const save = useMutation({
-    mutationFn: (body: { mood: string; focus_note: string; post_to_campfire: boolean }) =>
+    mutationFn: (body: {
+      mood: string;
+      focus_note: string;
+      yesterday_note: string;
+      attachments: HuddleAttachment[];
+      post_to_campfire: boolean;
+    }) =>
       api("/api/v1/me/huddle", { method: "POST", body: JSON.stringify(body) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["me-huddle"] });
@@ -115,8 +130,24 @@ export function MorningHuddle() {
     save.mutate({
       mood: mood,
       focus_note: focus.trim(),
+      yesterday_note: yesterday.trim(),
+      attachments,
       post_to_campfire: share && !!focus.trim(),
     });
+  }
+
+  function addLink() {
+    const raw = linkDraft.trim();
+    if (!raw) return;
+    // Best-effort URL guard; if it's not parseable we still let it through
+    // as a free-text reference because some people paste internal IDs.
+    let name = raw;
+    try { name = new URL(raw).hostname || raw; } catch { /* keep raw */ }
+    setAttachments((prev) => [...prev, { kind: "link", name, url: raw }]);
+    setLinkDraft("");
+  }
+  function removeAttachment(idx: number) {
+    setAttachments((prev) => prev.filter((_, i) => i !== idx));
   }
 
   return (
@@ -229,6 +260,17 @@ export function MorningHuddle() {
             </div>
 
             <div>
+              <div className="text-sm font-semibold text-text mb-2">What did you work on yesterday?</div>
+              <textarea
+                value={yesterday}
+                onChange={(e) => setYesterday(e.target.value)}
+                rows={3}
+                placeholder="Quick recap — what shipped, what stalled, where you handed off."
+                className="input w-full resize-none"
+              />
+            </div>
+
+            <div>
               <div className="text-sm font-semibold text-text mb-2">What are you working on today?</div>
               <textarea
                 value={focus}
@@ -238,6 +280,60 @@ export function MorningHuddle() {
                 className="input w-full resize-none"
                 autoFocus
               />
+            </div>
+
+            <div>
+              <div className="text-sm font-semibold text-text mb-2 flex items-center gap-1.5">
+                <Paperclip size={12} className="text-muted" /> Attachments
+                <span className="text-[11px] text-muted font-normal">— paste a link to a doc, PR, design, ticket…</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Link2 size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                  <input
+                    type="url"
+                    value={linkDraft}
+                    onChange={(e) => setLinkDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLink(); } }}
+                    placeholder="https://…"
+                    className="input w-full pl-8 text-sm"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={addLink}
+                  disabled={!linkDraft.trim()}
+                  className="text-sm font-semibold px-3 py-2 rounded-lg bg-bg border border-border hover:border-accent/40 disabled:opacity-50 disabled:cursor-not-allowed text-text"
+                >
+                  Add
+                </button>
+              </div>
+              {attachments.length > 0 && (
+                <ul className="mt-2 space-y-1">
+                  {attachments.map((a, i) => (
+                    <li key={i} className="flex items-center gap-2 text-[12.5px] bg-bg/60 border border-border rounded-lg px-2.5 py-1.5">
+                      <Link2 size={11} className="text-muted shrink-0" />
+                      <a
+                        href={a.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-accent hover:underline truncate flex-1"
+                        title={a.url}
+                      >
+                        {a.name}
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => removeAttachment(i)}
+                        className="text-muted hover:text-danger p-1"
+                        aria-label="Remove attachment"
+                      >
+                        <Trash2 size={11} />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             <label className="flex items-start gap-2 text-sm cursor-pointer select-none">

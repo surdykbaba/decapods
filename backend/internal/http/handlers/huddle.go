@@ -32,16 +32,24 @@ type huddleTask struct {
 	Status    string  `json:"status"`
 }
 
+type huddleAttachment struct {
+	Kind string `json:"kind"` // "link" | "file"
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
 type huddleResp struct {
-	Today           string       `json:"today"`             // YYYY-MM-DD in server UTC
-	DoneToday       bool         `json:"done_today"`
-	Mood            string       `json:"mood,omitempty"`
-	FocusNote       string       `json:"focus_note,omitempty"`
-	StandupAt       string       `json:"standup_at"`        // HH:MM, tenant-configurable
-	TasksDueToday   []huddleTask `json:"tasks_due_today"`
-	TasksOverdue    []huddleTask `json:"tasks_overdue"`
-	ApprovalsWaiting int         `json:"approvals_waiting"`
-	OnLeaveToday    bool         `json:"on_leave_today"`
+	Today           string             `json:"today"`             // YYYY-MM-DD in server UTC
+	DoneToday       bool               `json:"done_today"`
+	Mood            string             `json:"mood,omitempty"`
+	FocusNote       string             `json:"focus_note,omitempty"`
+	YesterdayNote   string             `json:"yesterday_note,omitempty"`
+	Attachments     []huddleAttachment `json:"attachments"`
+	StandupAt       string             `json:"standup_at"`        // HH:MM, tenant-configurable
+	TasksDueToday   []huddleTask       `json:"tasks_due_today"`
+	TasksOverdue    []huddleTask       `json:"tasks_overdue"`
+	ApprovalsWaiting int                `json:"approvals_waiting"`
+	OnLeaveToday    bool               `json:"on_leave_today"`
 }
 
 // Get returns today's brief for the caller. Pulls the user's open tasks
@@ -60,15 +68,18 @@ func (h *Huddle) Get(c *gin.Context) {
 		StandupAt:     standupTimeFor(c.Request.Context(), h.db, tid),
 		TasksDueToday: []huddleTask{},
 		TasksOverdue:  []huddleTask{},
+		Attachments:   []huddleAttachment{},
 	}
 
 	// Existing check-in for today?
 	var (
-		mood, focus *string
+		mood, focus, yesterday *string
+		attachments            []byte
 	)
 	if err := h.db.QueryRow(c, `
-		SELECT mood, focus_note FROM daily_checkins
-		WHERE user_id=$1 AND day=$2::date`, uid, today).Scan(&mood, &focus); err == nil {
+		SELECT mood, focus_note, yesterday_note, COALESCE(attachments, '[]'::jsonb)
+		  FROM daily_checkins
+		 WHERE user_id=$1 AND day=$2::date`, uid, today).Scan(&mood, &focus, &yesterday, &attachments); err == nil {
 		out.DoneToday = true
 		if mood != nil {
 			out.Mood = *mood
@@ -76,6 +87,10 @@ func (h *Huddle) Get(c *gin.Context) {
 		if focus != nil {
 			out.FocusNote = *focus
 		}
+		if yesterday != nil {
+			out.YesterdayNote = *yesterday
+		}
+		_ = json.Unmarshal(attachments, &out.Attachments)
 	}
 
 	// On approved leave today?
@@ -140,9 +155,11 @@ func (h *Huddle) Save(c *gin.Context) {
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
 
 	var req struct {
-		Mood            string `json:"mood"`
-		FocusNote       string `json:"focus_note"`
-		PostToCampfire  bool   `json:"post_to_campfire"`
+		Mood            string              `json:"mood"`
+		FocusNote       string              `json:"focus_note"`
+		YesterdayNote   string              `json:"yesterday_note"`
+		Attachments     []huddleAttachment  `json:"attachments"`
+		PostToCampfire  bool                `json:"post_to_campfire"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -150,6 +167,16 @@ func (h *Huddle) Save(c *gin.Context) {
 	}
 	req.Mood = strings.TrimSpace(req.Mood)
 	req.FocusNote = strings.TrimSpace(req.FocusNote)
+	req.YesterdayNote = strings.TrimSpace(req.YesterdayNote)
+	// Defensive cap so a misbehaving client can't dump 10MB of attachments
+	// into a check-in row.
+	if len(req.Attachments) > 20 {
+		req.Attachments = req.Attachments[:20]
+	}
+	attachJSON, _ := json.Marshal(req.Attachments)
+	if len(attachJSON) == 0 {
+		attachJSON = []byte("[]")
+	}
 
 	today := time.Now().UTC().Format("2006-01-02")
 
@@ -177,14 +204,22 @@ func (h *Huddle) Save(c *gin.Context) {
 	posted := campfirePostID != nil
 	if _, err := h.db.Exec(c, `
 		INSERT INTO daily_checkins (tenant_id, user_id, day, mood, focus_note,
+		                            yesterday_note, attachments,
 		                            posted_to_campfire, campfire_post_id)
-		VALUES ($1,$2,$3::date, NULLIF($4,''), NULLIF($5,''), $6, $7)
+		VALUES ($1,$2,$3::date, NULLIF($4,''), NULLIF($5,''),
+		        NULLIF($6,''), $7::jsonb, $8, $9)
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		  mood              = COALESCE(NULLIF(EXCLUDED.mood, ''), daily_checkins.mood),
 		  focus_note        = COALESCE(NULLIF(EXCLUDED.focus_note, ''), daily_checkins.focus_note),
+		  yesterday_note    = COALESCE(NULLIF(EXCLUDED.yesterday_note, ''), daily_checkins.yesterday_note),
+		  attachments       = CASE
+		                        WHEN jsonb_array_length(EXCLUDED.attachments) > 0
+		                          THEN EXCLUDED.attachments
+		                        ELSE daily_checkins.attachments
+		                      END,
 		  posted_to_campfire = daily_checkins.posted_to_campfire OR EXCLUDED.posted_to_campfire,
 		  campfire_post_id  = COALESCE(daily_checkins.campfire_post_id, EXCLUDED.campfire_post_id)`,
-		tid, uid, today, req.Mood, req.FocusNote, posted, campfirePostID); err != nil {
+		tid, uid, today, req.Mood, req.FocusNote, req.YesterdayNote, string(attachJSON), posted, campfirePostID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

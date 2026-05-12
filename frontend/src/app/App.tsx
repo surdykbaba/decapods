@@ -28,6 +28,7 @@ import { TeamsPage } from "@/modules/integrations/TeamsPage";
 import { MicrosoftCalendarPage } from "@/modules/integrations/MicrosoftCalendarPage";
 import { AdminUsersPage } from "@/modules/admin/UsersPage";
 import { SystemAuditPage } from "@/modules/admin/SystemAuditPage";
+import { DailyCheckinsPage } from "@/modules/admin/DailyCheckinsPage";
 import { WorkflowPage } from "@/modules/settings/WorkflowPage";
 import { WorkPolicyPage } from "@/modules/settings/WorkPolicyPage";
 import { TeamRatesPage } from "@/modules/settings/TeamRatesPage";
@@ -129,6 +130,7 @@ export function App() {
 
         <Route path="/admin/users" element={<AdminUsersPage />} />
         <Route path="/admin/audit" element={<SystemAuditPage />} />
+        <Route path="/admin/daily-checkins" element={<DailyCheckinsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
