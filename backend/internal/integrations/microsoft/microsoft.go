@@ -219,6 +219,55 @@ func (c Config) tokenRequest(ctx context.Context, form url.Values) (Token, error
 }
 
 // graphGet is a tiny helper that adds the Bearer header + decodes JSON.
+// RespondEvent posts an RSVP to a calendar event. response must be one of
+// "accept", "decline", or "tentativelyAccept" — these are Graph's verb names.
+// sendResponse=true mirrors Outlook's default ("send the response to the
+// organiser"); a nil/empty comment skips the optional note.
+//
+// Graph returns 202 Accepted on success with no body — we don't unmarshal.
+func RespondEvent(ctx context.Context, accessToken, eventID, response, comment string) error {
+	switch response {
+	case "accept", "decline", "tentativelyAccept":
+	default:
+		return fmt.Errorf("invalid response %q (want accept/decline/tentativelyAccept)", response)
+	}
+	u := "https://graph.microsoft.com/v1.0/me/events/" + url.PathEscape(eventID) + "/" + response
+	body := map[string]any{"sendResponse": true}
+	if comment != "" {
+		body["comment"] = comment
+	}
+	return graphPost(ctx, accessToken, u, body, nil)
+}
+
+// graphPost — same shape as graphGet but with a JSON body. out may be nil for
+// fire-and-forget calls (202 Accepted with no body, like RSVP responses).
+func graphPost(ctx context.Context, accessToken, url string, body any, out any) error {
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("graph %s returned %d: %s", url, resp.StatusCode, snip(string(respBody)))
+	}
+	if out == nil || len(respBody) == 0 {
+		return nil
+	}
+	return json.Unmarshal(respBody, out)
+}
+
 func graphGet(ctx context.Context, accessToken, url string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

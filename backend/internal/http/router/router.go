@@ -69,6 +69,7 @@ func New(d Deps) http.Handler {
 	authed.POST("/me/mfa/begin",    auth.BeginMFAEnrollment)
 	authed.POST("/me/mfa/confirm",  auth.ConfirmMFAEnrollment)
 	authed.POST("/me/mfa/disable",  auth.DisableMFA)
+	authed.POST("/auth/verify-password", auth.VerifyPassword)
 	authed.PATCH("/members/:id/mfa-required", mw.RequirePermission("governance:write"), auth.AdminSetMFARequired)
 
 	earlyEngine := notifications.NewEngine(d.DB, earlyMailer, d.Cfg)
@@ -114,6 +115,7 @@ func New(d Deps) http.Handler {
 	authed.POST("/me/microsoft/disconnect", msOAuth.Disconnect)
 	authed.GET("/me/microsoft/status",      msOAuth.Status)
 	authed.GET("/me/meetings",              msOAuth.Meetings)
+	authed.POST("/me/meetings/:id/respond", msOAuth.Respond)
 	authed.GET("/me/mail",                  msOAuth.Mail)
 	authed.GET("/me/mail/:id",              msOAuth.Message)
 	api.GET("/auth/microsoft/callback",     msOAuth.Callback)

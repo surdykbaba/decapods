@@ -143,3 +143,58 @@ func (h *MicrosoftOAuth) Message(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, msg)
 }
+
+// Respond — POST /api/v1/me/meetings/:id/respond
+//
+// Body: { "response": "accept" | "decline" | "tentative", "comment"?: string }
+// Posts the RSVP to Microsoft Graph as the connected user. Mirrors the
+// Outlook "Accept / Decline / Tentative" buttons so the user can answer
+// invites without leaving D'Accubin.
+func (h *MicrosoftOAuth) Respond(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing event id"})
+		return
+	}
+
+	var req struct {
+		Response string `json:"response" binding:"required"`
+		Comment  string `json:"comment"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Accept the short form "tentative" as a courtesy — Graph wants the
+	// verbose verb "tentativelyAccept".
+	verb := req.Response
+	if verb == "tentative" {
+		verb = "tentativelyAccept"
+	}
+	switch verb {
+	case "accept", "decline", "tentativelyAccept":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "response must be accept, decline, or tentative"})
+		return
+	}
+
+	token, err := h.loadValidToken(c.Request.Context(), tid, uid)
+	if err != nil {
+		if err == errMSNotConnected {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Microsoft account not connected"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := microsoft.RespondEvent(c.Request.Context(), token, id, verb, req.Comment); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "response": verb})
+}
