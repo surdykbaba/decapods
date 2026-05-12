@@ -20,6 +20,7 @@ import {
   StickyNote, Newspaper, MessageCircle, Pin, X, Send, Heart, ThumbsUp,
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
   Wrench, Briefcase, Hash, Activity, Plus, Loader2, CalendarDays, Calendar,
+  Lock, Users as UsersIcon, X as XIcon, UserPlus as UserPlusIcon, Search as SearchIcon, Check,
 } from "lucide-react";
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -83,6 +84,9 @@ type Room = {
   name: string;
   description: string;
   is_default: boolean;
+  is_private?: boolean;
+  is_owner?: boolean;
+  member_count?: number;
   message_count: number;
   last_message_at: string | null;
 };
@@ -1399,8 +1403,8 @@ function TeamRooms() {
   });
   const rooms = data?.items ?? [];
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
 
-  // Default to the room flagged is_default (General) once rooms load.
   useEffect(() => {
     if (!activeId && rooms.length > 0) {
       setActiveId(rooms.find((r) => r.is_default)?.id ?? rooms[0].id);
@@ -1410,25 +1414,42 @@ function TeamRooms() {
   const active = rooms.find((r) => r.id === activeId);
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-4 h-[640px]">
-      <aside className="bg-surface border border-border rounded-2xl p-2 overflow-y-auto">
-        {rooms.map((r) => (
-          <button
-            key={r.id}
-            onClick={() => setActiveId(r.id)}
-            className={`w-full text-left px-3 py-2.5 rounded-lg flex items-center gap-2 text-sm transition-colors ${
-              activeId === r.id ? "bg-accent text-white" : "hover:bg-bg/40"
-            }`}
-          >
-            <Hash size={14} className={activeId === r.id ? "text-white/80" : "text-muted"} />
-            <span className="flex-1 truncate font-semibold">{r.name}</span>
-            {r.message_count > 0 && (
-              <span className={`text-[10px] ${activeId === r.id ? "text-white/70" : "text-muted"}`}>
-                {r.message_count}
-              </span>
-            )}
-          </button>
-        ))}
+    <div className="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-4 h-[640px]">
+      <aside className="bg-surface border border-border rounded-2xl overflow-hidden flex flex-col">
+        <button
+          onClick={() => setCreateOpen(true)}
+          className="m-2 inline-flex items-center justify-center gap-1.5 text-[12.5px] font-semibold px-3 py-2 rounded-lg bg-accent-soft text-accent hover:bg-accent hover:text-white transition-colors"
+        >
+          <Plus size={13} /> New room
+        </button>
+        <div className="flex-1 overflow-y-auto p-2 pt-0">
+          {rooms.map((r) => {
+            const active = activeId === r.id;
+            const Icon = r.is_private ? Lock : Hash;
+            return (
+              <button
+                key={r.id}
+                onClick={() => setActiveId(r.id)}
+                className={`w-full text-left px-3 py-2.5 rounded-lg flex items-center gap-2 text-sm transition-colors ${
+                  active ? "bg-accent text-white" : "hover:bg-bg/40"
+                }`}
+              >
+                <Icon size={13} className={active ? "text-white/80" : r.is_private ? "text-warn" : "text-muted"} />
+                <span className="flex-1 truncate font-semibold">{r.name}</span>
+                {r.is_private && (
+                  <span className={`text-[9.5px] uppercase tracking-wider font-bold ${active ? "text-white/70" : "text-warn/80"}`}>
+                    private
+                  </span>
+                )}
+                {!r.is_private && r.message_count > 0 && (
+                  <span className={`text-[10px] ${active ? "text-white/70" : "text-muted"}`}>
+                    {r.message_count}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
       </aside>
 
       <div className="bg-surface border border-border rounded-2xl flex flex-col overflow-hidden">
@@ -1437,6 +1458,195 @@ function TeamRooms() {
         ) : (
           <div className="flex-1 grid place-items-center text-sm text-muted">Pick a room</div>
         )}
+      </div>
+
+      {createOpen && (
+        <CreateRoomDialog
+          onClose={() => setCreateOpen(false)}
+          onCreated={(id) => { setActiveId(id); setCreateOpen(false); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------- Create room dialog ---------- */
+
+function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [isPrivate, setIsPrivate] = useState(true);
+  const [memberIds, setMemberIds] = useState<string[]>([]);
+  const [search, setSearch] = useState("");
+
+  const { data: membersResp } = useQuery<{ items: Member[] }>({
+    queryKey: ["members-pick"],
+    queryFn: () => api("/api/v1/members"),
+    staleTime: 5 * 60_000,
+  });
+  const members = membersResp?.items ?? [];
+
+  // Derive a URL-friendly slug from the name so the user doesn't have to
+  // think about it. They can still pick something custom by typing into
+  // the optional slug input below.
+  // Slug is auto-derived from the name; we keep an override slot for future
+  // wiring but the UI currently doesn't expose a custom-slug input.
+  const [slugOverride] = useState("");
+  const autoSlug = useMemo(
+    () => name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40),
+    [name],
+  );
+  const slug = slugOverride.trim() || autoSlug;
+
+  const create = useMutation({
+    mutationFn: () =>
+      api<{ id: string }>("/api/v1/campfire/rooms", {
+        method: "POST",
+        body: JSON.stringify({
+          slug,
+          name: name.trim(),
+          description: description.trim(),
+          is_private: isPrivate,
+          member_ids: isPrivate ? memberIds : [],
+        }),
+      }),
+    onSuccess: (resp) => {
+      qc.invalidateQueries({ queryKey: ["campfire", "rooms"] });
+      toast.success("Room created");
+      onCreated(resp.id);
+    },
+    onError: (e: any) => toast.error("Could not create room", e?.message),
+  });
+
+  const canSubmit = name.trim().length >= 2 && slug.length >= 2 && !create.isPending;
+  const filtered = members.filter((m) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (m.name + " " + m.email).toLowerCase().includes(q);
+  });
+  function toggleMember(id: string) {
+    setMemberIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="text-base font-bold text-text flex items-center gap-2">
+            {isPrivate ? <Lock size={14} className="text-warn" /> : <Hash size={14} className="text-muted" />}
+            New team room
+          </h2>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted">
+            <XIcon size={14} />
+          </button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <label className="block">
+            <div className="label">Name</div>
+            <input
+              autoFocus
+              className="input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Project Alpha · Launch crew · Leadership"
+            />
+            {autoSlug && (
+              <div className="text-[11px] text-muted mt-1">URL slug: <span className="font-mono text-text">{slug}</span></div>
+            )}
+          </label>
+
+          <label className="block">
+            <div className="label">Description <span className="text-muted font-normal">(optional)</span></div>
+            <input
+              className="input"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What this room is for"
+            />
+          </label>
+
+          <div className="rounded-xl border border-border p-3 space-y-3">
+            <label className="flex items-start gap-3 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={isPrivate}
+                onChange={(e) => setIsPrivate(e.target.checked)}
+                className="mt-1 w-4 h-4 accent-accent no-cap"
+              />
+              <span className="min-w-0">
+                <span className="text-sm font-bold text-text inline-flex items-center gap-1.5">
+                  <Lock size={12} className="text-warn" /> Private — invited members only
+                </span>
+                <span className="block text-[11.5px] text-muted leading-snug mt-0.5">
+                  Only the people you add below will see messages and be able to post.
+                  Uncheck to make a workspace-wide room (admins only).
+                </span>
+              </span>
+            </label>
+            <label
+              className={`block transition-opacity ${isPrivate ? "opacity-100" : "opacity-50 pointer-events-none"}`}
+            >
+              <div className="label flex items-center justify-between">
+                <span>Invite teammates</span>
+                <span className="text-[11px] text-muted font-normal">{memberIds.length} selected</span>
+              </div>
+              <div className="relative">
+                <SearchIcon size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                <input
+                  className="input pl-8 no-cap"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search by name or email"
+                />
+              </div>
+              <ul className="mt-2 max-h-[200px] overflow-y-auto divide-y divide-border border border-border rounded-lg">
+                {filtered.length === 0 ? (
+                  <li className="px-3 py-2 text-xs text-muted italic">No matches.</li>
+                ) : (
+                  filtered.map((m) => {
+                    const on = memberIds.includes(m.id);
+                    return (
+                      <li key={m.id}>
+                        <button
+                          type="button"
+                          onClick={() => toggleMember(m.id)}
+                          className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-bg/40"
+                        >
+                          <span
+                            className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                              on ? "bg-accent border-accent text-white" : "border-border bg-surface"
+                            }`}
+                          >
+                            {on && <Check size={11} />}
+                          </span>
+                          <Avatar name={m.name} email={m.email} size={22} />
+                          <span className="text-[13px] text-text truncate flex-1">{m.name || m.email}</span>
+                          <span className="text-[11px] text-muted truncate">{m.email}</span>
+                        </button>
+                      </li>
+                    );
+                  })
+                )}
+              </ul>
+            </label>
+          </div>
+        </div>
+
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-sm text-muted hover:text-text px-3 py-2">Cancel</button>
+          <SmartButton
+            variant="primary"
+            disabled={!canSubmit}
+            onClick={() => create.mutateAsync()}
+            loadingLabel="Creating…"
+            successLabel="Created"
+            icon={<Plus size={13} />}
+          >
+            Create room
+          </SmartButton>
+        </footer>
       </div>
     </div>
   );
@@ -1470,15 +1680,38 @@ function RoomView({ room }: { room: Room }) {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages.length]);
 
+  const [membersOpen, setMembersOpen] = useState(false);
+
   return (
     <>
-      <header className="px-5 py-3 border-b border-border">
-        <div className="flex items-center gap-2">
-          <Hash size={16} className="text-muted" />
-          <span className="text-sm font-bold">{room.name}</span>
+      <header className="px-5 py-3 border-b border-border flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            {room.is_private ? <Lock size={14} className="text-warn" /> : <Hash size={16} className="text-muted" />}
+            <span className="text-sm font-bold truncate">{room.name}</span>
+            {room.is_private && (
+              <span className="pill bg-warn/15 text-warn text-[10px]">Private</span>
+            )}
+          </div>
+          {room.description && <div className="text-[11px] text-muted truncate">{room.description}</div>}
         </div>
-        {room.description && <div className="text-[11px] text-muted">{room.description}</div>}
+        {room.is_private && (
+          <button
+            onClick={() => setMembersOpen(true)}
+            className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-muted hover:text-accent px-2 py-1 rounded-lg hover:bg-bg/40 shrink-0"
+            title="Manage members"
+          >
+            <UsersIcon size={12} /> {room.member_count ?? "—"}
+          </button>
+        )}
       </header>
+
+      {membersOpen && (
+        <RoomMembersDialog
+          room={room}
+          onClose={() => setMembersOpen(false)}
+        />
+      )}
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-3">
         {messages.length === 0 && (
@@ -1583,3 +1816,150 @@ function EmptyState({ icon: Icon, title, body }: { icon: React.ComponentType<any
 }
 
 void PresenceBar;
+
+/* ---------- Private-room member management ---------- */
+
+type RoomMember = {
+  user_id: string;
+  name: string;
+  email: string;
+  avatar_url: string;
+  added_at: string;
+  is_owner: boolean;
+};
+
+function RoomMembersDialog({ room, onClose }: { room: Room; onClose: () => void }) {
+  const qc = useQueryClient();
+  const me = useAuth((s) => s.user);
+
+  const { data: rosterData } = useQuery<{ items: RoomMember[] }>({
+    queryKey: ["campfire", "room-members", room.id],
+    queryFn: () => api(`/api/v1/campfire/rooms/${room.id}/members`),
+  });
+  const { data: allMembersData } = useQuery<{ items: Member[] }>({
+    queryKey: ["members-pick"],
+    queryFn: () => api("/api/v1/members"),
+    staleTime: 5 * 60_000,
+  });
+  const roster = rosterData?.items ?? [];
+  const allMembers = allMembersData?.items ?? [];
+  const rosterIds = new Set(roster.map((m) => m.user_id));
+  const candidates = allMembers.filter((m) => !rosterIds.has(m.id));
+
+  const [search, setSearch] = useState("");
+  const filtered = candidates.filter((m) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (m.name + " " + m.email).toLowerCase().includes(q);
+  });
+
+  const add = useMutation({
+    mutationFn: (userID: string) =>
+      api(`/api/v1/campfire/rooms/${room.id}/members`, {
+        method: "POST",
+        body: JSON.stringify({ user_id: userID }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campfire", "room-members", room.id] });
+      qc.invalidateQueries({ queryKey: ["campfire", "rooms"] });
+    },
+    onError: (e: any) => toast.error("Could not add", e?.message),
+  });
+  const remove = useMutation({
+    mutationFn: (userID: string) =>
+      api(`/api/v1/campfire/rooms/${room.id}/members/${userID}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campfire", "room-members", room.id] });
+      qc.invalidateQueries({ queryKey: ["campfire", "rooms"] });
+    },
+    onError: (e: any) => toast.error("Could not remove", e?.message),
+  });
+
+  const canManage = !!room.is_owner;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md max-h-[88vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <h2 className="text-base font-bold text-text inline-flex items-center gap-2">
+            <Lock size={14} className="text-warn" /> Members · {roster.length}
+          </h2>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted">
+            <XIcon size={14} />
+          </button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div>
+            <div className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2">On the team</div>
+            <ul className="divide-y divide-border border border-border rounded-lg">
+              {roster.map((m) => (
+                <li key={m.user_id} className="px-3 py-2 flex items-center gap-2">
+                  <Avatar name={m.name} email={m.email} size={26} />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-semibold text-text truncate">{m.name || m.email}</div>
+                    <div className="text-[11px] text-muted truncate">{m.email}</div>
+                  </div>
+                  {m.is_owner ? (
+                    <span className="pill bg-accent-soft text-accent text-[10px]">Owner</span>
+                  ) : (canManage || m.user_id === me?.id) && (
+                    <button
+                      onClick={() => remove.mutate(m.user_id)}
+                      disabled={remove.isPending}
+                      className="text-[11px] text-muted hover:text-danger disabled:opacity-50"
+                      title={m.user_id === me?.id ? "Leave room" : "Remove member"}
+                    >
+                      {m.user_id === me?.id ? "Leave" : "Remove"}
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          {canManage && (
+            <div>
+              <div className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2 flex items-center justify-between">
+                <span>Add a teammate</span>
+                <span className="text-[10.5px] font-normal text-muted/70">Owner only</span>
+              </div>
+              <div className="relative">
+                <SearchIcon size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search workspace…"
+                  className="input pl-8 no-cap"
+                />
+              </div>
+              <ul className="mt-2 max-h-[220px] overflow-y-auto divide-y divide-border border border-border rounded-lg">
+                {filtered.length === 0 ? (
+                  <li className="px-3 py-2 text-xs text-muted italic">
+                    {candidates.length === 0 ? "Everyone is already in." : "No matches."}
+                  </li>
+                ) : (
+                  filtered.map((m) => (
+                    <li key={m.id} className="px-3 py-2 flex items-center gap-2">
+                      <Avatar name={m.name} email={m.email} size={24} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-semibold text-text truncate">{m.name || m.email}</div>
+                        <div className="text-[11px] text-muted truncate">{m.email}</div>
+                      </div>
+                      <button
+                        onClick={() => add.mutate(m.id)}
+                        disabled={add.isPending}
+                        className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-accent hover:bg-accent-soft px-2 py-1 rounded-lg disabled:opacity-50"
+                      >
+                        <UserPlusIcon size={11} /> Add
+                      </button>
+                    </li>
+                  ))
+                )}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

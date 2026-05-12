@@ -349,9 +349,15 @@ func New(d Deps) http.Handler {
 	authed.PATCH("/campfire/help/:id/status", cf.UpdateHelpStatus)
 
 	authed.GET("/campfire/rooms",            cf.ListRooms)
-	authed.POST("/campfire/rooms",           mw.RequirePermission("governance:write"), cf.CreateRoom)
+	// Public-room creation needs governance:write; private rooms are open
+	// to any user. Permission is enforced inside CreateRoom now so we drop
+	// the route-level middleware here.
+	authed.POST("/campfire/rooms",           cf.CreateRoom)
 	authed.GET("/campfire/rooms/:id/messages",  cf.ListMessages)
 	authed.POST("/campfire/rooms/:id/messages", cf.SendMessage)
+	authed.GET("/campfire/rooms/:id/members",   cf.ListRoomMembers)
+	authed.POST("/campfire/rooms/:id/members",  cf.AddRoomMember)
+	authed.DELETE("/campfire/rooms/:id/members/:uid", cf.RemoveRoomMember)
 
 	authed.GET("/campfire/insights", mw.RequirePermission("governance:write"), cf.Insights)
 	authed.GET("/campfire/unread",     cf.Unread)

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/decapods/pgdp/backend/internal/auth"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
 	"github.com/decapods/pgdp/backend/internal/notifications"
 	"github.com/gin-gonic/gin"
@@ -743,15 +744,50 @@ func (h *Campfire) UpdateHelpStatus(c *gin.Context) {
 // Team rooms + messages
 // ──────────────────────────────────────────────────────────────────────────
 
+// canAccessRoom returns true when the user is allowed to see + post in this
+// room. Public rooms are open to every tenant member; private rooms are
+// gated by the campfire_room_members roster.
+func (h *Campfire) canAccessRoom(ctx context.Context, tid, uid, roomID uuid.UUID) (bool, error) {
+	var isPrivate bool
+	if err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(is_private, false) FROM campfire_rooms
+		WHERE id=$1 AND tenant_id=$2`, roomID, tid).Scan(&isPrivate); err != nil {
+		return false, err
+	}
+	if !isPrivate {
+		return true, nil
+	}
+	var member bool
+	_ = h.db.QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM campfire_room_members
+		  WHERE room_id=$1 AND user_id=$2
+		)`, roomID, uid).Scan(&member)
+	return member, nil
+}
+
 func (h *Campfire) ListRooms(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	// Private rooms are filtered to those the caller belongs to via the
+	// inner OR; public rooms are visible to everyone in the tenant.
 	rows, err := h.db.Query(c.Request.Context(), `
 		SELECT r.id, r.slug, r.name, COALESCE(r.description,''), r.is_default,
+		       COALESCE(r.is_private, false),
 		       (SELECT COUNT(*) FROM campfire_messages m WHERE m.room_id=r.id) AS msg_count,
-		       (SELECT MAX(m.created_at) FROM campfire_messages m WHERE m.room_id=r.id) AS last_at
+		       (SELECT MAX(m.created_at) FROM campfire_messages m WHERE m.room_id=r.id) AS last_at,
+		       (SELECT COUNT(*) FROM campfire_room_members rm WHERE rm.room_id=r.id) AS member_count,
+		       (r.created_by = $2) AS is_owner
 		FROM campfire_rooms r
 		WHERE r.tenant_id=$1
-		ORDER BY r.is_default DESC, r.name`, tid)
+		  AND (
+		    COALESCE(r.is_private, false) = false
+		    OR EXISTS (
+		      SELECT 1 FROM campfire_room_members rm
+		       WHERE rm.room_id = r.id AND rm.user_id = $2
+		    )
+		  )
+		ORDER BY r.is_default DESC, r.name`, tid, uid)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -760,16 +796,18 @@ func (h *Campfire) ListRooms(c *gin.Context) {
 	out := []gin.H{}
 	for rows.Next() {
 		var (
-			id              uuid.UUID
-			slug, name, desc string
-			def             bool
-			count           int
-			last            *time.Time
+			id                       uuid.UUID
+			slug, name, desc         string
+			def, isPrivate, isOwner  bool
+			count, memberCount       int
+			last                     *time.Time
 		)
-		if err := rows.Scan(&id, &slug, &name, &desc, &def, &count, &last); err == nil {
+		if err := rows.Scan(&id, &slug, &name, &desc, &def, &isPrivate, &count, &last, &memberCount, &isOwner); err == nil {
 			out = append(out, gin.H{
 				"id": id, "slug": slug, "name": name, "description": desc,
-				"is_default": def, "message_count": count, "last_message_at": last,
+				"is_default": def, "is_private": isPrivate, "is_owner": isOwner,
+				"member_count": memberCount,
+				"message_count": count, "last_message_at": last,
 			})
 		}
 	}
@@ -778,25 +816,225 @@ func (h *Campfire) ListRooms(c *gin.Context) {
 
 func (h *Campfire) CreateRoom(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+
 	var req struct {
-		Slug        string `json:"slug" binding:"required,min=2"`
-		Name        string `json:"name" binding:"required,min=2"`
-		Description string `json:"description"`
+		Slug        string      `json:"slug" binding:"required,min=2"`
+		Name        string      `json:"name" binding:"required,min=2"`
+		Description string      `json:"description"`
+		IsPrivate   bool        `json:"is_private"`
+		MemberIDs   []uuid.UUID `json:"member_ids"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Public rooms still need governance:write — they're workspace-wide and
+	// shouldn't be spammed by every user. Private rooms are anyone's to spin
+	// up; they only affect the invitees on their roster.
+	if !req.IsPrivate && !auth.HasPermission(roles, "governance:write") {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Only admins can create workspace-wide rooms. Set 'is_private' to make a team-only room.",
+		})
+		return
+	}
+
 	slug := strings.ToLower(strings.TrimSpace(req.Slug))
+	tx, err := h.db.Begin(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback(c.Request.Context())
+
 	var id uuid.UUID
-	if err := h.db.QueryRow(c.Request.Context(), `
-		INSERT INTO campfire_rooms (tenant_id, slug, name, description)
-		VALUES ($1,$2,$3,NULLIF($4,''))
-		RETURNING id`, tid, slug, strings.TrimSpace(req.Name), strings.TrimSpace(req.Description)).Scan(&id); err != nil {
+	if err := tx.QueryRow(c.Request.Context(), `
+		INSERT INTO campfire_rooms (tenant_id, slug, name, description, is_private, created_by)
+		VALUES ($1,$2,$3,NULLIF($4,''),$5,$6)
+		RETURNING id`,
+		tid, slug, strings.TrimSpace(req.Name), strings.TrimSpace(req.Description),
+		req.IsPrivate, uid).Scan(&id); err != nil {
 		c.JSON(409, gin.H{"error": "room already exists or invalid"})
 		return
 	}
+
+	if req.IsPrivate {
+		// Always seed the creator so they don't lock themselves out of the
+		// room they just made. Then add each invited member; duplicates fold
+		// via the unique PK.
+		seen := map[uuid.UUID]bool{uid: true}
+		if _, err := tx.Exec(c.Request.Context(), `
+			INSERT INTO campfire_room_members (room_id, user_id, added_by)
+			VALUES ($1,$2,$2)`, id, uid); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		for _, m := range req.MemberIDs {
+			if m == uuid.Nil || seen[m] {
+				continue
+			}
+			seen[m] = true
+			if _, err := tx.Exec(c.Request.Context(), `
+				INSERT INTO campfire_room_members (room_id, user_id, added_by)
+				VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, id, m, uid); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+		}
+	}
+
+	if err := tx.Commit(c.Request.Context()); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
 	c.JSON(201, gin.H{"id": id})
+}
+
+// ListRoomMembers returns the roster of a private room. Membership is the
+// gate: only members of the room (or callers with governance:write) can see
+// who else is in it.
+func (h *Campfire) ListRoomMembers(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	roomID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	ok, err := h.canAccessRoom(c.Request.Context(), tid, uid, roomID)
+	if err != nil || !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
+		return
+	}
+	rows, err := h.db.Query(c.Request.Context(), `
+		SELECT rm.user_id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
+		       COALESCE(u.avatar_url,''), rm.added_at,
+		       (r.created_by = rm.user_id) AS is_owner
+		FROM campfire_room_members rm
+		JOIN campfire_rooms r ON r.id = rm.room_id
+		LEFT JOIN users u ON u.id = rm.user_id
+		WHERE rm.room_id = $1
+		ORDER BY is_owner DESC, u.full_name`, roomID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	out := []gin.H{}
+	for rows.Next() {
+		var (
+			userID                  uuid.UUID
+			name, email, avatarURL  string
+			addedAt                 time.Time
+			isOwner                 bool
+		)
+		if err := rows.Scan(&userID, &name, &email, &avatarURL, &addedAt, &isOwner); err == nil {
+			out = append(out, gin.H{
+				"user_id": userID, "name": name, "email": email,
+				"avatar_url": avatarURL, "added_at": addedAt, "is_owner": isOwner,
+			})
+		}
+	}
+	c.JSON(200, gin.H{"items": out})
+}
+
+// AddRoomMember invites a member to a private room. Only the room owner
+// (or governance:write) can extend the roster — keeps the team-only promise
+// from being undermined by drive-by additions.
+func (h *Campfire) AddRoomMember(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	roomID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	var req struct {
+		UserID uuid.UUID `json:"user_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	// Owner OR governance:write may add.
+	var ownerID uuid.UUID
+	var isPrivate bool
+	if err := h.db.QueryRow(c.Request.Context(), `
+		SELECT COALESCE(created_by, '00000000-0000-0000-0000-000000000000'::uuid), COALESCE(is_private, false)
+		FROM campfire_rooms WHERE id=$1 AND tenant_id=$2`, roomID, tid).Scan(&ownerID, &isPrivate); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "room not found"})
+		return
+	}
+	if !isPrivate {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "public rooms have no roster — every workspace member can join"})
+		return
+	}
+	if ownerID != uid && !auth.HasPermission(roles, "governance:write") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the room owner can add members"})
+		return
+	}
+	// Confirm the invitee belongs to this tenant.
+	var sameTenant bool
+	_ = h.db.QueryRow(c.Request.Context(), `
+		SELECT EXISTS (SELECT 1 FROM users WHERE id=$1 AND tenant_id=$2 AND deleted_at IS NULL)
+	`, req.UserID, tid).Scan(&sameTenant)
+	if !sameTenant {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user not in this workspace"})
+		return
+	}
+	if _, err := h.db.Exec(c.Request.Context(), `
+		INSERT INTO campfire_room_members (room_id, user_id, added_by)
+		VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, roomID, req.UserID, uid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// RemoveRoomMember drops a member from a private room's roster. Owner or
+// governance:write can remove anyone; a member can remove themselves
+// (leaving the room).
+func (h *Campfire) RemoveRoomMember(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	roomID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad room id"})
+		return
+	}
+	targetID, err := uuid.Parse(c.Param("uid"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad user id"})
+		return
+	}
+	var ownerID uuid.UUID
+	if err := h.db.QueryRow(c.Request.Context(), `
+		SELECT COALESCE(created_by, '00000000-0000-0000-0000-000000000000'::uuid)
+		FROM campfire_rooms WHERE id=$1 AND tenant_id=$2`, roomID, tid).Scan(&ownerID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "room not found"})
+		return
+	}
+	if targetID != uid && ownerID != uid && !auth.HasPermission(roles, "governance:write") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the room owner can remove other members"})
+		return
+	}
+	if targetID == ownerID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "the owner can't leave their own room — delete it instead"})
+		return
+	}
+	if _, err := h.db.Exec(c.Request.Context(), `
+		DELETE FROM campfire_room_members WHERE room_id=$1 AND user_id=$2`, roomID, targetID); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
 }
 
 func (h *Campfire) ListMessages(c *gin.Context) {
@@ -805,6 +1043,10 @@ func (h *Campfire) ListMessages(c *gin.Context) {
 	roomID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	if ok, _ := h.canAccessRoom(c.Request.Context(), tid, uid, roomID); !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
 		return
 	}
 	// We return newest-200 in chronological order so the UI can scroll-bottom.
@@ -853,6 +1095,10 @@ func (h *Campfire) SendMessage(c *gin.Context) {
 	roomID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	if ok, _ := h.canAccessRoom(c.Request.Context(), tid, uid, roomID); !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
 		return
 	}
 	var req struct{ Body string `json:"body" binding:"required,min=1"` }
