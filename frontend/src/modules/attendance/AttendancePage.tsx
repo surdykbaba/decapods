@@ -9,7 +9,7 @@
 // Everything here is derived from data the platform already collects — there's
 // no staff-facing punch clock. Heartbeats become sessions; sessions roll up
 // into the numbers below.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Avatar } from "@/components/Avatar";
@@ -539,6 +539,8 @@ const BAND_TONE: Record<string, string> = {
 
 type AppraisalView = "list" | "grid";
 const APPRAISAL_VIEW_KEY = "attendance-appraisal-view";
+const APPRAISAL_PAGE_SIZE_KEY = "attendance-appraisal-page-size";
+const APPRAISAL_PAGE_SIZES = [10, 20, 30, 50, 100, 0] as const; // 0 = All
 
 function AppraisalTab() {
   const { data, isLoading } = useQuery<{ items: AppraisalRow[] }>({
@@ -560,6 +562,29 @@ function AppraisalTab() {
     setView(v);
     localStorage.setItem(APPRAISAL_VIEW_KEY, v);
   }
+
+  // Client-side pagination — the appraisal endpoint returns the full team in
+  // one shot (small N, sorting is best done together), so we slice locally.
+  // Page size persists so HR doesn't have to reset it every visit.
+  const [pageSize, setPageSize] = useState<number>(() => {
+    const v = parseInt(localStorage.getItem(APPRAISAL_PAGE_SIZE_KEY) ?? "20", 10);
+    return Number.isFinite(v) ? v : 20;
+  });
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [pageSize, sorted.length]);
+  function pickPageSize(n: number) {
+    setPageSize(n);
+    localStorage.setItem(APPRAISAL_PAGE_SIZE_KEY, String(n));
+  }
+  const total = sorted.length;
+  const effectivePageSize = pageSize === 0 ? Math.max(1, total) : pageSize;
+  const totalPages = Math.max(1, Math.ceil(total / effectivePageSize));
+  const pageRows = useMemo(
+    () => (pageSize === 0 ? sorted : sorted.slice(page * pageSize, page * pageSize + pageSize)),
+    [sorted, page, pageSize],
+  );
+  const firstShown = total === 0 ? 0 : (pageSize === 0 ? 1 : page * pageSize + 1);
+  const lastShown  = pageSize === 0 ? total : Math.min(total, page * pageSize + pageSize);
 
   if (isLoading) return <div className="text-sm text-muted py-8 text-center">Loading scorecards…</div>;
   if (sorted.length === 0) {
@@ -599,10 +624,54 @@ function AppraisalTab() {
       </div>
 
       {view === "list" ? (
-        <AppraisalList rows={sorted} />
+        <AppraisalList rows={pageRows} />
       ) : (
-        <AppraisalGrid rows={sorted} />
+        <AppraisalGrid rows={pageRows} />
       )}
+
+      {/* Pager — shared by list and grid. Sits below so it doesn't crowd the
+          view toggle above. */}
+      <div className="flex items-center justify-between gap-3 px-1 pt-1 text-xs flex-wrap">
+        <div className="text-muted inline-flex items-center gap-3 flex-wrap">
+          <span>
+            Showing <span className="font-semibold text-text">{firstShown}</span>–
+            <span className="font-semibold text-text">{lastShown}</span> of{" "}
+            <span className="font-semibold text-text">{total.toLocaleString()}</span> member{total === 1 ? "" : "s"}
+          </span>
+          <label className="inline-flex items-center gap-1.5">
+            Rows
+            <select
+              value={pageSize}
+              onChange={(e) => pickPageSize(parseInt(e.target.value, 10))}
+              className="bg-surface border border-border rounded-lg px-2 py-1 text-[12px] font-semibold text-text"
+            >
+              {APPRAISAL_PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>{n === 0 ? "All" : n}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={page === 0 || pageSize === 0}
+            className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:bg-bg/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-text"
+          >
+            ← Prev
+          </button>
+          <span className="text-muted px-1">
+            Page <span className="font-semibold text-text">{pageSize === 0 ? 1 : page + 1}</span> of{" "}
+            <span className="font-semibold text-text">{pageSize === 0 ? 1 : totalPages}</span>
+          </span>
+          <button
+            onClick={() => setPage((p) => p + 1)}
+            disabled={pageSize === 0 || page + 1 >= totalPages}
+            className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:bg-bg/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-text"
+          >
+            Next →
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
