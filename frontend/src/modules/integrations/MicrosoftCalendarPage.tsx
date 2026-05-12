@@ -10,7 +10,15 @@ import { toast } from "@/lib/toast";
 import { SmartButton } from "@/components/SmartButton";
 import {
   CalendarClock, ShieldCheck, Copy, ExternalLink, AlertTriangle, CheckCircle2,
+  CloudUpload,
 } from "lucide-react";
+
+type SharePoint = {
+  site_id: string;
+  drive_id: string;
+  folder_path: string;
+  route_uploads: boolean;
+};
 
 type Resp = {
   client_id: string;
@@ -18,6 +26,7 @@ type Resp = {
   secret_stored: boolean;
   redirect_uri: string;
   configured: boolean;
+  sharepoint?: SharePoint;
 };
 
 export function MicrosoftCalendarPage() {
@@ -31,11 +40,22 @@ export function MicrosoftCalendarPage() {
   const [tenantHint, setTenantHint] = useState("common");
   const [secret, setSecret] = useState(""); // blank = keep stored
 
+  // SharePoint target — where new project_files uploads will be routed when
+  // the "Route uploads to SharePoint" toggle is on.
+  const [spSiteID, setSpSiteID] = useState("");
+  const [spDriveID, setSpDriveID] = useState("");
+  const [spFolder, setSpFolder] = useState("");
+  const [spRoute, setSpRoute] = useState(false);
+
   useEffect(() => {
     if (!data) return;
     setClientID(data.client_id ?? "");
     setTenantHint(data.tenant_hint || "common");
     setSecret(""); // never echo back
+    setSpSiteID(data.sharepoint?.site_id ?? "");
+    setSpDriveID(data.sharepoint?.drive_id ?? "");
+    setSpFolder(data.sharepoint?.folder_path ?? "");
+    setSpRoute(!!data.sharepoint?.route_uploads);
   }, [data]);
 
   const save = useMutation({
@@ -46,12 +66,18 @@ export function MicrosoftCalendarPage() {
           client_id: clientID.trim(),
           client_secret: secret.trim(),
           tenant_hint: tenantHint.trim(),
+          sharepoint: {
+            site_id: spSiteID.trim(),
+            drive_id: spDriveID.trim(),
+            folder_path: spFolder.trim(),
+            route_uploads: spRoute,
+          },
         }),
       }),
     onSuccess: (resp) => {
       qc.setQueryData(["settings", "microsoft"], resp);
       setSecret("");
-      toast.success("Saved", resp.configured ? "Members can now connect their Microsoft account." : "Add the client ID and secret to enable connect.");
+      toast.success("Saved", resp.configured ? "Microsoft credentials updated." : "Add the client ID and secret to enable connect.");
     },
     onError: (e: any) => toast.error("Could not save", e?.message),
   });
@@ -60,7 +86,11 @@ export function MicrosoftCalendarPage() {
     !!data &&
     (clientID.trim() !== data.client_id ||
       tenantHint.trim() !== (data.tenant_hint || "common") ||
-      secret.trim().length > 0);
+      secret.trim().length > 0 ||
+      spSiteID.trim() !== (data.sharepoint?.site_id ?? "") ||
+      spDriveID.trim() !== (data.sharepoint?.drive_id ?? "") ||
+      spFolder.trim() !== (data.sharepoint?.folder_path ?? "") ||
+      spRoute !== !!data.sharepoint?.route_uploads);
 
   function copy(text: string) {
     navigator.clipboard.writeText(text).then(
@@ -210,6 +240,100 @@ export function MicrosoftCalendarPage() {
           >
             Save credentials
           </SmartButton>
+        </div>
+      </section>
+
+      {/* ============ SharePoint upload routing ============ */}
+      <section className="bg-surface border border-border rounded-2xl overflow-hidden">
+        <header className="px-5 py-3 border-b border-border flex items-center gap-2">
+          <CloudUpload size={14} className="text-accent" />
+          <div className="text-sm font-bold text-text">SharePoint upload destination</div>
+        </header>
+        <div className="p-5 space-y-4">
+          <div className="rounded-xl border border-warn/30 bg-warn/5 px-3 py-2.5 text-[12.5px] text-warn flex items-start gap-2">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <div>
+              <span className="font-bold">Foundation ships in this release.</span>{" "}
+              Configure the target site + drive now; the actual route-to-Graph upload pipeline
+              lands in the next deploy. Until then, uploads continue to use D'Accubin's inline
+              encrypted storage. <span className="font-semibold">Toggle below is read by the
+              upload handler once it switches paths — flipping it today is safe but inert.</span>
+            </div>
+          </div>
+
+          <label className="flex items-start gap-3 cursor-pointer select-none p-3 rounded-xl border border-border hover:border-accent/40">
+            <input
+              type="checkbox"
+              checked={spRoute}
+              onChange={(e) => setSpRoute(e.target.checked)}
+              className="mt-1 w-4 h-4 accent-accent"
+            />
+            <span className="min-w-0">
+              <span className="text-sm font-bold text-text">Route new uploads to SharePoint</span>
+              <span className="block text-[12px] text-muted leading-snug mt-0.5">
+                When on, project files uploaded to D'Accubin are streamed to the target drive
+                below instead of stored inline. Downloads continue to be brokered through
+                D'Accubin so file-level permissions (workspace / team / leads / private) stay
+                enforced. Existing inline files are untouched.
+              </span>
+            </span>
+          </label>
+
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Site ID</div>
+            <input
+              className="input font-mono text-[12.5px] no-cap"
+              value={spSiteID}
+              onChange={(e) => setSpSiteID(e.target.value)}
+              placeholder="contoso.sharepoint.com,abcd1234-...,efgh5678-..."
+              autoComplete="off"
+            />
+            <div className="text-[11px] text-muted mt-1">
+              Microsoft Graph site identifier. Find it with{" "}
+              <code className="font-mono">GET /sites/&#123;hostname&#125;:/sites/&#123;path&#125;</code>{" "}
+              or via the Graph Explorer.
+            </div>
+          </label>
+
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">Drive ID</div>
+            <input
+              className="input font-mono text-[12.5px] no-cap"
+              value={spDriveID}
+              onChange={(e) => setSpDriveID(e.target.value)}
+              placeholder="b!xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              autoComplete="off"
+            />
+            <div className="text-[11px] text-muted mt-1">
+              From <code className="font-mono">GET /sites/&#123;site-id&#125;/drives</code>. Usually
+              the document library's drive.
+            </div>
+          </label>
+
+          <label className="block">
+            <div className="text-[11px] text-muted font-medium mb-1">
+              Folder path <span className="text-muted/70 font-normal">(optional)</span>
+            </div>
+            <input
+              className="input font-mono text-[12.5px] no-cap"
+              value={spFolder}
+              onChange={(e) => setSpFolder(e.target.value)}
+              placeholder="DAccubin/Project Files"
+              autoComplete="off"
+            />
+            <div className="text-[11px] text-muted mt-1">
+              Sub-folder inside the drive. Created on first upload if it doesn't exist. Leave
+              blank to drop files at the drive root.
+            </div>
+          </label>
+
+          <div className="text-[11px] text-muted leading-relaxed bg-bg/40 border border-border rounded-lg px-3 py-2">
+            <strong>Permissions you'll need to grant in Azure AD:</strong>{" "}
+            <code className="font-mono">Sites.Selected</code> (preferred — site-scoped) or{" "}
+            <code className="font-mono">Sites.ReadWrite.All</code> as <strong>application
+            permission</strong>, with admin consent. Don't grant delegated SharePoint perms — the
+            upload runs as the workspace service identity, not the end user.
+          </div>
         </div>
       </section>
 

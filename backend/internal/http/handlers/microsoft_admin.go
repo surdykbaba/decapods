@@ -31,6 +31,16 @@ func NewMicrosoftAdmin(db *pgxpool.Pool, cfg *config.Config) *MicrosoftAdmin {
 	return &MicrosoftAdmin{db: db, cfg: cfg}
 }
 
+// SharePointConfig is the storage target for project_files when admin opts
+// in to routing uploads through Microsoft Graph instead of the inline bytea
+// path. Stored under tenants.settings.microsoft.sharepoint.
+type SharePointConfig struct {
+	SiteID         string `json:"site_id"`
+	DriveID        string `json:"drive_id"`
+	FolderPath     string `json:"folder_path"`
+	RouteUploads   bool   `json:"route_uploads"`
+}
+
 // Get — GET /api/v1/settings/microsoft
 //
 // Returns the stored credentials minus the secret. Includes the redirect
@@ -39,13 +49,31 @@ func (h *MicrosoftAdmin) Get(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	clientID, _, tenantHint := loadRawMicrosoftCreds(c.Request.Context(), h.db, tid)
 	cfg := loadMicrosoftConfig(c, h.db, h.cfg, tid)
+	sp := loadSharePointConfig(c.Request.Context(), h.db, tid)
 	c.JSON(http.StatusOK, gin.H{
 		"client_id":     clientID,
 		"tenant_hint":   tenantHint,
 		"secret_stored": cfg.Configured && hasStoredSecret(c.Request.Context(), h.db, tid),
 		"redirect_uri":  cfg.RedirectURI,
 		"configured":    cfg.Configured,
+		"sharepoint":    sp,
 	})
+}
+
+// loadSharePointConfig reads the SharePoint sub-settings if the admin has
+// configured them. Falls back to zero-value when missing.
+func loadSharePointConfig(ctx context.Context, db *pgxpool.Pool, tid uuid.UUID) SharePointConfig {
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT settings FROM tenants WHERE id=$1`, tid).Scan(&raw); err != nil || len(raw) == 0 {
+		return SharePointConfig{}
+	}
+	var s struct {
+		Microsoft struct {
+			SharePoint SharePointConfig `json:"sharepoint"`
+		} `json:"microsoft"`
+	}
+	_ = json.Unmarshal(raw, &s)
+	return s.Microsoft.SharePoint
 }
 
 // Put — PUT /api/v1/settings/microsoft
@@ -57,9 +85,10 @@ func (h *MicrosoftAdmin) Put(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	actor := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	var body struct {
-		ClientID     string `json:"client_id"`
-		ClientSecret string `json:"client_secret"`
-		TenantHint   string `json:"tenant_hint"`
+		ClientID     string            `json:"client_id"`
+		ClientSecret string            `json:"client_secret"`
+		TenantHint   string            `json:"tenant_hint"`
+		SharePoint   *SharePointConfig `json:"sharepoint"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -83,6 +112,25 @@ func (h *MicrosoftAdmin) Put(c *gin.Context) {
 		_, existing, _ := loadRawMicrosoftCreds(c.Request.Context(), h.db, tid)
 		if existing != "" {
 			current["client_secret"] = existing
+		}
+	}
+
+	// Carry the SharePoint sub-config through. If the body omitted it, preserve
+	// whatever's already stored so a partial save doesn't wipe the routing.
+	if body.SharePoint != nil {
+		current["sharepoint"] = map[string]any{
+			"site_id":       strings.TrimSpace(body.SharePoint.SiteID),
+			"drive_id":      strings.TrimSpace(body.SharePoint.DriveID),
+			"folder_path":   strings.TrimSpace(body.SharePoint.FolderPath),
+			"route_uploads": body.SharePoint.RouteUploads,
+		}
+	} else {
+		existing := loadSharePointConfig(c.Request.Context(), h.db, tid)
+		current["sharepoint"] = map[string]any{
+			"site_id":       existing.SiteID,
+			"drive_id":      existing.DriveID,
+			"folder_path":   existing.FolderPath,
+			"route_uploads": existing.RouteUploads,
 		}
 	}
 
@@ -112,6 +160,7 @@ func (h *MicrosoftAdmin) Put(c *gin.Context) {
 		"secret_stored": cfg.Configured,
 		"redirect_uri":  cfg.RedirectURI,
 		"configured":    cfg.Configured,
+		"sharepoint":    loadSharePointConfig(c.Request.Context(), h.db, tid),
 	})
 }
 
