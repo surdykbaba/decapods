@@ -1,16 +1,17 @@
 // DailyCheckinsPage — HR rollup of morning check-ins.
 //
-// Three layers:
-//   1. Insight strip — at-risk count, mood mix, total checked-in days.
-//   2. Compliance summary — per-member, sorted by most missed first, with
+// Two layers:
+//   1. Compliance summary — per-member, sorted by most missed first, with
 //      streak and last mood for fast appraisal scanning.
-//   3. Detail table — server-paginated day-by-day rows, filterable.
+//   2. Member drill-down drawer — day-by-day timeline with tile summary.
+// (The page-level KPI strip was removed — the per-row Compliance column
+// already carries the same signal without taking a header band of space.)
 import { useMemo, useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
 import {
   ShieldCheck, AlertCircle, Link2, CheckCircle2, Filter, Flame,
-  Smile, Users as UsersIcon, ListChecks, Activity,
+  Smile, ListChecks, Activity,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -107,7 +108,6 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
 
   const items = data?.items ?? [];
   const compliance = data?.compliance ?? [];
-  const insights = data?.insights;
   const total = data?.total ?? 0;
   // Pagination now scopes the *compliance summary* (one row per member).
   // Day-by-day rows live in the drill-down drawer so they don't need their
@@ -121,19 +121,6 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
     () => (pageSize === 0 ? compliance : compliance.slice(page * pageSize, page * pageSize + pageSize)),
     [compliance, page, pageSize],
   );
-
-  const topMood = useMemo(() => {
-    if (!insights?.mood_counts) return null;
-    const entries = Object.entries(insights.mood_counts);
-    if (entries.length === 0) return null;
-    return entries.sort((a, b) => b[1] - a[1])[0];
-  }, [insights]);
-
-  const compliancePct = useMemo(() => {
-    if (!insights) return 0;
-    const t = insights.total_done + insights.total_missed;
-    return t === 0 ? 0 : Math.round((insights.total_done / t) * 100);
-  }, [insights]);
 
   if (!me) return null;
   if (!allowed) return <Navigate to="/" replace />;
@@ -150,38 +137,6 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
           </p>
         </div>
       )}
-
-      {/* ============ Insight strip ============ */}
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <InsightTile
-          icon={<Activity size={14} />}
-          tone={compliancePct >= 80 ? "good" : compliancePct >= 50 ? "warn" : "bad"}
-          label="Compliance"
-          value={`${compliancePct}%`}
-          sub={`${insights?.total_done ?? 0} done · ${insights?.total_missed ?? 0} missed`}
-        />
-        <InsightTile
-          icon={<AlertCircle size={14} />}
-          tone={(insights?.at_risk ?? 0) === 0 ? "good" : "bad"}
-          label="At risk"
-          value={String(insights?.at_risk ?? 0)}
-          sub="Missed more than half the window"
-        />
-        <InsightTile
-          icon={<Smile size={14} />}
-          tone="info"
-          label="Top mood"
-          value={topMood ? topMood[0] : "—"}
-          sub={topMood ? `${topMood[1]} member${topMood[1] === 1 ? "" : "s"} most recent` : "No moods logged yet"}
-        />
-        <InsightTile
-          icon={<UsersIcon size={14} />}
-          tone="info"
-          label="Active members"
-          value={String(insights?.members ?? 0)}
-          sub={`Window starts ${data?.from ?? "—"}`}
-        />
-      </section>
 
       {/* ============ Filters ============ */}
       <section className="bg-surface border border-border rounded-2xl p-4">
