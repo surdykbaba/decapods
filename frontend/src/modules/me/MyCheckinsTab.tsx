@@ -1,10 +1,11 @@
 // MyCheckinsTab — personal history of the calling user's daily check-ins.
 // Lives inside My Accubin so each staff member can see their own mood
 // trend, streaks, attachment archive and what they shipped, day by day.
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { CalendarDays, AlertCircle, Link2, CheckCircle2, Flame, Smile, ListChecks, Activity } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { CalendarDays, AlertCircle, Link2, CheckCircle2, Flame, Smile, ListChecks, Activity, Pencil, Plus, X, Trash2, Loader2 } from "lucide-react";
 import { api } from "@/lib/api";
+import { toast } from "@/lib/toast";
 
 type Attachment = { kind: "link" | "file"; name: string; url: string };
 
@@ -38,6 +39,7 @@ function fmtDay(iso: string): string {
 
 export function MyCheckinsTab() {
   const [windowDays, setWindowDays] = useState(30);
+  const [editingDay, setEditingDay] = useState<Row | null>(null);
   const { data, isLoading } = useQuery<Resp>({
     queryKey: ["me", "daily-checkins", windowDays],
     queryFn: () => api(`/api/v1/me/daily-checkins?days=${windowDays}`),
@@ -47,6 +49,15 @@ export function MyCheckinsTab() {
 
   const items = data?.items ?? [];
   const insights = data?.insights;
+
+  // 14 days back is the server-side window for editing. Compute on the
+  // client so the Edit button is only rendered for rows we'd be allowed
+  // to save (no point teasing a button that 400s).
+  const isEditable = (day: string): boolean => {
+    const d = new Date(day + "T00:00:00").getTime();
+    const ageDays = (Date.now() - d) / 86_400_000;
+    return ageDays >= 0 && ageDays <= 14;
+  };
 
   // Current streak — consecutive days from today backwards that are NOT
   // missed. items[0] is today.
@@ -195,6 +206,17 @@ export function MyCheckinsTab() {
                         ))}
                       </ul>
                     )}
+                    {isEditable(r.day) && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingDay(r)}
+                        className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-accent hover:underline"
+                        title={r.missed ? "Back-fill this missed check-in" : "Add to this check-in"}
+                      >
+                        {r.missed ? <Plus size={11} /> : <Pencil size={11} />}
+                        {r.missed ? "Back-fill" : "Add / edit"}
+                      </button>
+                    )}
                   </div>
                 </div>
               </li>
@@ -202,6 +224,218 @@ export function MyCheckinsTab() {
           </ul>
         )}
       </section>
+
+      {editingDay && (
+        <CheckinEditor
+          row={editingDay}
+          onClose={() => setEditingDay(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function CheckinEditor({ row, onClose }: { row: Row; onClose: () => void }) {
+  const qc = useQueryClient();
+  const isToday = row.day === new Date().toISOString().slice(0, 10);
+  const [mood, setMood] = useState(row.mood ?? "");
+  const [yesterday, setYesterday] = useState(row.yesterday_note ?? "");
+  const [focus, setFocus] = useState(row.focus_note ?? "");
+  const [attachments, setAttachments] = useState<Attachment[]>(row.attachments ?? []);
+  const [linkDraft, setLinkDraft] = useState("");
+
+  // Defensive: if the parent re-renders the same day, sync local state.
+  useEffect(() => {
+    setMood(row.mood ?? "");
+    setYesterday(row.yesterday_note ?? "");
+    setFocus(row.focus_note ?? "");
+    setAttachments(row.attachments ?? []);
+  }, [row.day]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const save = useMutation({
+    mutationFn: () => api("/api/v1/me/huddle", {
+      method: "POST",
+      body: JSON.stringify({
+        day: row.day,
+        mood,
+        focus_note: focus.trim(),
+        yesterday_note: yesterday.trim(),
+        attachments,
+        post_to_campfire: false, // back-fills never blast Campfire
+      }),
+    }),
+    onSuccess: () => {
+      toast.success("Check-in updated", `Saved for ${row.day}.`);
+      qc.invalidateQueries({ queryKey: ["me", "daily-checkins"] });
+      qc.invalidateQueries({ queryKey: ["me-huddle"] });
+      onClose();
+    },
+    onError: (e: any) => toast.error("Could not save", e?.message),
+  });
+
+  function addLink() {
+    const raw = linkDraft.trim();
+    if (!raw) return;
+    let name = raw;
+    try { name = new URL(raw).hostname || raw; } catch { /* keep raw */ }
+    setAttachments((p) => [...p, { kind: "link", name, url: raw }]);
+    setLinkDraft("");
+  }
+  function removeAttachment(i: number) {
+    setAttachments((p) => p.filter((_, idx) => idx !== i));
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4"
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+    >
+      <div
+        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-3.5 border-b border-border flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[11px] uppercase tracking-wider font-bold text-accent">
+              {isToday ? "Edit today's check-in" : `Back-fill ${fmtDay(row.day)}`}
+            </div>
+            <h3 className="text-base font-bold text-text leading-tight">{fmtDay(row.day)}</h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded hover:bg-bg text-muted hover:text-text"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="p-5 space-y-4 overflow-y-auto">
+          <div>
+            <div className="text-sm font-semibold text-text mb-2">Mood</div>
+            <div className="flex items-center gap-1.5">
+              {["😄", "🙂", "😐", "😕", "😩"].map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMood(m)}
+                  className={`px-2.5 py-2 rounded-lg text-lg border transition-all ${
+                    mood === m
+                      ? "border-accent bg-accent-soft scale-110"
+                      : "border-transparent hover:border-border hover:bg-bg"
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+              {mood && (
+                <button
+                  type="button"
+                  onClick={() => setMood("")}
+                  className="text-[11px] text-muted hover:text-text ml-1"
+                  title="Clear mood"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <div className="text-sm font-semibold text-text mb-2">Yesterday — what shipped</div>
+            <textarea
+              value={yesterday}
+              onChange={(e) => setYesterday(e.target.value)}
+              rows={3}
+              className="input w-full resize-none"
+              placeholder="What did you finish, hand off, or get stuck on?"
+            />
+          </div>
+
+          <div>
+            <div className="text-sm font-semibold text-text mb-2">{isToday ? "Today — what's on" : "That day — what you were on"}</div>
+            <textarea
+              value={focus}
+              onChange={(e) => setFocus(e.target.value)}
+              rows={4}
+              className="input w-full resize-none"
+              placeholder="One or two things you were owning."
+            />
+          </div>
+
+          <div>
+            <div className="text-sm font-semibold text-text mb-2 flex items-center gap-1.5">
+              <Link2 size={12} className="text-muted" /> Attachments
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="url"
+                value={linkDraft}
+                onChange={(e) => setLinkDraft(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLink(); } }}
+                placeholder="https://…"
+                className="input flex-1 text-sm"
+              />
+              <button
+                type="button"
+                onClick={addLink}
+                disabled={!linkDraft.trim()}
+                className="text-sm font-semibold px-3 py-2 rounded-lg bg-bg border border-border hover:border-accent/40 disabled:opacity-50 disabled:cursor-not-allowed text-text"
+              >
+                Add
+              </button>
+            </div>
+            {attachments.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {attachments.map((a, i) => (
+                  <li key={i} className="flex items-center gap-2 text-[12.5px] bg-bg/60 border border-border rounded-lg px-2.5 py-1.5">
+                    <Link2 size={11} className="text-muted shrink-0" />
+                    <a
+                      href={a.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-accent hover:underline truncate flex-1"
+                      title={a.url}
+                    >
+                      {a.name}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(i)}
+                      className="text-muted hover:text-danger p-1"
+                      aria-label="Remove"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => save.mutate()}
+            disabled={save.isPending || (!mood && !focus.trim() && !yesterday.trim())}
+            className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {save.isPending ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+            {save.isPending ? "Saving…" : isToday ? "Save check-in" : "Save back-fill"}
+          </button>
+        </footer>
+      </div>
     </div>
   );
 }

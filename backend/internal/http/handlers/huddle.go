@@ -160,6 +160,10 @@ func (h *Huddle) Save(c *gin.Context) {
 		YesterdayNote   string              `json:"yesterday_note"`
 		Attachments     []huddleAttachment  `json:"attachments"`
 		PostToCampfire  bool                `json:"post_to_campfire"`
+		// Optional. YYYY-MM-DD. Defaults to today. Allowed range is the
+		// last 14 days so a user can recall + flesh out a recent check-in
+		// they rushed through, but can't fabricate ancient history.
+		Day             string              `json:"day"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -179,11 +183,34 @@ func (h *Huddle) Save(c *gin.Context) {
 	}
 
 	today := time.Now().UTC().Format("2006-01-02")
+	if req.Day = strings.TrimSpace(req.Day); req.Day == "" {
+		req.Day = today
+	} else {
+		// Sanity-check the date and clamp to the 14-day window.
+		d, err := time.Parse("2006-01-02", req.Day)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "day must be YYYY-MM-DD"})
+			return
+		}
+		age := time.Since(d.UTC())
+		if age < -24*time.Hour {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "day cannot be in the future"})
+			return
+		}
+		if age > 14*24*time.Hour {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "day is more than 14 days old — past that, ask HR"})
+			return
+		}
+	}
+	day := req.Day
+	// Cross-posts to Campfire are only sensible for today's check-in.
+	// Back-filling a yesterday entry shouldn't blast the team an "update".
+	postableToCampfire := req.PostToCampfire && day == today
 
 	// Optional Campfire cross-post — do this first so we can stamp the post
 	// id on the check-in row. If posting fails we still save the check-in.
 	var campfirePostID *uuid.UUID
-	if req.PostToCampfire && req.FocusNote != "" {
+	if postableToCampfire && req.FocusNote != "" {
 		body := req.FocusNote
 		if req.Mood != "" {
 			body = req.Mood + " " + body
@@ -219,7 +246,7 @@ func (h *Huddle) Save(c *gin.Context) {
 		                      END,
 		  posted_to_campfire = daily_checkins.posted_to_campfire OR EXCLUDED.posted_to_campfire,
 		  campfire_post_id  = COALESCE(daily_checkins.campfire_post_id, EXCLUDED.campfire_post_id)`,
-		tid, uid, today, req.Mood, req.FocusNote, req.YesterdayNote, string(attachJSON), posted, campfirePostID); err != nil {
+		tid, uid, day, req.Mood, req.FocusNote, req.YesterdayNote, string(attachJSON), posted, campfirePostID); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
