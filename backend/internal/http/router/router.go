@@ -115,6 +115,7 @@ func New(d Deps) http.Handler {
 	authed.GET("/me/microsoft/status",      msOAuth.Status)
 	authed.GET("/me/meetings",              msOAuth.Meetings)
 	authed.GET("/me/mail",                  msOAuth.Mail)
+	authed.GET("/me/mail/:id",              msOAuth.Message)
 	api.GET("/auth/microsoft/callback",     msOAuth.Callback)
 
 	rv := handlers.NewRoleVisibility(d.DB)
@@ -303,8 +304,11 @@ func New(d Deps) http.Handler {
 	authed.GET("/analytics/portfolio-health", mw.RequirePermission("analytics:read"), an.PortfolioHealth)
 
 	gh := handlers.NewGitHub(d.DB, d.Cfg)
-	authed.POST("/integrations/github/link", mw.RequirePermission("project:write"), gh.LinkRepo)
-	api.POST("/integrations/github/webhook", gh.Webhook)
+	authed.GET("/integrations/github/status",      gh.Status)
+	authed.GET("/integrations/github/repos",       gh.ListRepos)
+	authed.POST("/integrations/github/link",       mw.RequirePermission("project:write"), gh.LinkRepo)
+	authed.DELETE("/integrations/github/repos/:id", mw.RequirePermission("project:write"), gh.UnlinkRepo)
+	api.POST("/integrations/github/webhook",       gh.Webhook)
 
 	ws := handlers.NewWS(d.Redis)
 	authed.GET("/ws", ws.Handle)
