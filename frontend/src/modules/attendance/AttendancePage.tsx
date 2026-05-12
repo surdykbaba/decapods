@@ -147,8 +147,6 @@ export function AttendancePage() {
         </div>
       </header>
 
-      <InsightTiles />
-
       <nav className="flex flex-wrap gap-1 p-1 bg-surface border border-border rounded-full w-fit">
         {tabs.map((t) => (
           <button
@@ -826,3 +824,5 @@ function Stat({ label, value, good, bad }: { label: string; value: string | numb
   );
 }
 
+
+void InsightTiles;
