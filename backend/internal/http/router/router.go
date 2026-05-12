@@ -82,7 +82,9 @@ func New(d Deps) http.Handler {
 	authed.DELETE("/opportunities/:id", mw.RequirePermission("opportunity:write"), opp.Delete)
 	authed.POST("/opportunities/:id/submit", mw.RequirePermission("opportunity:write"), opp.Submit)
 	authed.POST("/opportunities/:id/transition", mw.RequirePermission("opportunity:write"), opp.Transition)
-	authed.POST("/opportunities/:id/documents", mw.RequirePermission("document:write"), opp.AttachDocument)
+	authed.POST("/opportunities/:id/documents",            mw.RequirePermission("document:write"), opp.AttachDocument)
+	authed.POST("/opportunities/:id/documents/upload",     mw.RequirePermission("document:write"), opp.UploadDocument)
+	authed.GET("/opportunities/:id/documents/:docId/content", mw.RequirePermission("opportunity:read"), opp.DownloadDocument)
 
 	workflows := handlers.NewWorkflows(d.DB)
 	authed.GET("/settings/opportunity-workflow", mw.RequirePermission("opportunity:read"), workflows.GetOpportunityWorkflow)

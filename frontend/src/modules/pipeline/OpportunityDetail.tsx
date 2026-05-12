@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { Card, Pill } from "@/components/ui";
 import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
@@ -505,6 +506,7 @@ export function OpportunityDetail() {
       {previewDoc && (
         <PreviewDocumentDialog
           doc={previewDoc}
+          oppId={id!}
           label={(DOC_LABELS[previewDoc.kind]?.label) ?? previewDoc.kind}
           onClose={() => setPreviewDoc(null)}
         />
@@ -1155,20 +1157,58 @@ function RejectDialog({
 }
 
 function PreviewDocumentDialog({
-  doc, label, onClose,
+  doc, oppId, label, onClose,
 }: {
   doc: Document;
+  oppId: string;
   label: string;
   onClose: () => void;
 }) {
   const key = doc.object_key || "";
   const isUrl = /^https?:\/\//i.test(key);
-  const lower = key.toLowerCase();
+  const isInternal = /^doc:\/\//i.test(key);
+  const isLocalStub = /^local:\/\//i.test(key); // legacy stubs from before real storage
+  const lower = (isUrl ? key : doc.name).toLowerCase();
   const ext = (() => {
     const m = lower.match(/\.([a-z0-9]{2,5})(\?|$)/);
     return m ? m[1] : "";
   })();
   const isImage = ["png","jpg","jpeg","gif","webp","svg"].includes(ext);
+  const isPdf = ext === "pdf";
+
+  // For internal doc://<id> uploads we fetch the binary with the user's
+  // bearer token, turn it into a blob URL, and feed that into the iframe.
+  // Necessary because the download endpoint is auth-gated and the iframe
+  // can't send Authorization headers on its own.
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [blobErr, setBlobErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isInternal) return;
+    let revoke: string | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/v1/opportunities/${oppId}/documents/${doc.id}/content`,
+          { headers: { Authorization: `Bearer ${useAuth.getState().token ?? ""}` } },
+        );
+        if (!res.ok) throw new Error(await res.text());
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        revoke = url;
+        if (!cancelled) setBlobUrl(url);
+      } catch (e: any) {
+        if (!cancelled) setBlobErr(e?.message ?? "Could not load document");
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (revoke) URL.revokeObjectURL(revoke);
+    };
+  }, [isInternal, oppId, doc.id]);
+
+  const previewSrc = isInternal ? blobUrl : isUrl ? key : null;
+  const downloadHref = isInternal ? blobUrl : isUrl ? key : null;
 
   return (
     <div
@@ -1186,12 +1226,12 @@ function PreviewDocumentDialog({
             <div className="text-base font-semibold text-text truncate">{doc.name}</div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {isUrl && (
+            {downloadHref && (
               <>
-                <a href={key} target="_blank" rel="noreferrer" className="btn-outline">
+                <a href={downloadHref} target="_blank" rel="noreferrer" className="btn-outline">
                   <ExternalLink size={14} /> Open in new tab
                 </a>
-                <a href={key} download className="btn-outline" title="Download">
+                <a href={downloadHref} download={doc.name} className="btn-outline" title="Download">
                   <Download size={14} />
                 </a>
               </>
@@ -1203,31 +1243,66 @@ function PreviewDocumentDialog({
         </header>
 
         <div className="flex-1 min-h-0 bg-bg overflow-auto">
-          {isUrl && isImage ? (
-            <div className="h-full grid place-items-center p-4">
-              <img src={key} alt={doc.name} className="max-w-full max-h-full object-contain" />
+          {isInternal && !blobUrl && !blobErr ? (
+            <div className="h-full grid place-items-center p-8 text-center text-muted text-sm">
+              Loading document…
             </div>
-          ) : isUrl ? (
+          ) : blobErr ? (
+            <div className="h-full grid place-items-center p-8 text-center">
+              <div className="max-w-sm">
+                <div className="w-12 h-12 mx-auto rounded-full bg-danger/15 text-danger grid place-items-center mb-3">
+                  <FileText size={20} />
+                </div>
+                <div className="text-sm font-medium text-text">Couldn't load document</div>
+                <p className="text-sm text-muted mt-1 break-words">{blobErr}</p>
+              </div>
+            </div>
+          ) : previewSrc && isImage ? (
+            <div className="h-full grid place-items-center p-4">
+              <img src={previewSrc} alt={doc.name} className="max-w-full max-h-full object-contain" />
+            </div>
+          ) : previewSrc && (isPdf || isUrl) ? (
+            // PDFs and public URLs render inline. Office formats (.docx, .xlsx)
+            // can't be iframed by the browser — they'll trigger a download from
+            // the Download button instead. That's intentional; doing in-browser
+            // rendering of Office docs requires a converter we don't have.
             <iframe
-              src={key}
+              src={previewSrc}
               title={doc.name}
               className="w-full h-full border-0 bg-white"
             />
-          ) : (
+          ) : previewSrc ? (
+            <div className="h-full grid place-items-center p-8 text-center">
+              <div className="max-w-sm">
+                <div className="w-12 h-12 mx-auto rounded-full bg-accent-soft text-accent grid place-items-center mb-3">
+                  <FileText size={20} />
+                </div>
+                <div className="text-sm font-medium text-text">Inline preview not supported for .{ext}</div>
+                <p className="text-sm text-muted mt-1">
+                  Browsers can't render this format inline. Use the Download button to open it locally.
+                </p>
+                <a href={previewSrc} download={doc.name} className="btn-primary mt-4 inline-flex items-center gap-1.5">
+                  <Download size={14} /> Download {doc.name}
+                </a>
+              </div>
+            </div>
+          ) : isLocalStub ? (
             <div className="h-full grid place-items-center p-8 text-center">
               <div className="max-w-sm">
                 <div className="w-12 h-12 mx-auto rounded-full bg-warn/15 text-warn grid place-items-center mb-3">
                   <FileText size={20} />
                 </div>
-                <div className="text-sm font-medium text-text">Preview unavailable</div>
+                <div className="text-sm font-medium text-text">Legacy attachment</div>
                 <p className="text-sm text-muted mt-1">
-                  This document was attached as a local upload, but file storage isn't wired up
-                  in this preview build, so the binary isn't retrievable.
+                  This file was attached before real upload storage was wired up — the binary
+                  was never persisted. Re-upload it to enable preview.
                 </p>
-                <div className="text-xs text-muted/80 mt-3 font-mono break-all">
-                  {key || "(no reference)"}
-                </div>
+                <div className="text-xs text-muted/80 mt-3 font-mono break-all">{key}</div>
               </div>
+            </div>
+          ) : (
+            <div className="h-full grid place-items-center p-8 text-center text-muted text-sm">
+              No preview source for this attachment.
             </div>
           )}
         </div>
@@ -1839,29 +1914,48 @@ function UploadDocumentDialog({
   async function attach() {
     setErr(null);
     let payloadName = name.trim();
-    let objectKey = "";
-
-    if (mode === "file") {
-      if (!file) { setErr("Choose a file to attach."); return; }
-      if (!payloadName) payloadName = file.name;
-      objectKey = `local://${oppId}/${kind}/${Date.now()}-${encodeURIComponent(file.name)}`;
-    } else {
-      const trimmed = link.trim();
-      if (!trimmed) { setErr("Paste the document URL."); return; }
-      if (!isValidUrl(trimmed)) { setErr("That doesn't look like a valid http(s) URL."); return; }
-      if (!payloadName) {
-        try { payloadName = new URL(trimmed).pathname.split("/").pop() || trimmed; }
-        catch { payloadName = trimmed; }
-      }
-      objectKey = trimmed;
-    }
 
     setBusy(true);
     try {
-      await api(`/api/v1/opportunities/${oppId}/documents`, {
-        method: "POST",
-        body: JSON.stringify({ kind, name: payloadName, object_key: objectKey }),
-      });
+      if (mode === "file") {
+        if (!file) { setErr("Choose a file to attach."); setBusy(false); return; }
+        if (!payloadName) payloadName = file.name;
+        // Real upload: multipart/form-data → backend stores bytes inline
+        // and returns the canonical object_key (doc://<id>) that the
+        // previewer resolves via the download endpoint.
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("kind", kind);
+        fd.append("name", payloadName);
+        const res = await fetch(`/api/v1/opportunities/${oppId}/documents/upload`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${useAuth.getState().token ?? ""}`,
+          },
+          body: fd,
+        });
+        if (!res.ok) {
+          const body = await res.text();
+          try {
+            const j = JSON.parse(body);
+            throw new Error(j.error || res.statusText);
+          } catch {
+            throw new Error(body || res.statusText);
+          }
+        }
+      } else {
+        const trimmed = link.trim();
+        if (!trimmed) { setErr("Paste the document URL."); setBusy(false); return; }
+        if (!isValidUrl(trimmed)) { setErr("That doesn't look like a valid http(s) URL."); setBusy(false); return; }
+        if (!payloadName) {
+          try { payloadName = new URL(trimmed).pathname.split("/").pop() || trimmed; }
+          catch { payloadName = trimmed; }
+        }
+        await api(`/api/v1/opportunities/${oppId}/documents`, {
+          method: "POST",
+          body: JSON.stringify({ kind, name: payloadName, object_key: trimmed }),
+        });
+      }
       onUploaded();
     } catch (e: any) {
       setErr(e.message ?? "Attach failed");

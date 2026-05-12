@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,6 +17,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// Per-document upload cap. 25MB matches projects.Upload — keeps DB rows
+// sane and lines up with what Cloudflare's free tier passes through.
+const oppDocMaxBytes = 25 * 1024 * 1024
 
 type Opportunities struct {
 	db     *pgxpool.Pool
@@ -752,6 +757,126 @@ func (h *Opportunities) convertToProject(c *gin.Context, tid, oppID, uid uuid.UU
 
 	_ = est // referenced for future use
 	return pid, nil
+}
+
+// UploadDocument — POST /api/v1/opportunities/:id/documents/upload
+// multipart/form-data { file, kind, name? }
+//
+// Stores the file inline in opportunity_documents.bytes so the previewer
+// can serve it back via DownloadDocument. object_key is set to a stable
+// internal scheme (doc://<docId>) the frontend resolves to the download
+// endpoint. Replaces the old "fake local:// pointer" stub.
+func (h *Opportunities) UploadDocument(c *gin.Context) {
+	oid, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad opportunity id"})
+		return
+	}
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+
+	// Cap the body before the multipart parser allocates against it.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, oppDocMaxBytes+1024*1024)
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "upload too large (max 25MB)"})
+		return
+	}
+	fh, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing file"})
+		return
+	}
+	if fh.Size > oppDocMaxBytes {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file exceeds 25MB cap"})
+		return
+	}
+
+	kind := strings.TrimSpace(c.PostForm("kind"))
+	if kind == "" {
+		kind = "other"
+	}
+	name := strings.TrimSpace(c.PostForm("name"))
+	if name == "" {
+		name = fh.Filename
+	}
+	contentType := fh.Header.Get("Content-Type")
+
+	f, err := fh.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read upload"})
+		return
+	}
+	defer f.Close()
+	bytes, err := io.ReadAll(f)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read upload bytes"})
+		return
+	}
+
+	// Verify the opportunity exists in this tenant before writing.
+	var ownerTid uuid.UUID
+	if err := h.db.QueryRow(c, `SELECT tenant_id FROM opportunities WHERE id=$1 AND deleted_at IS NULL`, oid).
+		Scan(&ownerTid); err != nil || ownerTid != tid {
+		c.JSON(http.StatusNotFound, gin.H{"error": "opportunity not found"})
+		return
+	}
+
+	docID := uuid.New()
+	objKey := "doc://" + docID.String()
+	if _, err := h.db.Exec(c, `
+		INSERT INTO opportunity_documents
+		  (id, opportunity_id, tenant_id, kind, name, object_key,
+		   content_type, size_bytes, bytes, uploaded_by)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		docID, oid, tid, kind, name, objKey, contentType, len(bytes), bytes, uid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{
+		"id":           docID,
+		"object_key":   objKey,
+		"name":         name,
+		"kind":         kind,
+		"content_type": contentType,
+		"size_bytes":   len(bytes),
+	})
+}
+
+// DownloadDocument — GET /api/v1/opportunities/:id/documents/:docId/content
+//
+// Streams the stored binary back with the right Content-Type so the
+// browser can preview / download it. Authenticated by the standard
+// middleware; tenant_id check prevents cross-tenant fetches.
+func (h *Opportunities) DownloadDocument(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	oid, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad opportunity id"})
+		return
+	}
+	docID, err := uuid.Parse(c.Param("docId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad document id"})
+		return
+	}
+	var (
+		name, contentType string
+		bytes             []byte
+	)
+	if err := h.db.QueryRow(c, `
+		SELECT name, COALESCE(content_type, 'application/octet-stream'), bytes
+		  FROM opportunity_documents
+		 WHERE id=$1 AND opportunity_id=$2 AND tenant_id=$3`,
+		docID, oid, tid).Scan(&name, &contentType, &bytes); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
+		return
+	}
+	if len(bytes) == 0 {
+		c.JSON(http.StatusGone, gin.H{"error": "document body not stored (legacy local:// pointer)"})
+		return
+	}
+	c.Header("Content-Disposition", `inline; filename="`+strings.ReplaceAll(name, `"`, "")+`"`)
+	c.Data(http.StatusOK, contentType, bytes)
 }
 
 func (h *Opportunities) AttachDocument(c *gin.Context) {
