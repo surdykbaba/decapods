@@ -35,6 +35,59 @@ func (h *SystemAudit) List(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 
 	args := []any{tid}
+	where := " WHERE a.tenant_id=$1"
+
+	if v := c.Query("actor"); v != "" {
+		args = append(args, "%"+v+"%")
+		n := strconv.Itoa(len(args))
+		where += " AND (u.full_name ILIKE $" + n + " OR u.email::text ILIKE $" + n + ")"
+	}
+	if v := c.Query("action"); v != "" {
+		args = append(args, "%"+v+"%")
+		where += " AND a.action ILIKE $" + strconv.Itoa(len(args))
+	}
+	if v := c.Query("entity"); v != "" {
+		args = append(args, v)
+		where += " AND a.entity = $" + strconv.Itoa(len(args))
+	}
+	if v := c.Query("ip"); v != "" {
+		args = append(args, "%"+v+"%")
+		where += " AND a.ip ILIKE $" + strconv.Itoa(len(args))
+	}
+	if v := c.Query("since"); v != "" {
+		args = append(args, v)
+		where += " AND a.created_at >= $" + strconv.Itoa(len(args))
+	}
+	if v := c.Query("until"); v != "" {
+		args = append(args, v)
+		where += " AND a.created_at <= $" + strconv.Itoa(len(args))
+	}
+
+	limit := 50
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	offset := 0
+	if v := c.Query("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	// COUNT(*) over the same filters so the SPA can render "Page X of Y"
+	// without scanning beyond what it shows. Done before we append the limit
+	// / offset args so they don't affect the count.
+	var total int
+	if err := h.db.QueryRow(c,
+		`SELECT COUNT(*) FROM audit_log a LEFT JOIN users u ON u.id = a.actor_id`+where,
+		args...).Scan(&total); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	args = append(args, limit, offset)
 	q := `
 		SELECT a.id, a.actor_id,
 		       COALESCE(u.full_name,''), COALESCE(u.email::text,''),
@@ -43,43 +96,9 @@ func (h *SystemAudit) List(c *gin.Context) {
 		       COALESCE(a.request_method,''), COALESCE(a.request_path,''),
 		       a.created_at
 		FROM audit_log a
-		LEFT JOIN users u ON u.id = a.actor_id
-		WHERE a.tenant_id=$1`
-
-	if v := c.Query("actor"); v != "" {
-		args = append(args, "%"+v+"%")
-		n := strconv.Itoa(len(args))
-		q += " AND (u.full_name ILIKE $" + n + " OR u.email::text ILIKE $" + n + ")"
-	}
-	if v := c.Query("action"); v != "" {
-		args = append(args, "%"+v+"%")
-		q += " AND a.action ILIKE $" + strconv.Itoa(len(args))
-	}
-	if v := c.Query("entity"); v != "" {
-		args = append(args, v)
-		q += " AND a.entity = $" + strconv.Itoa(len(args))
-	}
-	if v := c.Query("ip"); v != "" {
-		args = append(args, "%"+v+"%")
-		q += " AND a.ip ILIKE $" + strconv.Itoa(len(args))
-	}
-	if v := c.Query("since"); v != "" {
-		args = append(args, v)
-		q += " AND a.created_at >= $" + strconv.Itoa(len(args))
-	}
-	if v := c.Query("until"); v != "" {
-		args = append(args, v)
-		q += " AND a.created_at <= $" + strconv.Itoa(len(args))
-	}
-
-	limit := 200
-	if v := c.Query("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
-			limit = n
-		}
-	}
-	args = append(args, limit)
-	q += " ORDER BY a.created_at DESC LIMIT $" + strconv.Itoa(len(args))
+		LEFT JOIN users u ON u.id = a.actor_id` + where +
+		" ORDER BY a.created_at DESC LIMIT $" + strconv.Itoa(len(args)-1) +
+		" OFFSET $" + strconv.Itoa(len(args))
 
 	rows, err := h.db.Query(c, q, args...)
 	if err != nil {
@@ -119,6 +138,11 @@ func (h *SystemAudit) List(c *gin.Context) {
 			"created_at":     created,
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{"items": out})
+	c.JSON(http.StatusOK, gin.H{
+		"items":  out,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
 }
 

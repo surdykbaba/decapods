@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
 import { api } from "@/lib/api";
@@ -62,24 +62,35 @@ export function SystemAuditPage() {
   const [ip, setIp] = useState("");
   const [entity, setEntity] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 50;
 
-  const { data, isLoading } = useQuery<{ items: AuditRow[] }>({
+  // Reset page when filters change — no point staying on page 7 of an empty
+  // filtered set.
+  useEffect(() => { setPage(0); }, [actor, action, ip, entity]);
+
+  const { data, isLoading } = useQuery<{ items: AuditRow[]; total: number; limit: number; offset: number }>({
     enabled: isSuper,
-    queryKey: ["system-audit", actor, action, ip, entity],
+    queryKey: ["system-audit", actor, action, ip, entity, page],
     queryFn: () => {
       const p = new URLSearchParams();
       if (actor.trim())  p.set("actor", actor.trim());
       if (action.trim()) p.set("action", action.trim());
       if (ip.trim())     p.set("ip", ip.trim());
       if (entity)        p.set("entity", entity);
-      const qs = p.toString();
-      return api(`/api/v1/admin/audit${qs ? `?${qs}` : ""}`);
+      p.set("limit", String(PAGE_SIZE));
+      p.set("offset", String(page * PAGE_SIZE));
+      return api(`/api/v1/admin/audit?${p.toString()}`);
     },
     staleTime: 5_000,
     refetchInterval: 30_000,
   });
 
   const rows = data?.items ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const firstShown = total === 0 ? 0 : page * PAGE_SIZE + 1;
+  const lastShown = Math.min(total, page * PAGE_SIZE + rows.length);
   const entityOptions = useMemo(() => {
     const set = new Set<string>();
     rows.forEach((r) => set.add(r.entity));
@@ -249,6 +260,35 @@ export function SystemAuditPage() {
                 })}
               </tbody>
             </table>
+          </div>
+        )}
+        {rows.length > 0 && (
+          <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-border bg-bg/30 text-xs">
+            <div className="text-muted">
+              Showing <span className="font-semibold text-text">{firstShown}</span>–
+              <span className="font-semibold text-text">{lastShown}</span> of{" "}
+              <span className="font-semibold text-text">{total.toLocaleString()}</span> events
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:bg-bg/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-text"
+              >
+                ← Prev
+              </button>
+              <span className="text-muted px-1">
+                Page <span className="font-semibold text-text">{page + 1}</span> of{" "}
+                <span className="font-semibold text-text">{totalPages}</span>
+              </span>
+              <button
+                onClick={() => setPage((p) => p + 1)}
+                disabled={page + 1 >= totalPages}
+                className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:bg-bg/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-text"
+              >
+                Next →
+              </button>
+            </div>
           </div>
         )}
       </Card>
