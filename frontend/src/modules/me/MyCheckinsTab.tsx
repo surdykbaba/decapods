@@ -456,15 +456,30 @@ export function MyCheckinsTab() {
         {isLoading ? (
           <div className="p-10 text-center text-muted text-sm">Loading…</div>
         ) : items.length === 0 ? (
-          <div className="p-10 text-center">
-            <div className="text-sm text-muted">No history yet — log your first check-in to start the timeline.</div>
-            <button
-              type="button"
-              onClick={() => setEditingDay(todayRow)}
-              className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 mt-4"
-            >
-              <Plus size={13} /> Check in for today
-            </button>
+          <div className="p-10 text-center space-y-3">
+            <div className="text-sm font-semibold text-text">No check-ins found for this window</div>
+            <p className="text-[12.5px] text-muted max-w-md mx-auto">
+              History appears here as soon as you save a check-in — either via the Today hero card above,
+              or the Morning huddle prompt on the <span className="font-semibold text-text">Today</span> tab.
+              If you've checked in recently and don't see it, try refreshing.
+            </p>
+            <div className="flex items-center justify-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setEditingDay(todayRow)}
+                className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90"
+              >
+                <Plus size={13} /> Check in for today
+              </button>
+              <button
+                type="button"
+                onClick={() => qc.invalidateQueries({ queryKey: ["me", "daily-checkins"] })}
+                className="inline-flex items-center gap-1.5 text-sm font-semibold bg-surface border border-border text-text px-4 py-2 rounded-full hover:border-accent/40 hover:text-accent"
+                title="Re-fetch the timeline"
+              >
+                <Activity size={13} /> Refresh
+              </button>
+            </div>
           </div>
         ) : pageRows.length === 0 ? (
           <div className="p-10 text-center text-muted text-sm">No days match these filters.</div>

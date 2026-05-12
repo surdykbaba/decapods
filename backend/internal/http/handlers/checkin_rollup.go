@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -224,22 +225,27 @@ func (h *CheckinRollup) List(c *gin.Context) {
 		defer crows.Close()
 		for crows.Next() {
 			var (
-				uid               uuid.UUID
-				name, email       string
-				done, missed, td  int
-				lastMood          *string
+				uid              uuid.UUID
+				name, email      string
+				// SUM() and COUNT() in PostgreSQL return bigint. Scanning
+				// into plain int silently fails on some pgx configs (and
+				// did, in our Self handler — produced an empty list and
+				// the "No history yet" empty state even when rows existed).
+				// int64 is the canonical safe mapping.
+				done, missed, td int64
+				lastMood         *string
 			)
 			if err := crows.Scan(&uid, &name, &email, &done, &missed, &td, &lastMood); err != nil {
 				continue
 			}
-			totalDone += done
-			totalMissed += missed
+			totalDone += int(done)
+			totalMissed += int(missed)
 			if lastMood != nil && *lastMood != "" {
 				moodCounts[*lastMood]++
 			}
 			compliance = append(compliance, complianceRow{
 				UserID: uid, UserName: name, Email: email,
-				Done: done, Missed: missed, TasksDone: td, LastMood: lastMood,
+				Done: int(done), Missed: int(missed), TasksDone: int(td), LastMood: lastMood,
 			})
 		}
 	}
@@ -356,16 +362,24 @@ func (h *CheckinRollup) Self(c *gin.Context) {
 	out := []selfRow{}
 	done, missed := 0, 0
 	moodCounts := map[string]int{}
-	totalTasks := 0
+	totalTasks := int64(0)
+	scanErrs := 0
+	var lastScanErr string
 	for rows.Next() {
 		var (
 			day                    time.Time
 			mood, focus, yesterday *string
 			attachments            []byte
 			posted                 *bool
-			tasksDone              int
+			// PostgreSQL COUNT(*) returns bigint. Using a plain int here used
+			// to silently fail every scan on some pgx configs, producing an
+			// empty items list and a confusing "No history yet" UI even when
+			// daily_checkins had rows. int64 is the safe, canonical mapping.
+			tasksDone int64
 		)
 		if err := rows.Scan(&day, &mood, &focus, &yesterday, &attachments, &posted, &tasksDone); err != nil {
+			scanErrs++
+			lastScanErr = err.Error()
 			continue
 		}
 		var attachJSON any = []any{}
@@ -377,7 +391,7 @@ func (h *CheckinRollup) Self(c *gin.Context) {
 			Mood: mood, FocusNote: focus, YesterdayNote: yesterday,
 			Attachments: attachJSON,
 			Missed:      mood == nil && focus == nil && yesterday == nil,
-			TasksDone:   tasksDone,
+			TasksDone:   int(tasksDone),
 		}
 		if posted != nil {
 			row.PostedShared = *posted
@@ -393,6 +407,12 @@ func (h *CheckinRollup) Self(c *gin.Context) {
 		totalTasks += tasksDone
 		out = append(out, row)
 	}
+	// Surface scan failures as a response header so a future "history empty
+	// but rows exist" complaint is debuggable from the browser without
+	// shelling onto the DB. Never blocks the response.
+	if scanErrs > 0 {
+		c.Header("X-Checkin-Scan-Errors", fmt.Sprintf("%d (last: %s)", scanErrs, lastScanErr))
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"items": out,
@@ -406,6 +426,9 @@ func (h *CheckinRollup) Self(c *gin.Context) {
 		},
 	})
 }
+
+// (totalTasks is int64 above for type-safety with PostgreSQL COUNT bigint;
+// it serialises to JSON as a number all the same.)
 
 func hasAnyRole(have []string, want ...string) bool {
 	for _, h := range have {
