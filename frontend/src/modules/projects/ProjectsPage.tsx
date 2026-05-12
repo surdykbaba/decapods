@@ -7,7 +7,7 @@ import { confirmAction } from "@/lib/confirm";
 import { Empty, Skeleton } from "@/components/ui";
 import {
   Search, X, LayoutGrid, List as ListIcon, ChevronRight, Users, AlertCircle,
-  Flag, Wallet, Clock, CheckCircle2,
+  Flag, Wallet, Clock,
   MoreHorizontal, Loader, Archive, ExternalLink,
 } from "lucide-react";
 
@@ -312,16 +312,29 @@ function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; va
   );
 }
 
-function fmtDateLong(iso?: string | null): string {
+function fmtDateShort(iso?: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("en-US", { day: "numeric", month: "long", year: "numeric" });
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString("en-GB", sameYear
+    ? { day: "2-digit", month: "short" }
+    : { day: "2-digit", month: "short", year: "2-digit" });
 }
 
 type SortKey = "smart" | "deadline" | "progress" | "activity" | "name";
 
 const STAGE_ORDER = ["planning", "in_progress", "qa_review", "client_acceptance", "invoiced", "paid", "closed"];
+
+const PROJECTS_PAGE_SIZE_KEY = "projects-list-page-size";
+const PROJECTS_PAGE_SIZES = [10, 20, 30, 50, 100, 0] as const; // 0 = All
+
+// Shared grid template — tuned to give the Project cell the most space, drop
+// the always-overflowing Stage+Progress duo down to one wider Status column,
+// and keep Deadline / Signals / Activity tight. `[36px]` reserves a stable
+// slot for the kebab menu so the row never reflows on hover.
+const ROW_COLS =
+  "grid-cols-[10px_minmax(0,2.4fr)_minmax(0,1.6fr)_minmax(0,0.9fr)_minmax(0,0.8fr)_minmax(0,0.8fr)_36px]";
 
 function ProjectTable({ items }: { items: Project[] }) {
   const [sort, setSort] = useState<SortKey>("smart");
@@ -356,6 +369,29 @@ function ProjectTable({ items }: { items: Project[] }) {
     return xs;
   }, [items, sort]);
 
+  // Client-side pagination — the projects endpoint returns the full list and
+  // the team rarely has more than a few dozen active, but a Rows selector
+  // means the page stays usable when archives accumulate. Page size persists.
+  const [pageSize, setPageSize] = useState<number>(() => {
+    const v = parseInt(localStorage.getItem(PROJECTS_PAGE_SIZE_KEY) ?? "20", 10);
+    return Number.isFinite(v) ? v : 20;
+  });
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [sort, pageSize, sorted.length]);
+  function pickPageSize(n: number) {
+    setPageSize(n);
+    localStorage.setItem(PROJECTS_PAGE_SIZE_KEY, String(n));
+  }
+  const total = sorted.length;
+  const effectivePageSize = pageSize === 0 ? Math.max(1, total) : pageSize;
+  const totalPages = Math.max(1, Math.ceil(total / effectivePageSize));
+  const pageRows = useMemo(
+    () => (pageSize === 0 ? sorted : sorted.slice(page * pageSize, page * pageSize + pageSize)),
+    [sorted, page, pageSize],
+  );
+  const firstShown = total === 0 ? 0 : (pageSize === 0 ? 1 : page * pageSize + 1);
+  const lastShown  = pageSize === 0 ? total : Math.min(total, page * pageSize + pageSize);
+
   const head = (key: SortKey, label: string, icon: React.ReactNode) => (
     <button
       type="button"
@@ -371,11 +407,10 @@ function ProjectTable({ items }: { items: Project[] }) {
 
   return (
     <div className="border border-border rounded-2xl bg-surface overflow-hidden">
-      <div className="grid grid-cols-[10px_minmax(0,2fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_36px] items-center gap-3 px-5 py-3 border-b border-border bg-bg/40 text-[11px] font-bold uppercase tracking-[0.06em]">
+      <div className={`grid ${ROW_COLS} items-center gap-3 px-5 py-3 border-b border-border bg-bg/40 text-[11px] font-bold uppercase tracking-[0.06em]`}>
         <span />
         {head("name",     "Project",       <Loader size={12} />)}
-        <span className="inline-flex items-center gap-1.5 text-muted"><Flag size={12} /> Stage</span>
-        {head("progress", "Progress",      <CheckCircle2 size={12} />)}
+        {head("progress", "Status",        <Flag size={12} />)}
         {head("deadline", "Deadline",      <Clock size={12} />)}
         <span className="inline-flex items-center gap-1.5 text-muted"><AlertCircle size={12} /> Signals</span>
         {head("activity", "Last activity", <Users size={12} />)}
@@ -383,8 +418,51 @@ function ProjectTable({ items }: { items: Project[] }) {
       </div>
 
       <ul>
-        {sorted.map((p) => <ProjectRow key={p.id} project={p} />)}
+        {pageRows.map((p) => <ProjectRow key={p.id} project={p} />)}
       </ul>
+
+      {/* Footer pager */}
+      <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-border bg-bg/30 text-xs flex-wrap">
+        <div className="text-muted inline-flex items-center gap-3 flex-wrap">
+          <span>
+            Showing <span className="font-semibold text-text">{firstShown}</span>–
+            <span className="font-semibold text-text">{lastShown}</span> of{" "}
+            <span className="font-semibold text-text">{total.toLocaleString()}</span> project{total === 1 ? "" : "s"}
+          </span>
+          <label className="inline-flex items-center gap-1.5">
+            Rows
+            <select
+              value={pageSize}
+              onChange={(e) => pickPageSize(parseInt(e.target.value, 10))}
+              className="bg-surface border border-border rounded-lg px-2 py-1 text-[12px] font-semibold text-text"
+            >
+              {PROJECTS_PAGE_SIZES.map((n) => (
+                <option key={n} value={n}>{n === 0 ? "All" : n}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={page === 0 || pageSize === 0}
+            className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:bg-bg/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-text"
+          >
+            ← Prev
+          </button>
+          <span className="text-muted px-1">
+            Page <span className="font-semibold text-text">{pageSize === 0 ? 1 : page + 1}</span> of{" "}
+            <span className="font-semibold text-text">{pageSize === 0 ? 1 : totalPages}</span>
+          </span>
+          <button
+            onClick={() => setPage((p) => p + 1)}
+            disabled={pageSize === 0 || page + 1 >= totalPages}
+            className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:bg-bg/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-text"
+          >
+            Next →
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -397,23 +475,24 @@ function ProjectRow({ project: p }: { project: Project }) {
   const finished = FINISHED_STATUSES.includes(p.status);
   const stageIdx = STAGE_ORDER.indexOf(p.status);
 
-  // Health is the at-a-glance triage signal — green / amber / red dot at the
-  // very left edge, with risk-score on hover.
+  // Health is the at-a-glance triage signal — colored rail at the very left
+  // edge of the row, with full health + risk-score on hover via title.
   const healthBar = {
     green: "bg-success",
     amber: "bg-warn",
     red:   "bg-danger",
   }[p.health] ?? "bg-muted";
 
-  // Deadline countdown. Color shifts as the date approaches.
+  // Deadline countdown. Short date format keeps the cell to one line whenever
+  // possible; the relative sub-line carries the urgency tone.
   const deadlineMeta = (() => {
     if (!p.end_date) return { label: "No deadline", tone: "text-muted", sub: "" };
-    if (finished)    return { label: fmtDateLong(p.end_date), tone: "text-muted", sub: "completed" };
+    if (finished)    return { label: fmtDateShort(p.end_date), tone: "text-muted", sub: "completed" };
     if (days === null) return { label: "—", tone: "text-muted", sub: "" };
-    if (days < 0)    return { label: fmtDateLong(p.end_date), tone: "text-danger", sub: `${Math.abs(days)}d overdue` };
-    if (days === 0)  return { label: fmtDateLong(p.end_date), tone: "text-danger", sub: "due today" };
-    if (days <= 7)   return { label: fmtDateLong(p.end_date), tone: "text-warn",   sub: `in ${days}d` };
-    return            { label: fmtDateLong(p.end_date), tone: "text-text",   sub: `in ${days}d` };
+    if (days < 0)    return { label: fmtDateShort(p.end_date), tone: "text-danger", sub: `${Math.abs(days)}d overdue` };
+    if (days === 0)  return { label: fmtDateShort(p.end_date), tone: "text-danger", sub: "due today" };
+    if (days <= 7)   return { label: fmtDateShort(p.end_date), tone: "text-warn",   sub: `in ${days}d` };
+    return            { label: fmtDateShort(p.end_date), tone: "text-text",   sub: `in ${days}d` };
   })();
 
   return (
@@ -423,29 +502,51 @@ function ProjectRow({ project: p }: { project: Project }) {
 
       <Link
         to={`/projects/${p.id}`}
-        className="grid grid-cols-[10px_minmax(0,2fr)_minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.9fr)_minmax(0,0.9fr)_36px] items-center gap-3 px-5 py-3.5 hover:bg-bg transition-colors"
+        className={`grid ${ROW_COLS} items-center gap-3 px-5 py-3.5 hover:bg-bg transition-colors`}
       >
         <span aria-hidden />
 
-        {/* Project: code + name + client + lead-type tag + over-budget flag */}
+        {/* Project — name dominates, client + chips wrap into a single clean
+            row that truncates when the cell shrinks. Budget moved here next
+            to the client so it stays associated with "what is this engagement"
+            instead of competing with the Status cell next door. */}
         <div className="min-w-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-[11px] font-mono font-semibold text-muted">{p.code}</span>
+          <div className="flex items-baseline gap-2 min-w-0">
+            <span className="text-[11px] font-mono font-semibold text-muted shrink-0">{p.code}</span>
             <span className="text-[15px] font-bold text-text truncate">{p.name}</span>
             {overdue && (
               <span className="pill bg-danger/15 text-danger text-[10px] uppercase tracking-wide shrink-0">Overdue</span>
             )}
           </div>
-          <div className="text-[12px] text-muted truncate mt-0.5 inline-flex items-center gap-1.5">
+          <div className="mt-0.5 flex items-center gap-1.5 text-[12px] text-muted min-w-0 overflow-hidden">
             <span className="truncate">{p.client_name || "Unassigned"}</span>
-            {p.lead_type && <span className="pill bg-bg text-muted normal-case text-[10px]">{p.lead_type}</span>}
-            {p.budget > 0 && <span className="text-muted/70">· {fmtMoney(p.budget, p.currency)}</span>}
+            {p.lead_type && (
+              <span className="pill bg-bg text-muted normal-case text-[10px] shrink-0">{p.lead_type}</span>
+            )}
+            {p.budget > 0 && (
+              <span className="text-muted/70 shrink-0">· {fmtMoney(p.budget, p.currency)}</span>
+            )}
           </div>
         </div>
 
-        {/* Stage — segmented bar so phase 1/7 vs 4/7 is instantly readable */}
+        {/* Status — stage label + segmented 7-phase strip stacked with
+            (when tasks exist) a thin completion line beneath. This is the
+            "smart" cell: one column carries the same signal that used to take
+            two and never overlaps with the next column anymore. */}
         <div className="min-w-0">
-          <div className="text-[13px] text-text font-semibold truncate">{status.label}</div>
+          <div className="flex items-center gap-2 text-[13px]">
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: status.color }} />
+            <span className="font-semibold text-text truncate">{status.label}</span>
+            {p.tasks > 0 && (
+              <span className="ml-auto text-[11px] text-muted shrink-0 tabular-nums">
+                {p.tasks_done}/{p.tasks} · {completion}%
+              </span>
+            )}
+            {p.tasks === 0 && (
+              <span className="ml-auto text-[10.5px] text-muted/70 italic shrink-0">no tasks</span>
+            )}
+          </div>
+          {/* Stage segments — colored up to current phase. */}
           <div className="flex gap-0.5 mt-1.5" aria-label={`Phase ${status.phase} of 7`}>
             {STAGE_ORDER.map((_, i) => (
               <span
@@ -456,38 +557,28 @@ function ProjectRow({ project: p }: { project: Project }) {
               />
             ))}
           </div>
-        </div>
-
-        {/* Progress — % + tasks done over total + bar */}
-        <div className="min-w-0">
-          {p.tasks === 0 ? (
-            <div className="text-[12px] text-muted italic">No tasks yet</div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between text-[12.5px]">
-                <span className="font-bold text-text">{completion}%</span>
-                <span className="text-[11px] text-muted">{p.tasks_done}/{p.tasks}</span>
-              </div>
-              <div className="h-1.5 bg-bg rounded-full overflow-hidden mt-1">
-                <div
-                  className={`h-full ${completion === 100 ? "bg-success" : completion >= 50 ? "bg-accent" : "bg-warn"}`}
-                  style={{ width: `${completion}%` }}
-                />
-              </div>
-            </>
+          {/* Progress underbar — only when there are tasks. */}
+          {p.tasks > 0 && (
+            <div className="h-[3px] bg-bg/60 rounded-full overflow-hidden mt-1">
+              <div
+                className={`h-full ${completion === 100 ? "bg-success" : completion >= 50 ? "bg-accent" : "bg-warn"}`}
+                style={{ width: `${completion}%` }}
+              />
+            </div>
           )}
         </div>
 
-        {/* Deadline */}
-        <div className="text-[13px] whitespace-nowrap min-w-0">
+        {/* Deadline — tight one-or-two-line cell, color-coded urgency. */}
+        <div className="text-[13px] min-w-0">
           <div className={`font-semibold truncate ${deadlineMeta.tone}`}>{deadlineMeta.label}</div>
           {deadlineMeta.sub && (
-            <div className={`text-[11px] mt-0.5 ${deadlineMeta.tone}`}>{deadlineMeta.sub}</div>
+            <div className={`text-[11px] mt-0.5 truncate ${deadlineMeta.tone}`}>{deadlineMeta.sub}</div>
           )}
         </div>
 
-        {/* Signals — chips for blockers, milestones, stakeholders */}
-        <div className="flex flex-wrap gap-1 items-center">
+        {/* Signals — blockers / milestones / stakeholders. Empty → dash so
+            the cell still has a baseline. */}
+        <div className="flex flex-wrap gap-1 items-center min-w-0">
           {p.blockers > 0 && (
             <span className="pill bg-danger/15 text-danger inline-flex items-center gap-0.5"
               title={`${p.blockers} blocker${p.blockers === 1 ? "" : "s"}`}>
@@ -507,14 +598,13 @@ function ProjectRow({ project: p }: { project: Project }) {
             </span>
           )}
           {p.blockers === 0 && p.milestones === 0 && p.stakeholders === 0 && (
-            <span className="text-[11px] text-muted italic">—</span>
+            <span className="text-[11px] text-muted/60">—</span>
           )}
         </div>
 
-        {/* Last activity */}
+        {/* Last activity — one line, no redundant "last update" subline. */}
         <div className="text-[12.5px] text-text min-w-0">
           <div className="font-semibold truncate">{relTime(p.updated_at)}</div>
-          <div className="text-[11px] text-muted truncate">last update</div>
         </div>
 
         {/* Trailing menu */}
