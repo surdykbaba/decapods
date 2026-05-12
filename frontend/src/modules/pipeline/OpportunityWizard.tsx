@@ -8,7 +8,7 @@ import { Check, Building2, FileText, Wallet, ShieldAlert, Eye, ArrowLeft, ArrowR
 type LeadType = "government" | "private" | "foreign" | "ngo" | "internal";
 type Risk = "low" | "medium" | "high";
 
-type DurationUnit = "days" | "months" | "years";
+type DurationUnit = "days" | "weeks" | "months" | "years";
 type TeamLine = {
   name: string;
   kind: "internal" | "external";
@@ -19,7 +19,7 @@ type TeamLine = {
   duration_unit?: DurationUnit;
 };
 
-const UNIT_DAYS: Record<DurationUnit, number> = { days: 1, months: 30, years: 365 };
+const UNIT_DAYS: Record<DurationUnit, number> = { days: 1, weeks: 7, months: 30, years: 365 };
 
 function toDays(value: number, unit: DurationUnit): number {
   return Math.max(0, Math.round(value * UNIT_DAYS[unit]));
@@ -1130,6 +1130,7 @@ function DurationField({
         aria-label="Duration unit"
       >
         <option value="days">days</option>
+        <option value="weeks">weeks</option>
         <option value="months">months</option>
         <option value="years">years</option>
       </select>

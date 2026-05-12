@@ -583,9 +583,42 @@ func (h *Opportunities) Transition(c *gin.Context) {
 		return
 	}
 
+	// Gate the terminal `closed` transition on commercial receipts. We refuse
+	// to close anything that doesn't carry an Invoice + PaymentReceipt because
+	// the org will need them for audit later and chasing them up after the
+	// fact is a nightmare.
+	if req.To == "closed" {
+		eng := governance.New(h.db)
+		dec := eng.EvaluateOpportunityClosing(c.Request.Context(), id)
+		if !dec.Allow {
+			c.JSON(422, gin.H{
+				"error":      "cannot close — required commercial documents are missing",
+				"code":       "missing_closing_documents",
+				"violations": dec.Violations,
+			})
+			return
+		}
+	}
+
 	if _, err := h.db.Exec(c, `UPDATE opportunities SET stage=$1, updated_at=now() WHERE id=$2`, req.To, id); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Closure sync — when the opportunity hits `closed`, mirror that onto the
+	// linked project so the rest of the platform (task creation, dashboards,
+	// archived lists) sees the same truth. The Pipeline is the source of
+	// truth here; the project follows.
+	if req.To == "closed" {
+		if _, err := h.db.Exec(c, `
+			UPDATE projects
+			   SET status='closed', updated_at=now()
+			 WHERE opportunity_id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
+			id, tid); err != nil {
+			// Non-fatal — the opp closed, but we lost the mirror. Surface
+			// via header so support can find it post-hoc.
+			c.Header("X-Project-Closure-Warning", err.Error())
+		}
 	}
 
 	// Convert opportunity to a project the moment it hits "planning".

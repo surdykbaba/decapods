@@ -142,6 +142,21 @@ func (h *Projects) AddTask(c *gin.Context) {
 	}
 	req.CreatedBy = c.MustGet(mw.CtxUserID).(uuid.UUID)
 
+	// Refuse to add tasks to a closed project. Once closure has fired (either
+	// via the Pipeline `closed` transition or an admin marking it directly),
+	// the project becomes read-only delivery history — new work would muddle
+	// the audit trail and surprise everyone watching dashboards.
+	{
+		var status string
+		if err := h.db.QueryRow(c, `SELECT status FROM projects WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&status); err == nil && status == "closed" {
+			c.JSON(409, gin.H{
+				"error": "This project is closed — re-open it from the Pipeline before adding tasks.",
+				"code":  "project_closed",
+			})
+			return
+		}
+	}
+
 	// Automation rule: auto-assign unassigned tasks to the project lead. Only
 	// fires when the caller didn't pick someone and the rule is on. Lead falls
 	// back to projects.created_by when no member has a lead/manager role.

@@ -94,6 +94,9 @@ const DOC_LABELS: Record<string, { label: string; help: string }> = {
   ExportComplianceForm: { label: "Export compliance form",     help: "Cross-border / export controls clearance." },
   FXApproval:           { label: "FX approval",                help: "FX / repatriation approval." },
   GrantAgreement:       { label: "Grant agreement",            help: "Signed grant agreement with the donor." },
+  Invoice:              { label: "Invoice",                    help: "Invoice issued to the client for this engagement — required before closing." },
+  PaymentReceipt:       { label: "Payment receipt",            help: "Proof the client paid the invoice — bank advice, remittance note, or signed receipt. Required before closing." },
+  Other:                { label: "Other supporting document",  help: "Any extra file worth keeping with this engagement — not required, not gated." },
 };
 
 function fmtCurrency(n: number, ccy: string = "NGN"): string {
@@ -390,6 +393,48 @@ export function OpportunityDetail() {
             );
           })}
         </ul>
+
+        {/* Other supporting documents — optional bucket. Anything uploaded
+            with kind="Other" lands here. Not gated, not required, just kept
+            with the engagement for the record. */}
+        {(() => {
+          const others = data.documents.filter((d) => !data.required_documents.includes(d.kind));
+          return (
+            <div className="mt-5 pt-4 border-t border-border">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <div className="text-sm font-semibold text-text">Other supporting documents</div>
+                  <div className="text-xs text-muted">Optional — anything else worth keeping with this engagement.</div>
+                </div>
+                <button className="btn-outline" onClick={() => setUploadKind("Other")}>
+                  <Upload size={14} /> Attach
+                </button>
+              </div>
+              {others.length === 0 ? (
+                <div className="text-xs text-muted/80 italic py-2">No extra documents attached.</div>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {others.map((d) => (
+                    <li key={d.id} className="flex items-center gap-3 py-2.5">
+                      <span className="w-8 h-8 rounded-full grid place-items-center shrink-0 bg-accent-soft text-accent">
+                        <FileText size={14} />
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-text truncate">{d.name}</div>
+                        <div className="text-[11px] text-muted truncate">
+                          {(DOC_LABELS[d.kind] ?? { label: d.kind }).label}
+                        </div>
+                      </div>
+                      <button className="btn-outline" onClick={() => setPreviewDoc(d)} title="Preview this document">
+                        <Eye size={14} /> Preview
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })()}
       </Card>
 
       {/* Project conversion banner — appears once an opportunity hits planning. */}

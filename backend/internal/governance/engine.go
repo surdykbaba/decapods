@@ -89,6 +89,11 @@ func RequiredDocsFor(leadType string, value float64) []string {
 }
 
 func requiredDocsFor(leadType string, value float64) []string {
+	// Internal engagements are run inside the org — no NDA needed because
+	// there's no third party to sign one with. Per product policy.
+	if leadType == "internal" {
+		return []string{"TechnicalProposal", "ScopeDocument"}
+	}
 	base := []string{"NDA", "TechnicalProposal", "ScopeDocument"}
 	switch leadType {
 	case "government":
@@ -104,6 +109,43 @@ func requiredDocsFor(leadType string, value float64) []string {
 		base = append(base, "GrantAgreement")
 	}
 	return base
+}
+
+// RequiredDocsForClosing — documents that must exist on the opportunity
+// before it can transition from `paid` to `closed`. These are commercial
+// receipts of completion: the issued invoice and proof the client paid it.
+// Closing without them would lose audit trail for the engagement.
+func RequiredDocsForClosing() []string {
+	return []string{"Invoice", "PaymentReceipt"}
+}
+
+// EvaluateOpportunityClosing runs the gating checks before an opportunity is
+// allowed to transition into the terminal `closed` stage. Mirrors the shape
+// of EvaluateOpportunitySubmission so handlers can treat the two uniformly.
+func (e *Engine) EvaluateOpportunityClosing(ctx context.Context, oppID uuid.UUID) Decision {
+	d := Decision{Allow: true}
+	rows, err := e.db.Query(ctx,
+		`SELECT kind FROM opportunity_documents WHERE opportunity_id = $1`, oppID)
+	if err != nil {
+		return Decision{Allow: false, Violations: []Violation{{Code: "db", Message: err.Error()}}}
+	}
+	defer rows.Close()
+	have := map[string]bool{}
+	for rows.Next() {
+		var k string
+		_ = rows.Scan(&k)
+		have[k] = true
+	}
+	for _, r := range RequiredDocsForClosing() {
+		if !have[r] {
+			d.Allow = false
+			d.Violations = append(d.Violations, Violation{
+				Code: "missing_document", Field: r,
+				Message: fmt.Sprintf("required document %q is missing — upload it before closing", r),
+			})
+		}
+	}
+	return d
 }
 
 // IsValidStageTransition checks the lifecycle policy for opportunities.
