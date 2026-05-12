@@ -144,6 +144,7 @@ func New(d Deps) http.Handler {
 
 	checkinRollup := handlers.NewCheckinRollup(d.DB)
 	authed.GET("/admin/daily-checkins", checkinRollup.List)
+	authed.GET("/me/daily-checkins",    checkinRollup.Self)
 
 	// Personal portal — every endpoint here is scoped to the logged-in user.
 	me := handlers.NewMe(d.DB).WithEngine(earlyEngine)

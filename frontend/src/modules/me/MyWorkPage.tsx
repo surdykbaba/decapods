@@ -3,6 +3,7 @@ import { SmartButton } from "@/components/SmartButton";
 import { Avatar } from "@/components/Avatar";
 import { MeetingsCard } from "@/modules/me/MeetingsCard";
 import { MailCard } from "@/modules/me/MailCard";
+import { MyCheckinsTab } from "@/modules/me/MyCheckinsTab";
 import { toast } from "@/lib/toast";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -92,9 +93,9 @@ const STATUS_COLOR: Record<TaskRow["status"], string> = {
 };
 const PRIORITY_LABEL = ["", "Lowest", "Low", "Medium", "High", "Highest"];
 
-type Tab = "dashboard" | "tasks" | "updates" | "timesheet" | "inbox" | "profile";
+type Tab = "dashboard" | "tasks" | "updates" | "timesheet" | "inbox" | "checkins" | "profile";
 
-const VALID_TABS: Tab[] = ["dashboard", "tasks", "updates", "timesheet", "inbox", "profile"];
+const VALID_TABS: Tab[] = ["dashboard", "tasks", "updates", "timesheet", "inbox", "checkins", "profile"];
 
 export function MyWorkPage() {
   const [params, setParams] = useSearchParams();
@@ -217,6 +218,7 @@ export function MyWorkPage() {
     { key: "updates",   label: "Updates",   icon: MessageSquare,  badge: badges.updates,   badgeTone: "warn"   },
     { key: "timesheet", label: "Timesheet", icon: Clock,          badge: badges.timesheet, badgeTone: "warn"   },
     { key: "inbox",     label: "Inbox",     icon: Inbox,          badge: badges.inbox,     badgeTone: "accent" },
+    { key: "checkins",  label: "Check-ins", icon: Calendar,       badge: 0 },
     { key: "profile",   label: "Profile",   icon: Github,         badge: badges.profile,   badgeTone: "danger" },
   ];
 
@@ -268,6 +270,7 @@ export function MyWorkPage() {
       {tab === "updates"   && <UpdatesTab />}
       {tab === "timesheet" && <TimesheetTab />}
       {tab === "inbox"     && <InboxTab />}
+      {tab === "checkins"  && <MyCheckinsTab />}
       {tab === "profile"   && <ProfileTab />}
     </div>
   );
