@@ -85,6 +85,11 @@ func (h *Opportunities) List(c *gin.Context) {
 	roles, _ := c.Get(mw.CtxRoles)
 	rs, _ := roles.([]string)
 
+	// Hide opportunities whose project has been archived. Once a project is
+	// soft-deleted via /projects/:id/archive, the linked opp shouldn't keep
+	// rendering in the pipeline — the user already filed the work as done.
+	// Opportunities with no project yet (early stages) are unaffected by
+	// this filter because the NOT EXISTS only matches when a row exists.
 	rows, err := h.db.Query(c, `
 		SELECT o.id, o.title, o.stage, o.lead_type, o.estimated_value, o.priority,
 		       o.risk_level, o.created_at, o.updated_at,
@@ -93,6 +98,12 @@ func (h *Opportunities) List(c *gin.Context) {
 		FROM opportunities o
 		LEFT JOIN clients c ON c.id = o.client_id
 		WHERE o.tenant_id = $1 AND o.deleted_at IS NULL
+		  AND NOT EXISTS (
+		    SELECT 1 FROM projects p
+		     WHERE p.opportunity_id = o.id
+		       AND p.tenant_id      = o.tenant_id
+		       AND p.deleted_at IS NOT NULL
+		  )
 		ORDER BY o.updated_at DESC LIMIT 200`, tid)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
