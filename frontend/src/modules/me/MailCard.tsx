@@ -199,7 +199,7 @@ function MessageReader({ id, onClose }: { id: string; onClose: () => void }) {
       aria-modal="true"
     >
       <div
-        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-2xl max-h-[85vh] flex flex-col"
+        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-5xl h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="px-5 py-3.5 border-b border-border flex items-start justify-between gap-3">
