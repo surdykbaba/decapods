@@ -605,19 +605,20 @@ func (h *Opportunities) Transition(c *gin.Context) {
 		return
 	}
 
-	// Closure sync — when the opportunity hits `closed`, mirror that onto the
-	// linked project so the rest of the platform (task creation, dashboards,
-	// archived lists) sees the same truth. The Pipeline is the source of
-	// truth here; the project follows.
-	if req.To == "closed" {
+	// Stage sync — Pipeline is the source of truth for an engagement's
+	// lifecycle. The project mirrors every post-planning stage so the
+	// Projects list, dashboards, and closure rules stay in lockstep.
+	// Without this, projects got stuck at "planning" forever because no
+	// handler ever updated their status after creation.
+	if projectStageSyncable(req.To) {
 		if _, err := h.db.Exec(c, `
 			UPDATE projects
-			   SET status='closed', updated_at=now()
-			 WHERE opportunity_id=$1 AND tenant_id=$2 AND deleted_at IS NULL`,
-			id, tid); err != nil {
-			// Non-fatal — the opp closed, but we lost the mirror. Surface
-			// via header so support can find it post-hoc.
-			c.Header("X-Project-Closure-Warning", err.Error())
+			   SET status=$1, updated_at=now()
+			 WHERE opportunity_id=$2 AND tenant_id=$3 AND deleted_at IS NULL`,
+			req.To, id, tid); err != nil {
+			// Non-fatal — opp moved, but we lost the mirror. Surface via
+			// response header so support can reconcile after the fact.
+			c.Header("X-Project-Sync-Warning", err.Error())
 		}
 	}
 
@@ -724,6 +725,20 @@ func (h *Opportunities) Transition(c *gin.Context) {
 		resp["converted_to_project"] = true
 	}
 	c.JSON(200, resp)
+}
+
+// projectStageSyncable — the subset of Pipeline stages that correspond to a
+// project's lifecycle. Pre-project stages (new_request, under_review,
+// approved, contracting) are intentionally NOT mirrored because the project
+// row doesn't exist yet. The "planning" stage is excluded too: convertToProject
+// already inserts the project with status='planning' on first transition, so
+// re-stamping it on every back-and-forth is noise.
+func projectStageSyncable(stage string) bool {
+	switch stage {
+	case "in_progress", "qa_review", "client_acceptance", "invoiced", "paid", "closed":
+		return true
+	}
+	return false
 }
 
 // isBackwardStage tells us if `to` is upstream of `from` in the lifecycle.
