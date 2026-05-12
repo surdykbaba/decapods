@@ -117,3 +117,29 @@ func (h *MicrosoftOAuth) Mail(c *gin.Context) {
 		"fetched_at":        time.Now().UTC(),
 	})
 }
+
+// Message — GET /api/v1/me/mail/:id
+//
+// Returns the full body of a single Inbox message so the SPA can show it
+// inline in a reader modal instead of bouncing the user out to Outlook.
+func (h *MicrosoftOAuth) Message(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	id := c.Param("id")
+
+	token, err := h.loadValidToken(c.Request.Context(), tid, uid)
+	if err != nil {
+		if err == errMSNotConnected {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "not connected to Microsoft"})
+			return
+		}
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	msg, err := microsoft.FetchMessage(c.Request.Context(), token, id)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Could not load message — " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, msg)
+}

@@ -353,6 +353,87 @@ func FetchEvents(ctx context.Context, accessToken string, from, to time.Time) ([
 	return out, nil
 }
 
+// MailMessageFull is the same as MailMessage plus the email body (HTML or
+// text) and resolved To/Cc lists — used when the user opens a message.
+type MailMessageFull struct {
+	MailMessage
+	BodyContentType string   `json:"body_content_type"` // "html" | "text"
+	Body            string   `json:"body"`
+	To              []string `json:"to"`
+	Cc              []string `json:"cc"`
+}
+
+// FetchMessage returns the full body of a single Inbox message.
+func FetchMessage(ctx context.Context, accessToken, id string) (*MailMessageFull, error) {
+	if strings.TrimSpace(id) == "" {
+		return nil, errors.New("empty message id")
+	}
+	u := "https://graph.microsoft.com/v1.0/me/messages/" + url.PathEscape(id) +
+		"?$select=id,subject,from,toRecipients,ccRecipients,bodyPreview,body,webLink,receivedDateTime,isRead,hasAttachments,importance"
+	var raw struct {
+		ID      string `json:"id"`
+		Subject string `json:"subject"`
+		From    struct {
+			EmailAddress struct {
+				Name    string `json:"name"`
+				Address string `json:"address"`
+			} `json:"emailAddress"`
+		} `json:"from"`
+		ToRecipients []struct {
+			EmailAddress struct {
+				Name    string `json:"name"`
+				Address string `json:"address"`
+			} `json:"emailAddress"`
+		} `json:"toRecipients"`
+		CcRecipients []struct {
+			EmailAddress struct {
+				Name    string `json:"name"`
+				Address string `json:"address"`
+			} `json:"emailAddress"`
+		} `json:"ccRecipients"`
+		BodyPreview string `json:"bodyPreview"`
+		Body        struct {
+			ContentType string `json:"contentType"`
+			Content     string `json:"content"`
+		} `json:"body"`
+		WebLink          string `json:"webLink"`
+		ReceivedDateTime string `json:"receivedDateTime"`
+		IsRead           bool   `json:"isRead"`
+		HasAttachments   bool   `json:"hasAttachments"`
+		Importance       string `json:"importance"`
+	}
+	if err := graphGet(ctx, accessToken, u, &raw); err != nil {
+		return nil, err
+	}
+	recv, _ := parseGraphTime(raw.ReceivedDateTime)
+	to := make([]string, 0, len(raw.ToRecipients))
+	for _, r := range raw.ToRecipients {
+		to = append(to, firstNonEmpty(r.EmailAddress.Name, r.EmailAddress.Address))
+	}
+	cc := make([]string, 0, len(raw.CcRecipients))
+	for _, r := range raw.CcRecipients {
+		cc = append(cc, firstNonEmpty(r.EmailAddress.Name, r.EmailAddress.Address))
+	}
+	return &MailMessageFull{
+		MailMessage: MailMessage{
+			ID:         raw.ID,
+			Subject:    raw.Subject,
+			From:       raw.From.EmailAddress.Address,
+			FromName:   firstNonEmpty(raw.From.EmailAddress.Name, raw.From.EmailAddress.Address),
+			Preview:    strings.TrimSpace(raw.BodyPreview),
+			WebLink:    raw.WebLink,
+			Received:   recv,
+			IsRead:     raw.IsRead,
+			HasAttach:  raw.HasAttachments,
+			Importance: raw.Importance,
+		},
+		BodyContentType: strings.ToLower(raw.Body.ContentType),
+		Body:            raw.Body.Content,
+		To:              to,
+		Cc:              cc,
+	}, nil
+}
+
 // MailMessage is a trimmed-down /me/messages item — only the fields the SPA
 // renders on the Today briefing card.
 type MailMessage struct {

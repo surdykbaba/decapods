@@ -2142,7 +2142,6 @@ function NotificationPrefsCard() {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["me", "notification-prefs"] });
-      toast.success("Saved");
     },
     onError: (e: Error) => toast.error("Could not save", e.message),
   });
@@ -2155,42 +2154,69 @@ function NotificationPrefsCard() {
     <section className="bg-surface border border-border rounded-2xl p-5">
       <h2 className="h2 mb-1">Email notifications</h2>
       <p className="text-xs text-muted mb-4">
-        Set the cadence for each category. Critical events (overdue, blockers, security) always send
-        immediately regardless of preference.
+        Turn each category on or off. Critical events (overdue, blockers, security) always send
+        regardless of these toggles.
       </p>
       {isLoading ? (
         <div className="text-sm text-muted">Loading…</div>
       ) : (
         <ul className="space-y-2">
-          {rows.map((r) => (
-            <li
-              key={r.category}
-              className="flex items-start justify-between gap-3 bg-bg/40 border border-border rounded-xl p-3"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-bold text-text">{CATEGORY_LABEL[r.category] ?? r.category}</div>
-                <div className="text-[11px] text-muted leading-snug">{r.description}</div>
-                {r.is_default && (
-                  <span className="text-[10px] uppercase tracking-wider font-bold text-muted/70 mt-1 inline-block">
-                    using default
-                  </span>
-                )}
-              </div>
-              <select
-                value={r.tier}
-                onChange={(e) => set.mutate({ category: r.category, tier: e.target.value as Tier })}
-                disabled={set.isPending}
-                className="bg-surface border border-border rounded-full text-[12.5px] font-semibold px-3 py-1.5 focus:outline-none focus:border-accent disabled:opacity-60"
+          {rows.map((r) => {
+            const on = r.tier !== "off";
+            return (
+              <li
+                key={r.category}
+                className="flex items-start justify-between gap-3 bg-bg/40 border border-border rounded-xl p-3"
               >
-                {TIER_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            </li>
-          ))}
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13px] font-bold text-text">{CATEGORY_LABEL[r.category] ?? r.category}</div>
+                  <div className="text-[11px] text-muted leading-snug">{r.description}</div>
+                </div>
+                <ToggleSwitch
+                  on={on}
+                  disabled={set.isPending}
+                  onChange={(next) =>
+                    set.mutate({ category: r.category, tier: next ? "immediate" : "off" })
+                  }
+                  ariaLabel={`${on ? "Turn off" : "Turn on"} ${CATEGORY_LABEL[r.category] ?? r.category}`}
+                />
+              </li>
+            );
+          })}
         </ul>
       )}
     </section>
+  );
+}
+
+// Compact iOS-style on/off switch. Used for notification preferences; can be
+// reused anywhere we want a binary control instead of a multi-option select.
+function ToggleSwitch({
+  on, onChange, disabled, ariaLabel,
+}: {
+  on: boolean;
+  onChange: (next: boolean) => void;
+  disabled?: boolean;
+  ariaLabel?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onClick={() => onChange(!on)}
+      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+        on ? "bg-accent" : "bg-muted/40"
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 rounded-full bg-white shadow-soft transform transition-transform ${
+          on ? "translate-x-5" : "translate-x-0.5"
+        }`}
+      />
+    </button>
   );
 }
 
