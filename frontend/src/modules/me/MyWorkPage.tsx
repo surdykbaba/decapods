@@ -1879,12 +1879,9 @@ function ProfileTab() {
 type Tier = "immediate" | "digest_daily" | "digest_weekly" | "off";
 type PrefRow = { category: string; tier: Tier; is_default: boolean; description: string };
 
-const TIER_OPTIONS: { value: Tier; label: string; help: string }[] = [
-  { value: "immediate",     label: "Immediate", help: "Email as soon as the event happens." },
-  { value: "digest_daily",  label: "Daily",     help: "Roll up into one email each morning." },
-  { value: "digest_weekly", label: "Weekly",    help: "Roll up into one email each week." },
-  { value: "off",           label: "Off",       help: "Don't email me about this category." },
-];
+// Tier options removed — the UI is a binary on/off switch now. ON saves
+// `immediate`, OFF saves `off`. Server still accepts digest_daily /
+// digest_weekly for API callers that want them.
 
 const CATEGORY_LABEL: Record<string, string> = {
   account: "Account & access",
