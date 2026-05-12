@@ -214,7 +214,7 @@ export function CampfirePage() {
     { key: "kudos",  label: "Recognition", icon: Trophy },
     { key: "mood",   label: "Mood check",  icon: Smile },
     { key: "help",   label: "Help wall",   icon: HelpCircle },
-    { key: "rooms",  label: "Team rooms",  icon: Hash },
+    { key: "rooms",  label: "Channels",    icon: Hash },
     { key: "insights", label: "Insights",  icon: Activity, admin: true },
   ];
 
@@ -1448,7 +1448,7 @@ function TeamRooms() {
           onClick={() => setCreateOpen(true)}
           className="m-2 inline-flex items-center justify-center gap-1.5 text-[12.5px] font-semibold px-3 py-2 rounded-lg bg-accent-soft text-accent hover:bg-accent hover:text-white transition-colors"
         >
-          <Plus size={13} /> New room
+          <Plus size={13} /> New channel
         </button>
 
         <div className="px-2 pb-2">
@@ -1457,7 +1457,7 @@ function TeamRooms() {
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search rooms"
+              placeholder="Search channels"
               className="w-full pl-7 pr-2 py-1.5 text-[12px] bg-bg/40 border border-border rounded-lg focus:outline-none focus:border-accent/40 no-cap"
             />
           </div>
@@ -1472,19 +1472,19 @@ function TeamRooms() {
             </div>
           ) : rooms.length === 0 ? (
             <div className="px-3 py-4 text-center">
-              <div className="text-[12.5px] font-semibold text-text">No rooms yet</div>
+              <div className="text-[12.5px] font-semibold text-text">No channels yet</div>
               <div className="text-[11px] text-muted mt-1 mb-3">
-                Spin up your first private room with a teammate.
+                Spin up your first private channel with a teammate.
               </div>
               <button
                 onClick={() => setCreateOpen(true)}
                 className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-accent hover:underline"
               >
-                <Plus size={11} /> Create a room
+                <Plus size={11} /> Create a channel
               </button>
             </div>
           ) : totalShown === 0 ? (
-            <div className="px-3 py-4 text-[12px] text-muted italic">No rooms match "{search}".</div>
+            <div className="px-3 py-4 text-[12px] text-muted italic">No channels match "{search}".</div>
           ) : (
             <>
               <RoomGroup
@@ -1546,14 +1546,14 @@ function RoomGroup({
           <button
             onClick={onCreate}
             className="text-[10px] uppercase tracking-wider font-bold text-accent hover:underline"
-            title="New private room"
+            title="New private channel"
           >
             +
           </button>
         )}
       </div>
       {rooms.length === 0 ? (
-        <div className="px-3 py-2 text-[11px] text-muted/70 italic">No private rooms yet.</div>
+        <div className="px-3 py-2 text-[11px] text-muted/70 italic">No private channels yet.</div>
       ) : (
         <ul className="space-y-0.5">
           {rooms.map((r) => (
@@ -1608,25 +1608,25 @@ function RoomsEmptyState({ hasRooms, onCreate }: { hasRooms: boolean; onCreate: 
           <Hash size={18} />
         </div>
         <div className="text-base font-bold text-text">
-          {hasRooms ? "Pick a room to start chatting" : "Your team rooms live here"}
+          {hasRooms ? "Pick a channel to start chatting" : "Your team channels live here"}
         </div>
         <p className="text-sm text-muted leading-relaxed mt-1.5">
           {hasRooms
-            ? "Rooms are persistent threads — anything you post stays for the whole team to scroll through."
-            : "Create a private room and invite the teammates you want in it. Workspace-wide rooms (Engineering, Delivery…) show up here automatically."}
+            ? "Channels are persistent threads — anything you post stays for the whole team to scroll through."
+            : "Create a private channel and invite the teammates you want in it. Workspace-wide channels (Engineering, Delivery…) show up here automatically."}
         </p>
         <button
           onClick={onCreate}
           className="mt-4 inline-flex items-center gap-1.5 bg-accent text-white text-sm font-semibold px-4 py-2 rounded-full hover:bg-[rgb(var(--accent-hover))]"
         >
-          <Plus size={13} /> {hasRooms ? "Create a private room" : "Create your first room"}
+          <Plus size={13} /> {hasRooms ? "Create a private channel" : "Create your first channel"}
         </button>
       </div>
     </div>
   );
 }
 
-/* ---------- Create room dialog ---------- */
+/* ---------- Create channel dialog ---------- */
 
 function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreated: (id: string) => void }) {
   const qc = useQueryClient();
@@ -1657,7 +1657,7 @@ function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreat
 
   const create = useMutation({
     mutationFn: () =>
-      api<{ id: string }>("/api/v1/campfire/rooms", {
+      api<{ id: string; healed?: boolean; message?: string }>("/api/v1/campfire/rooms", {
         method: "POST",
         body: JSON.stringify({
           slug,
@@ -1669,10 +1669,14 @@ function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreat
       }),
     onSuccess: (resp) => {
       qc.invalidateQueries({ queryKey: ["campfire", "rooms"] });
-      toast.success("Room created");
+      if (resp.healed) {
+        toast.success("Channel already existed", resp.message ?? "Opening it for you.");
+      } else {
+        toast.success("Channel created");
+      }
       onCreated(resp.id);
     },
-    onError: (e: any) => toast.error("Could not create room", e?.message),
+    onError: (e: any) => toast.error("Could not create channel", e?.message),
   });
 
   const canSubmit = name.trim().length >= 2 && slug.length >= 2 && !create.isPending;
@@ -1691,7 +1695,7 @@ function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreat
         <header className="px-5 py-4 border-b border-border flex items-center justify-between">
           <h2 className="text-base font-bold text-text flex items-center gap-2">
             {isPrivate ? <Lock size={14} className="text-warn" /> : <Hash size={14} className="text-muted" />}
-            New team room
+            New channel
           </h2>
           <button onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted">
             <XIcon size={14} />
@@ -1737,7 +1741,7 @@ function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreat
                 </span>
                 <span className="block text-[11.5px] text-muted leading-snug mt-0.5">
                   Only the people you add below will see messages and be able to post.
-                  Uncheck to make a workspace-wide room (admins only).
+                  Uncheck to make a workspace-wide channel (admins only).
                 </span>
               </span>
             </label>
@@ -1800,7 +1804,7 @@ function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreat
             successLabel="Created"
             icon={<Plus size={13} />}
           >
-            Create room
+            Create channel
           </SmartButton>
         </footer>
       </div>
@@ -1899,7 +1903,7 @@ function RoomView({ room }: { room: Room }) {
         <div className="flex-1 min-w-0">
           <MentionInput
             className="input min-h-[40px]"
-            placeholder={`Message #${room.slug} · @ to mention, Enter to send`}
+            placeholder={`Message #${room.slug} · @ to mention · Enter to send`}
             value={body}
             onChange={setBody}
             minRows={1}

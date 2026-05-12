@@ -837,7 +837,7 @@ func (h *Campfire) CreateRoom(c *gin.Context) {
 	// up; they only affect the invitees on their roster.
 	if !req.IsPrivate && !auth.HasPermission(roles, "governance:write") {
 		c.JSON(http.StatusForbidden, gin.H{
-			"error": "Only admins can create workspace-wide rooms. Set 'is_private' to make a team-only room.",
+			"error": "Only admins can create workspace-wide channels. Set 'is_private' to make a team-only channel.",
 		})
 		return
 	}
@@ -857,7 +857,42 @@ func (h *Campfire) CreateRoom(c *gin.Context) {
 		RETURNING id`,
 		tid, slug, strings.TrimSpace(req.Name), strings.TrimSpace(req.Description),
 		req.IsPrivate, uid).Scan(&id); err != nil {
-		c.JSON(409, gin.H{"error": "room already exists or invalid"})
+
+		// Self-heal: the slug is already taken in this tenant. If the caller
+		// is the original creator they likely got locked out by an earlier
+		// failed roll-out — re-seed their membership and tell the UI which
+		// existing channel to switch to. Otherwise it's a real collision.
+		_ = tx.Rollback(c.Request.Context())
+		var existingID, existingCreator uuid.UUID
+		var existingPrivate bool
+		row := h.db.QueryRow(c.Request.Context(), `
+			SELECT id, COALESCE(created_by, '00000000-0000-0000-0000-000000000000'::uuid), is_private
+			FROM campfire_rooms WHERE tenant_id=$1 AND slug=$2`, tid, slug)
+		if err2 := row.Scan(&existingID, &existingCreator, &existingPrivate); err2 == nil {
+			if existingCreator == uid {
+				// Best-effort: ensure the owner is on the roster of their own
+				// private room. No-op for public rooms.
+				if existingPrivate {
+					_, _ = h.db.Exec(c.Request.Context(), `
+						INSERT INTO campfire_room_members (room_id, user_id, added_by)
+						VALUES ($1,$2,$2) ON CONFLICT DO NOTHING`, existingID, uid)
+				}
+				c.JSON(http.StatusOK, gin.H{
+					"id":      existingID,
+					"healed":  true,
+					"message": "A channel with that name already exists and is yours — opening it.",
+				})
+				return
+			}
+			c.JSON(http.StatusConflict, gin.H{
+				"error": "A channel with that name already exists in this workspace. Pick a different name.",
+				"code":  "slug_taken",
+			})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Couldn't create the channel — name must be at least 2 characters and contain only letters, numbers, dashes.",
+		})
 		return
 	}
 
@@ -906,7 +941,7 @@ func (h *Campfire) ListRoomMembers(c *gin.Context) {
 	}
 	ok, err := h.canAccessRoom(c.Request.Context(), tid, uid, roomID)
 	if err != nil || !ok {
-		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this channel"})
 		return
 	}
 	rows, err := h.db.Query(c.Request.Context(), `
@@ -971,11 +1006,11 @@ func (h *Campfire) AddRoomMember(c *gin.Context) {
 		return
 	}
 	if !isPrivate {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "public rooms have no roster — every workspace member can join"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "public channels have no roster — every workspace member can join"})
 		return
 	}
 	if ownerID != uid && !auth.HasPermission(roles, "governance:write") {
-		c.JSON(http.StatusForbidden, gin.H{"error": "only the room owner can add members"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the channel owner can add members"})
 		return
 	}
 	// Confirm the invitee belongs to this tenant.
@@ -1022,11 +1057,11 @@ func (h *Campfire) RemoveRoomMember(c *gin.Context) {
 		return
 	}
 	if targetID != uid && ownerID != uid && !auth.HasPermission(roles, "governance:write") {
-		c.JSON(http.StatusForbidden, gin.H{"error": "only the room owner can remove other members"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the channel owner can remove other members"})
 		return
 	}
 	if targetID == ownerID {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "the owner can't leave their own room — delete it instead"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "the owner can't leave their own channel — delete it instead"})
 		return
 	}
 	if _, err := h.db.Exec(c.Request.Context(), `
@@ -1046,7 +1081,7 @@ func (h *Campfire) ListMessages(c *gin.Context) {
 		return
 	}
 	if ok, _ := h.canAccessRoom(c.Request.Context(), tid, uid, roomID); !ok {
-		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this channel"})
 		return
 	}
 	// We return newest-200 in chronological order so the UI can scroll-bottom.
@@ -1098,7 +1133,7 @@ func (h *Campfire) SendMessage(c *gin.Context) {
 		return
 	}
 	if ok, _ := h.canAccessRoom(c.Request.Context(), tid, uid, roomID); !ok {
-		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this room"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this channel"})
 		return
 	}
 	var req struct{ Body string `json:"body" binding:"required,min=1"` }
