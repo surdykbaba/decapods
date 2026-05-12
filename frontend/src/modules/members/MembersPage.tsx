@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
@@ -443,6 +443,23 @@ export function MembersPage() {
 
 /* ---------- Sub-components ---------- */
 
+const MEMBERS_PAGE_SIZE_KEY = "members-page-size";
+const MEMBERS_PAGE_SIZES = [10, 20, 30, 50, 100, 0] as const; // 0 = All
+const DORMANT_THRESHOLD_MS = 7 * 24 * 60 * 60 * 1000;
+
+// memberRisk — flags a row when it should get a visual nudge. Used to draw
+// the left rail and the inline chip. Kept here (not inside the component) so
+// the rule lives in one place and the chip + rail can never drift apart.
+function memberRisk(m: Member): { tone: "danger" | "warn" | null; label: string } {
+  if (m.status === "active") {
+    const isAdmin = m.roles.some((r) => ADMIN_ROLES.has(r));
+    if (isAdmin && !m.mfa_enabled) return { tone: "danger", label: "Admin · no MFA" };
+    const last = m.last_login_at ? new Date(m.last_login_at).getTime() : 0;
+    if (Date.now() - last > DORMANT_THRESHOLD_MS) return { tone: "warn", label: "Dormant 7d+" };
+  }
+  return { tone: null, label: "" };
+}
+
 function MemberTable({
   rows, sort, onSort, onEdit, onRemove, onReset,
 }: {
@@ -454,6 +471,33 @@ function MemberTable({
   onReset: (m: Member) => Promise<void> | void;
 }) {
   const qc = useQueryClient();
+
+  // Pagination — page size persists across visits so HR doesn't keep
+  // resetting it. The page index resets whenever the filtered/sorted set
+  // changes shape so we never sit on an empty page.
+  const [pageSize, setPageSize] = useState<number>(() => {
+    const v = parseInt(localStorage.getItem(MEMBERS_PAGE_SIZE_KEY) ?? "20", 10);
+    return Number.isFinite(v) ? v : 20;
+  });
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [rows.length, sort.col, sort.dir, pageSize]);
+  function pickPageSize(n: number) {
+    setPageSize(n);
+    localStorage.setItem(MEMBERS_PAGE_SIZE_KEY, String(n));
+  }
+  const total = rows.length;
+  const effectivePageSize = pageSize === 0 ? Math.max(1, total) : pageSize;
+  const totalPages = Math.max(1, Math.ceil(total / effectivePageSize));
+  // Clamp the page index in case rows shrank below it (e.g. someone removed
+  // the last member on page 4). We do this in render, not effect, so the
+  // slice below always lines up.
+  const safePage = Math.min(page, totalPages - 1);
+  const pageRows = useMemo(
+    () => (pageSize === 0 ? rows : rows.slice(safePage * pageSize, safePage * pageSize + pageSize)),
+    [rows, safePage, pageSize],
+  );
+  const firstShown = total === 0 ? 0 : (pageSize === 0 ? 1 : safePage * pageSize + 1);
+  const lastShown  = pageSize === 0 ? total : Math.min(total, safePage * pageSize + pageSize);
   // Toggle the admin-side "MFA required" flag. Optimistic-merge keeps the
   // pill in sync before the server roundtrips.
   const toggleRequired = useMutation({
@@ -494,10 +538,21 @@ function MemberTable({
             </tr>
           </thead>
           <tbody>
-            {rows.map((m) => {
+            {pageRows.map((m) => {
               const sm = STATUS_META[m.status];
+              const risk = memberRisk(m);
+              // The left rail signals risk at a glance. Danger > warn so admin-
+              // without-MFA always wins over plain dormancy.
+              const railCls =
+                risk.tone === "danger" ? "before:bg-danger"
+                : risk.tone === "warn" ? "before:bg-warn"
+                : "before:bg-transparent";
               return (
-                <tr key={m.id} className="border-t border-border hover:bg-bg/40 transition-colors">
+                <tr
+                  key={m.id}
+                  className={`border-t border-border hover:bg-bg/40 transition-colors relative ${railCls}
+                    before:content-[''] before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[3px] before:rounded-r`}
+                >
                   <td className="px-4 py-3 min-w-[260px]">
                     <div className="flex items-center gap-3">
                       <span className="relative shrink-0">
@@ -509,7 +564,7 @@ function MemberTable({
                         />
                       </span>
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
                           <Link
                             to={`/members/${m.id}`}
                             className="font-bold text-text truncate hover:text-accent transition-colors"
@@ -517,6 +572,23 @@ function MemberTable({
                             {m.name || "—"}
                           </Link>
                           <ExternalEmailBadge email={m.email} size="xs" />
+                          {risk.tone && (
+                            <span
+                              className={`pill text-[10px] uppercase tracking-wide font-bold ${
+                                risk.tone === "danger"
+                                  ? "bg-danger/15 text-danger border border-danger/30"
+                                  : "bg-warn/15 text-warn border border-warn/30"
+                              }`}
+                              title={
+                                risk.tone === "danger"
+                                  ? "This member holds an admin-class role but hasn't enrolled MFA. Require it before anything else."
+                                  : "No login in the last 7 days. Consider disabling the seat or re-engaging."
+                              }
+                            >
+                              {risk.tone === "danger" ? <ShieldAlert size={10} /> : <Clock size={10} />}
+                              {risk.label}
+                            </span>
+                          )}
                         </div>
                         <a href={`mailto:${m.email}`} className="text-[11.5px] text-muted hover:text-accent truncate inline-flex items-center gap-1">
                           <Mail size={10} /> {m.email}
@@ -580,6 +652,52 @@ function MemberTable({
           </tbody>
         </table>
       </div>
+
+      {/* Footer pager — shared by the whole table. Stays sticky to the bottom
+          of the surface card so it's always reachable without scrolling. */}
+      {total > 0 && (
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-border bg-bg/30 text-xs flex-wrap">
+          <div className="text-muted inline-flex items-center gap-3 flex-wrap">
+            <span>
+              Showing <span className="font-semibold text-text">{firstShown}</span>–
+              <span className="font-semibold text-text">{lastShown}</span> of{" "}
+              <span className="font-semibold text-text">{total.toLocaleString()}</span> member{total === 1 ? "" : "s"}
+            </span>
+            <label className="inline-flex items-center gap-1.5">
+              Rows
+              <select
+                value={pageSize}
+                onChange={(e) => pickPageSize(parseInt(e.target.value, 10))}
+                className="bg-surface border border-border rounded-lg px-2 py-1 text-[12px] font-semibold text-text"
+              >
+                {MEMBERS_PAGE_SIZES.map((n) => (
+                  <option key={n} value={n}>{n === 0 ? "All" : n}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+              disabled={safePage === 0 || pageSize === 0}
+              className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:bg-bg/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-text"
+            >
+              ← Prev
+            </button>
+            <span className="text-muted px-1">
+              Page <span className="font-semibold text-text">{pageSize === 0 ? 1 : safePage + 1}</span> of{" "}
+              <span className="font-semibold text-text">{pageSize === 0 ? 1 : totalPages}</span>
+            </span>
+            <button
+              onClick={() => setPage((p) => p + 1)}
+              disabled={pageSize === 0 || safePage + 1 >= totalPages}
+              className="px-3 py-1.5 rounded-lg border border-border bg-surface hover:bg-bg/40 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-text"
+            >
+              Next →
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
