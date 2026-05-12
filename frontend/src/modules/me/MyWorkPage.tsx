@@ -2,8 +2,9 @@ import { useMemo, useState, useEffect } from "react";
 import { SmartButton } from "@/components/SmartButton";
 import { Avatar } from "@/components/Avatar";
 import { MeetingsCard } from "@/modules/me/MeetingsCard";
-import { MailCard } from "@/modules/me/MailCard";
+import { MailCard, MessageReader } from "@/modules/me/MailCard";
 import { MyCheckinsTab } from "@/modules/me/MyCheckinsTab";
+import { ExternalEmailBadge, useWorkspaceDomain, isExternalEmail } from "@/components/ExternalEmailBadge";
 import { toast } from "@/lib/toast";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -14,6 +15,8 @@ import {
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
   Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
   Sparkles, Bell, XCircle, Pencil,
+  Mail as MailIcon, Paperclip, Reply, AtSign, Users as UsersIcon, AlertCircle,
+  RefreshCw, ExternalLink,
 } from "lucide-react";
 
 type TaskRow = {
@@ -54,17 +57,6 @@ type UpdateRow = {
   project_name?: string;
 };
 
-type TimesheetRow = {
-  id: string;
-  work_date: string;
-  hours: number;
-  notes?: string;
-  project_id: string;
-  project_name: string;
-  task_id?: string;
-  task_title?: string;
-};
-
 type Profile = {
   id: string;
   email: string;
@@ -93,9 +85,9 @@ const STATUS_COLOR: Record<TaskRow["status"], string> = {
 };
 const PRIORITY_LABEL = ["", "Lowest", "Low", "Medium", "High", "Highest"];
 
-type Tab = "dashboard" | "tasks" | "updates" | "timesheet" | "inbox" | "checkins" | "profile";
+type Tab = "dashboard" | "tasks" | "updates" | "inbox" | "checkins" | "profile";
 
-const VALID_TABS: Tab[] = ["dashboard", "tasks", "updates", "timesheet", "inbox", "checkins", "profile"];
+const VALID_TABS: Tab[] = ["dashboard", "tasks", "updates", "inbox", "checkins", "profile"];
 
 export function MyWorkPage() {
   const [params, setParams] = useSearchParams();
@@ -189,11 +181,6 @@ export function MyWorkPage() {
     // Updates — pending daily updates not yet submitted. Whatever number the
     // API hands us is by definition actionable: each row is "submit me".
     const updatesCount = c ? c.pending_updates : 0;
-    // Timesheet — no clean "one thing to do" signal exists. Past versions
-    // fired purely on "hours < 10", which lit up every brand-new account.
-    // Drop the badge here entirely and surface low-hours inside the tab if
-    // we want a nudge.
-    const timesheetCount = 0;
     // Profile — MFA setup pending only when the admin has marked the user
     // mfa_required.
     const profileCount = profileData?.mfa_required && !profileData?.mfa_enabled ? 1 : 0;
@@ -206,7 +193,6 @@ export function MyWorkPage() {
       dashboard: todayCount,
       tasks:     tasksCount,
       updates:   updatesCount,
-      timesheet: timesheetCount,
       inbox:     inboxCount,
       profile:   profileCount,
     };
@@ -216,7 +202,6 @@ export function MyWorkPage() {
     { key: "dashboard", label: "Today",     icon: Zap,            badge: badges.dashboard, badgeTone: "danger" },
     { key: "tasks",     label: "My tasks",  icon: ListChecks,     badge: badges.tasks,     badgeTone: "danger" },
     { key: "updates",   label: "Updates",   icon: MessageSquare,  badge: badges.updates,   badgeTone: "warn"   },
-    { key: "timesheet", label: "Timesheet", icon: Clock,          badge: badges.timesheet, badgeTone: "warn"   },
     { key: "inbox",     label: "Inbox",     icon: Inbox,          badge: badges.inbox,     badgeTone: "accent" },
     { key: "checkins",  label: "Check-ins", icon: Calendar,       badge: 0 },
     { key: "profile",   label: "Profile",   icon: Github,         badge: badges.profile,   badgeTone: "danger" },
@@ -268,7 +253,6 @@ export function MyWorkPage() {
       {tab === "dashboard" && <DashboardTab />}
       {tab === "tasks"     && <TasksTab />}
       {tab === "updates"   && <UpdatesTab />}
-      {tab === "timesheet" && <TimesheetTab />}
       {tab === "inbox"     && <InboxTab />}
       {tab === "checkins"  && <MyCheckinsTab />}
       {tab === "profile"   && <ProfileTab />}
@@ -1600,75 +1584,130 @@ function ComposeUpdateDialog({ onClose, onSaved }: { onClose: () => void; onSave
   );
 }
 
-/* ---------- Timesheet ---------- */
-
-function TimesheetTab() {
-  const { data, isLoading } = useQuery<{ items: TimesheetRow[]; hours_this_week: number; hours_this_month: number }>({
-    queryKey: ["me", "timesheet"], queryFn: () => api("/api/v1/me/timesheet"),
-  });
-  const items = data?.items ?? [];
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <KpiTile label="Hours this week"  value={`${(data?.hours_this_week ?? 0).toFixed(1)}h`}  icon={<Clock size={14} />} tone="info" />
-        <KpiTile label="Hours this month" value={`${(data?.hours_this_month ?? 0).toFixed(1)}h`} icon={<Calendar size={14} />} tone="neutral" />
-        <KpiTile label="Entries"          value={items.length}                                  icon={<ListChecks size={14} />} tone="neutral" />
-      </div>
-      {isLoading ? (
-        <div className="text-muted">Loading…</div>
-      ) : items.length === 0 ? (
-        <EmptyHint icon={<Clock size={22} className="text-muted" />} title="No time logged yet" body="Once your team starts tracking time, your entries will appear here." />
-      ) : (
-        <div className="bg-surface border border-border rounded-2xl overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="text-xs text-muted bg-bg/40">
-              <tr>
-                <th className="text-left font-semibold px-4 py-3">Date</th>
-                <th className="text-left font-semibold px-4 py-3">Project / task</th>
-                <th className="text-right font-semibold px-4 py-3">Hours</th>
-                <th className="text-left font-semibold px-4 py-3 hidden md:table-cell">Notes</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((r) => (
-                <tr key={r.id} className="border-t border-border">
-                  <td className="px-4 py-3 whitespace-nowrap">{new Date(r.work_date).toLocaleDateString("en-US", { day:"numeric", month:"short", year:"numeric" })}</td>
-                  <td className="px-4 py-3">
-                    <div className="text-text font-semibold">{r.project_name}</div>
-                    {r.task_title && <div className="text-xs text-muted">{r.task_title}</div>}
-                  </td>
-                  <td className="px-4 py-3 text-right font-semibold">{r.hours.toFixed(1)}</td>
-                  <td className="px-4 py-3 text-muted hidden md:table-cell text-xs">{r.notes || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
 /* ---------- Inbox ---------- */
 
+type InboxMsg = {
+  id: string;
+  subject: string;
+  from: string;
+  from_name: string;
+  preview: string;
+  web_link: string;
+  received: string;
+  is_read: boolean;
+  has_attachments: boolean;
+  importance: string;
+};
+
+type InboxResp = {
+  connected: boolean;
+  connected_account?: string;
+  items?: InboxMsg[];
+  error?: string;
+};
+
+type InboxFilter = "all" | "unread" | "needs_reply" | "from_team" | "external" | "high" | "attachments";
+
+const REPLY_RE = /^\s*re[\s:]/i;
+const ASK_RE   = /\?|\bcould you\b|\bcan you\b|\bplease\b|\bneed\b|\baction required\b|\bASAP\b/i;
+
+function isNeedsReply(m: InboxMsg): boolean {
+  if (m.is_read) return false;
+  return REPLY_RE.test(m.subject) || ASK_RE.test(m.subject) || ASK_RE.test(m.preview);
+}
+
+function inboxBucket(m: InboxMsg, workspaceDomain: string): Set<InboxFilter> {
+  const out = new Set<InboxFilter>(["all"]);
+  if (!m.is_read) out.add("unread");
+  if (isNeedsReply(m)) out.add("needs_reply");
+  if (isExternalEmail(m.from, workspaceDomain)) out.add("external");
+  else if (workspaceDomain) out.add("from_team");
+  if (m.importance === "high") out.add("high");
+  if (m.has_attachments) out.add("attachments");
+  return out;
+}
+
+function fmtRelInbox(iso: string): string {
+  const d = new Date(iso); if (isNaN(d.getTime())) return "";
+  const diff = Date.now() - d.getTime();
+  const min = Math.round(diff / 60_000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min}m`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.round(hr / 24);
+  if (day < 7) return `${day}d`;
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+function inboxInitials(name: string, email: string): string {
+  const s = (name || email || "?").trim();
+  const parts = s.split(/\s+/);
+  if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  return s.slice(0, 2).toUpperCase();
+}
+
 function InboxTab() {
-  // The Inbox tab is intentionally thin — MailCard already handles all the
-  // states (loading, error, empty, scope-missing). We just wrap it in a
-  // descriptive header so the tab doesn't look bare on first load.
+  const qc = useQueryClient();
+  const workspaceDomain = useWorkspaceDomain();
+
   const { data: status } = useQuery<{ configured: boolean; connected: boolean }>({
     queryKey: ["me", "ms-status"],
     queryFn: () => api("/api/v1/me/microsoft/status"),
   });
-  return (
-    <div className="space-y-4">
-      <div>
-        <h2 className="h2">Inbox</h2>
-        <p className="text-sm text-muted mt-1">
-          Latest from your Microsoft mailbox. Connect Microsoft on the Today
-          tab if you don't see your inbox here.
-        </p>
-      </div>
-      {!status?.connected ? (
+  const { data, isLoading, isFetching, refetch } = useQuery<InboxResp>({
+    queryKey: ["me", "mail", "inbox-tab"],
+    queryFn: () => api("/api/v1/me/mail?top=50"),
+    enabled: !!status?.connected,
+    refetchInterval: 2 * 60_000,
+  });
+
+  const [filter, setFilter] = useState<InboxFilter>("all");
+  const [search, setSearch] = useState("");
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  const items = data?.items ?? [];
+
+  // Precompute buckets per message once so chip counts + filtering stay snappy
+  // on a 50-row list, and we only walk the array once for counts.
+  const enriched = useMemo(
+    () => items.map((m) => ({ m, buckets: inboxBucket(m, workspaceDomain) })),
+    [items, workspaceDomain],
+  );
+
+  const counts: Record<InboxFilter, number> = useMemo(() => {
+    const c: Record<InboxFilter, number> = {
+      all: 0, unread: 0, needs_reply: 0, from_team: 0, external: 0, high: 0, attachments: 0,
+    };
+    for (const { buckets } of enriched) {
+      for (const b of buckets) c[b] += 1;
+    }
+    return c;
+  }, [enriched]);
+
+  const latestAgo = items[0] ? fmtRelInbox(items[0].received) : null;
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return enriched
+      .filter(({ buckets }) => buckets.has(filter))
+      .filter(({ m }) => {
+        if (!q) return true;
+        return (m.subject + " " + m.from_name + " " + m.from + " " + m.preview)
+          .toLowerCase().includes(q);
+      })
+      .map(({ m }) => m);
+  }, [enriched, filter, search]);
+
+  if (!status?.connected) {
+    return (
+      <div className="space-y-4">
+        <div>
+          <h2 className="h2">Inbox</h2>
+          <p className="text-sm text-muted mt-1">
+            Connect your Microsoft mailbox on the Today tab to pull email here.
+          </p>
+        </div>
         <div className="bg-surface border border-border rounded-2xl p-8 text-center">
           <Inbox size={28} className="mx-auto text-muted mb-3" />
           <div className="text-sm font-semibold text-text">Inbox isn't connected yet</div>
@@ -1676,12 +1715,244 @@ function InboxTab() {
             Head to the Today tab and click Connect Microsoft. Your mail will appear here as soon as it's linked.
           </p>
         </div>
-      ) : (
-        <MailCard />
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <header className="flex items-end justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="h2 inline-flex items-center gap-2"><MailIcon size={20} className="text-accent" /> Inbox</h2>
+          <p className="text-sm text-muted mt-1">
+            {data?.connected_account ? `${data.connected_account} · ` : ""}
+            {counts.unread} unread of {counts.all}
+            {latestAgo && <> · last delivery {latestAgo} ago</>}
+          </p>
+        </div>
+        <button
+          onClick={() => { refetch(); qc.invalidateQueries({ queryKey: ["me", "mail"] }); }}
+          disabled={isFetching}
+          className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full bg-surface border border-border text-muted hover:text-text disabled:opacity-50"
+        >
+          <RefreshCw size={12} className={isFetching ? "animate-spin" : ""} /> Refresh
+        </button>
+      </header>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <InboxTile
+          icon={<Reply size={14} className="text-accent" />}
+          label="Needs reply"
+          value={counts.needs_reply}
+          sub="Unread asks, Re: threads, action language"
+          tone={counts.needs_reply > 0 ? "warn" : "muted"}
+        />
+        <InboxTile
+          icon={<AlertCircle size={14} className="text-danger" />}
+          label="High importance"
+          value={counts.high}
+          sub={counts.high === 0 ? "Nothing flagged" : "Senders flagged these"}
+          tone={counts.high > 0 ? "danger" : "muted"}
+        />
+        <InboxTile
+          icon={<UsersIcon size={14} className="text-success" />}
+          label="From the team"
+          value={counts.from_team}
+          sub={workspaceDomain ? `@${workspaceDomain}` : "Workspace domain unknown"}
+          tone="success"
+        />
+        <InboxTile
+          icon={<AtSign size={14} className="text-warn" />}
+          label="External"
+          value={counts.external}
+          sub={counts.external > 0 ? "Outside your domain" : "All in-house"}
+          tone="warn"
+        />
+      </div>
+
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex flex-wrap gap-1 p-1 bg-surface border border-border rounded-full">
+          {([
+            { k: "all",         label: `All · ${counts.all}` },
+            { k: "unread",      label: `Unread · ${counts.unread}` },
+            { k: "needs_reply", label: `Needs reply · ${counts.needs_reply}` },
+            { k: "high",        label: `High · ${counts.high}` },
+            { k: "external",    label: `External · ${counts.external}` },
+            { k: "from_team",   label: `Team · ${counts.from_team}` },
+            { k: "attachments", label: `Attachments · ${counts.attachments}` },
+          ] as { k: InboxFilter; label: string }[]).map((f) => (
+            <button
+              key={f.k}
+              onClick={() => setFilter(f.k)}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
+                filter === f.k ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+              }`}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <div className="relative">
+          <Search size={12} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search subject, sender…"
+            className="pl-8 pr-3 py-1.5 text-sm bg-surface border border-border rounded-full w-64 no-cap"
+          />
+        </div>
+      </div>
+
+      <section className="bg-surface border border-border rounded-2xl overflow-hidden">
+        {isLoading ? (
+          <div className="px-5 py-8 text-sm text-muted">Loading mail…</div>
+        ) : data?.error ? (
+          <div className="px-5 py-6 text-[13px] text-danger inline-flex items-center gap-2">
+            <AlertTriangle size={13} /> {data.error}
+          </div>
+        ) : filtered.length === 0 ? (
+          <div className="px-5 py-10 text-center">
+            <Inbox size={26} className="mx-auto text-muted mb-3" />
+            <div className="text-sm font-semibold text-text">
+              {search.trim()
+                ? `Nothing matches "${search}".`
+                : filter === "all"
+                  ? "Inbox zero — nothing new."
+                  : "Nothing in this view right now."}
+            </div>
+            <p className="text-xs text-muted mt-1 max-w-sm mx-auto">
+              {filter !== "all" && !search.trim()
+                ? "Try a different filter or clear search."
+                : "Use the filters above to narrow what's pulling at you."}
+            </p>
+          </div>
+        ) : (
+          <ul className="divide-y divide-border">
+            {filtered.map((m) => (
+              <InboxRow
+                key={m.id}
+                m={m}
+                workspaceDomain={workspaceDomain}
+                onOpen={() => setOpenId(m.id)}
+              />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {openId && <MessageReader id={openId} onClose={() => setOpenId(null)} />}
     </div>
   );
 }
+
+function InboxTile({
+  icon, label, value, sub, tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: number;
+  sub: string;
+  tone: "warn" | "danger" | "success" | "muted";
+}) {
+  const bubble = {
+    warn:    "bg-warn/10 text-warn",
+    danger:  "bg-danger/10 text-danger",
+    success: "bg-success/10 text-success",
+    muted:   "bg-bg text-muted",
+  }[tone];
+  return (
+    <div className="bg-surface border border-border rounded-2xl p-4 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${bubble}`}>
+          {icon}
+        </span>
+        <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted">{label}</span>
+      </div>
+      <div className="text-[1.5rem] font-extrabold text-text leading-none">{value}</div>
+      <div className="text-[11.5px] text-muted leading-snug">{sub}</div>
+    </div>
+  );
+}
+
+function InboxRow({
+  m, workspaceDomain, onOpen,
+}: {
+  m: InboxMsg;
+  workspaceDomain: string;
+  onOpen: () => void;
+}) {
+  const isReply = REPLY_RE.test(m.subject);
+  const needsReply = !m.is_read && (isReply || ASK_RE.test(m.subject + " " + m.preview));
+  const external = isExternalEmail(m.from, workspaceDomain);
+  return (
+    <li className={m.is_read ? "" : "bg-accent-soft/30"}>
+      <button
+        onClick={onOpen}
+        className="w-full text-left px-5 py-3 hover:bg-bg/40 transition-colors"
+      >
+        <div className="flex items-start gap-3">
+          <span className={`w-9 h-9 rounded-full font-bold text-[12px] grid place-items-center shrink-0 ${
+            external ? "bg-warn/15 text-warn" : "bg-accent-soft text-accent"
+          }`}>
+            {inboxInitials(m.from_name, m.from)}
+          </span>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className={`text-[13px] truncate ${m.is_read ? "text-text" : "font-bold text-text"}`}>
+                {m.from_name || m.from}
+              </span>
+              <ExternalEmailBadge email={m.from} size="xs" />
+              {m.importance === "high" && (
+                <span className="pill bg-danger/10 text-danger text-[10px] inline-flex items-center gap-1">
+                  <AlertCircle size={9} /> High
+                </span>
+              )}
+              {needsReply && (
+                <span className="pill bg-warn/15 text-warn text-[10px] inline-flex items-center gap-1">
+                  <Reply size={9} /> Needs reply
+                </span>
+              )}
+              <span className="ml-auto text-[10.5px] text-muted whitespace-nowrap shrink-0">
+                {fmtRelInbox(m.received)}
+              </span>
+            </div>
+
+            <div className={`text-[12.5px] truncate mt-0.5 ${m.is_read ? "text-muted" : "text-text font-semibold"}`}>
+              {isReply && <span className="text-accent/70 mr-1">Re:</span>}
+              {m.subject.replace(REPLY_RE, "") || "(no subject)"}
+            </div>
+
+            {m.preview && (
+              <div className="text-[11.5px] text-muted truncate mt-0.5">{m.preview}</div>
+            )}
+
+            <div className="flex items-center gap-3 mt-1.5 text-[10.5px] text-muted">
+              {m.has_attachments && (
+                <span className="inline-flex items-center gap-1"><Paperclip size={10} /> attachments</span>
+              )}
+              {m.web_link && (
+                <a
+                  href={m.web_link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1 hover:text-accent"
+                >
+                  <ExternalLink size={10} /> Outlook
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      </button>
+    </li>
+  );
+}
+
+// MailCard still used by the Today briefing — no-op silences the unused-import
+// warning if the linter ever reshuffles things.
+void MailCard;
 
 /* ---------- Profile ---------- */
 

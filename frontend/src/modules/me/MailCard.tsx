@@ -177,7 +177,7 @@ type MsgFull = Msg & {
   cc: string[];
 };
 
-function MessageReader({ id, onClose }: { id: string; onClose: () => void }) {
+export function MessageReader({ id, onClose }: { id: string; onClose: () => void }) {
   const { data, isLoading, error } = useQuery<MsgFull>({
     queryKey: ["me", "mail", id],
     queryFn: () => api(`/api/v1/me/mail/${encodeURIComponent(id)}`),
