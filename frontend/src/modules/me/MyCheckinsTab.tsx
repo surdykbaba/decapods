@@ -50,6 +50,26 @@ export function MyCheckinsTab() {
   const items = data?.items ?? [];
   const insights = data?.insights;
 
+  // Today's row, if any. Drives the header CTA — first-time users get a
+  // "Check in for today" primary button; if today already has content the
+  // button switches to "Edit today's check-in" so they don't accidentally
+  // think nothing's saved.
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayRow = useMemo<Row>(
+    () => items.find((r) => r.day === todayISO) ?? {
+      day: todayISO,
+      mood: null,
+      focus_note: null,
+      yesterday_note: null,
+      attachments: [],
+      posted_to_campfire: false,
+      missed: false,
+      tasks_done: 0,
+    },
+    [items, todayISO],
+  );
+  const todayHasContent = !!(todayRow.mood || todayRow.focus_note || todayRow.yesterday_note);
+
   // 14 days back is the server-side window for editing. Compute on the
   // client so the Edit button is only rendered for rows we'd be allowed
   // to save (no point teasing a button that 400s).
@@ -94,17 +114,31 @@ export function MyCheckinsTab() {
             Your morning huddle history — mood, what you shipped, what's next, all in one place.
           </p>
         </div>
-        <select
-          value={windowDays}
-          onChange={(e) => setWindowDays(parseInt(e.target.value, 10))}
-          className="input max-w-[180px]"
-        >
-          <option value={7}>Last 7 days</option>
-          <option value={14}>Last 14 days</option>
-          <option value={30}>Last 30 days</option>
-          <option value={90}>Last 90 days</option>
-          <option value={180}>Last 6 months</option>
-        </select>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Primary CTA — always reachable from this tab so first-time users
+              have a clear path to checking in. Switches label once today's
+              row has content so it never overwrites silently. */}
+          <button
+            type="button"
+            onClick={() => setEditingDay(todayRow)}
+            className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90"
+            title={todayHasContent ? "Open today's check-in editor" : "Log your check-in for today"}
+          >
+            {todayHasContent ? <Pencil size={13} /> : <Plus size={13} />}
+            {todayHasContent ? "Edit today's check-in" : "Check in for today"}
+          </button>
+          <select
+            value={windowDays}
+            onChange={(e) => setWindowDays(parseInt(e.target.value, 10))}
+            className="input max-w-[180px]"
+          >
+            <option value={7}>Last 7 days</option>
+            <option value={14}>Last 14 days</option>
+            <option value={30}>Last 30 days</option>
+            <option value={90}>Last 90 days</option>
+            <option value={180}>Last 6 months</option>
+          </select>
+        </div>
       </div>
 
       {/* Insight strip */}
@@ -149,7 +183,16 @@ export function MyCheckinsTab() {
         {isLoading ? (
           <div className="p-10 text-center text-muted text-sm">Loading…</div>
         ) : items.length === 0 ? (
-          <div className="p-10 text-center text-muted text-sm">No history yet — your first check-in lands here tomorrow.</div>
+          <div className="p-10 text-center">
+            <div className="text-sm text-muted">No history yet — log your first check-in to start the timeline.</div>
+            <button
+              type="button"
+              onClick={() => setEditingDay(todayRow)}
+              className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 mt-4"
+            >
+              <Plus size={13} /> Check in for today
+            </button>
+          </div>
         ) : (
           <ul className="divide-y divide-border">
             {items.map((r) => (
