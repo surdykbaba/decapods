@@ -8,6 +8,7 @@ import { toast } from "@/lib/toast";
 import {
   Users, Plus, Search, ShieldCheck, ShieldAlert, Mail, X, Pencil, Trash2,
   Copy, KeyRound, CheckCircle2, Clock, Send, Link as LinkIcon, Circle, RotateCcw,
+  Globe, Activity, ArrowUp, ArrowDown,
 } from "lucide-react";
 import { type Presence, presenceLabel, PRESENCE_COLORS } from "@/lib/presence";
 import { confirmAction } from "@/lib/confirm";
@@ -43,6 +44,31 @@ const STATUS_META: Record<MemberStatus, { label: string; cls: string; icon: Reac
   invited:  { label: "Invited",    cls: "bg-accent-soft text-accent", icon: <Clock size={11} /> },
   disabled: { label: "Disabled",   cls: "bg-warn/15 text-warn",       icon: <ShieldAlert size={11} /> },
 };
+
+type SortCol = "name" | "presence" | "roles" | "status" | "mfa" | "last_login" | "joined";
+type SortDir = "asc" | "desc";
+
+const ADMIN_ROLES = new Set(["super_admin", "ceo", "coo", "hr", "hr_manager", "finance"]);
+
+// presenceRank — sort order for the Presence column. Online first, offline
+// last so the most active members float to the top by default.
+const PRESENCE_RANK: Record<string, number> = {
+  online: 0, away: 1, focus: 2, busy: 2, on_leave: 3, offline: 4,
+};
+
+function isExternalEmail(email: string, workspaceDomain?: string): boolean {
+  if (!email.includes("@")) return false;
+  const domain = email.split("@")[1].toLowerCase();
+  // Heuristic: treat free/personal email providers as external. The component
+  // ExternalEmailBadge uses the same logic so this stays in lockstep.
+  const free = new Set([
+    "gmail.com", "yahoo.com", "outlook.com", "hotmail.com",
+    "icloud.com", "me.com", "live.com", "aol.com", "proton.me", "protonmail.com",
+  ]);
+  if (free.has(domain)) return true;
+  if (workspaceDomain && domain !== workspaceDomain.toLowerCase()) return true;
+  return false;
+}
 
 function fmtRel(iso: string | null): string {
   if (!iso) return "Never";
@@ -92,6 +118,7 @@ export function MembersPage() {
   const [presenceFilter] = useState<"all" | Presence>("all");
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Member | null>(null);
+  const [sort, setSort] = useState<{ col: SortCol; dir: SortDir }>({ col: "name", dir: "asc" });
 
   const filtered = useMemo(() => {
     let list = items;
@@ -104,14 +131,62 @@ export function MembersPage() {
         m.email.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
       );
     }
-    return list;
-  }, [items, statusFilter, roleFilter, presenceFilter, query]);
+    // Sort. asc/desc gate driven by the column-header click.
+    const mul = sort.dir === "asc" ? 1 : -1;
+    const cmp = (a: Member, b: Member): number => {
+      switch (sort.col) {
+        case "name":       return mul * (a.name || a.email).localeCompare(b.name || b.email);
+        case "presence":   return mul * ((PRESENCE_RANK[a.presence] ?? 9) - (PRESENCE_RANK[b.presence] ?? 9));
+        case "roles":      return mul * (a.roles.length - b.roles.length);
+        case "status":     return mul * a.status.localeCompare(b.status);
+        case "mfa":        return mul * (Number(b.mfa_enabled) - Number(a.mfa_enabled));
+        case "last_login": return mul * ((new Date(a.last_login_at ?? 0).getTime()) - (new Date(b.last_login_at ?? 0).getTime()));
+        case "joined":     return mul * ((new Date(a.created_at).getTime()) - (new Date(b.created_at).getTime()));
+      }
+    };
+    return [...list].sort(cmp);
+  }, [items, statusFilter, roleFilter, presenceFilter, query, sort]);
 
   const counts = useMemo(() => {
     const c = { all: items.length, active: 0, invited: 0, disabled: 0 };
     items.forEach((m) => { c[m.status]++; });
     return c;
   }, [items]);
+
+  // Insights — at-a-glance team health. Pulled from the same list the
+  // table renders, so what HR sees up top always reconciles with what
+  // they scroll through.
+  const insights = useMemo(() => {
+    const active = items.filter((m) => m.status === "active");
+    const mfaOn = active.filter((m) => m.mfa_enabled).length;
+    const mfaCoverage = active.length ? Math.round((mfaOn / active.length) * 100) : 0;
+    const adminClass = active.filter((m) => m.roles.some((r) => ADMIN_ROLES.has(r)));
+    const adminsAtRisk = adminClass.filter((m) => !m.mfa_enabled).length;
+    const onlineNow = items.filter((m) => m.presence === "online" || m.presence === "busy").length;
+    const away      = items.filter((m) => m.presence === "away").length;
+    const external = active.filter((m) => isExternalEmail(m.email)).length;
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const dormant = active.filter((m) =>
+      !m.last_login_at || new Date(m.last_login_at).getTime() < sevenDaysAgo,
+    ).length;
+    return {
+      active: active.length,
+      mfaOn, mfaCoverage,
+      adminClass: adminClass.length,
+      adminsAtRisk,
+      onlineNow, away,
+      external,
+      dormant,
+    };
+  }, [items]);
+
+  function toggleSort(col: SortCol) {
+    setSort((prev) =>
+      prev.col === col
+        ? { col, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { col, dir: col === "name" || col === "status" ? "asc" : "desc" },
+    );
+  }
 
   const create = useMutation({
     mutationFn: (body: { email: string; name: string; roles: string[] }) =>
@@ -196,6 +271,45 @@ export function MembersPage() {
         </SmartButton>
       </header>
 
+      {/* Insight strip — top-of-page team health */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <InsightTile
+          icon={<Users size={14} />}
+          tone="info"
+          label="Active"
+          value={String(insights.active)}
+          sub={`${insights.onlineNow} online · ${insights.away} away`}
+        />
+        <InsightTile
+          icon={<ShieldCheck size={14} />}
+          tone={insights.mfaCoverage >= 80 ? "good" : insights.mfaCoverage >= 50 ? "warn" : "bad"}
+          label="MFA coverage"
+          value={`${insights.mfaCoverage}%`}
+          sub={`${insights.mfaOn} of ${insights.active} active`}
+        />
+        <InsightTile
+          icon={<ShieldAlert size={14} />}
+          tone={insights.adminsAtRisk === 0 ? "good" : "bad"}
+          label="Admins without MFA"
+          value={String(insights.adminsAtRisk)}
+          sub={`${insights.adminClass} admin-class total`}
+        />
+        <InsightTile
+          icon={<Globe size={14} />}
+          tone={insights.external === 0 ? "good" : "warn"}
+          label="External email"
+          value={String(insights.external)}
+          sub="Outside the workspace domain"
+        />
+        <InsightTile
+          icon={<Activity size={14} />}
+          tone={insights.dormant === 0 ? "good" : insights.dormant > insights.active / 3 ? "bad" : "warn"}
+          label="Dormant 7d+"
+          value={String(insights.dormant)}
+          sub="No login in the last week"
+        />
+      </div>
+
       {/* Status pills */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex gap-1 p-1 bg-surface border border-border rounded-full w-fit">
@@ -255,6 +369,8 @@ export function MembersPage() {
       ) : (
         <MemberTable
           rows={filtered}
+          sort={sort}
+          onSort={toggleSort}
           onEdit={setEditing}
           onRemove={async (id, name) => {
             // Pull the full member row so the confirm dialog can warn about
@@ -328,9 +444,11 @@ export function MembersPage() {
 /* ---------- Sub-components ---------- */
 
 function MemberTable({
-  rows, onEdit, onRemove, onReset,
+  rows, sort, onSort, onEdit, onRemove, onReset,
 }: {
   rows: Member[];
+  sort: { col: SortCol; dir: SortDir };
+  onSort: (col: SortCol) => void;
   onEdit: (m: Member) => void;
   onRemove: (id: string, name: string) => void;
   onReset: (m: Member) => Promise<void> | void;
@@ -365,13 +483,13 @@ function MemberTable({
         <table className="w-full text-sm">
           <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
             <tr>
-              <th className="text-left px-4 py-3">Member</th>
-              <th className="text-left px-3 py-3">Presence</th>
-              <th className="text-left px-3 py-3">Roles</th>
-              <th className="text-left px-3 py-3">Status</th>
-              <th className="text-left px-3 py-3">MFA</th>
-              <th className="text-left px-3 py-3">Last login</th>
-              <th className="text-left px-3 py-3">Joined</th>
+              <SortHeader col="name"       label="Member"     sort={sort} onSort={onSort} className="px-4" />
+              <SortHeader col="presence"   label="Presence"   sort={sort} onSort={onSort} />
+              <SortHeader col="roles"      label="Roles"      sort={sort} onSort={onSort} />
+              <SortHeader col="status"     label="Status"     sort={sort} onSort={onSort} />
+              <SortHeader col="mfa"        label="MFA"        sort={sort} onSort={onSort} />
+              <SortHeader col="last_login" label="Last login" sort={sort} onSort={onSort} />
+              <SortHeader col="joined"     label="Joined"     sort={sort} onSort={onSort} />
               <th className="px-3 py-3"></th>
             </tr>
           </thead>
@@ -1036,6 +1154,66 @@ function InvitationRow({
         )}
       </div>
     </li>
+  );
+}
+
+function SortHeader({
+  col, label, sort, onSort, className = "",
+}: {
+  col: SortCol;
+  label: string;
+  sort: { col: SortCol; dir: SortDir };
+  onSort: (col: SortCol) => void;
+  className?: string;
+}) {
+  const active = sort.col === col;
+  return (
+    <th className={`text-left py-3 ${className || "px-3"}`}>
+      <button
+        type="button"
+        onClick={() => onSort(col)}
+        className={`inline-flex items-center gap-1 text-[10.5px] uppercase tracking-wider font-bold transition-colors ${
+          active ? "text-accent" : "text-muted hover:text-text"
+        }`}
+        title={`Sort by ${label}`}
+      >
+        {label}
+        {active
+          ? (sort.dir === "asc"
+              ? <ArrowUp size={11} />
+              : <ArrowDown size={11} />)
+          : <span className="opacity-30"><ArrowUp size={11} /></span>}
+      </button>
+    </th>
+  );
+}
+
+function InsightTile({
+  icon, label, value, sub, tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  sub: string;
+  tone: "good" | "warn" | "bad" | "info";
+}) {
+  const bubble = {
+    good: "bg-success/10 text-success",
+    warn: "bg-warn/10 text-warn",
+    bad:  "bg-danger/10 text-danger",
+    info: "bg-accent-soft text-accent",
+  }[tone];
+  return (
+    <div className="bg-surface border border-border rounded-2xl p-4 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${bubble}`}>
+          {icon}
+        </span>
+        <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted">{label}</span>
+      </div>
+      <div className="text-[1.5rem] font-extrabold text-text leading-none">{value}</div>
+      <div className="text-[11px] text-muted leading-snug">{sub}</div>
+    </div>
   );
 }
 
