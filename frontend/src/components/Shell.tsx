@@ -4,7 +4,7 @@ import {
   Settings, LifeBuoy, Search, UserCheck,
   Sun, Moon, LogOut, ChevronDown,
   Handshake, UserCog, Folder, Plane,
-  ShieldCheck, Menu, X, ClipboardCheck, CalendarCheck,
+  ShieldCheck, Menu, X, ClipboardCheck, CalendarCheck, Lock,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useMemo, useState } from "react";
@@ -257,6 +257,11 @@ export function Shell() {
                   />
                 </div>
                 <div className="border-t border-border py-1">
+                  <DropdownItem
+                    onClick={() => { setIdentityOpen(false); nav2("/lock"); }}
+                    icon={<Lock size={14} />}
+                    label="Lock screen"
+                  />
                   <DropdownItem
                     onClick={() => { setIdentityOpen(false); logout(); nav2("/login"); }}
                     icon={<LogOut size={14} />}

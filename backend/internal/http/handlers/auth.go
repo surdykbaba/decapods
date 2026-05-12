@@ -354,6 +354,30 @@ func (a *Auth) AdminSetMFARequired(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
+// VerifyPassword — POST /api/v1/auth/verify-password
+//
+// Used by the in-app lock screen: the user types their password and we
+// check it without rotating their session. Authenticated route, so we
+// already know the user id from the JWT. Doesn't extend the session.
+func (a *Auth) VerifyPassword(c *gin.Context) {
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	var req struct{ Password string `json:"password" binding:"required,min=1"` }
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	var hash string
+	if err := a.db.QueryRow(c, `SELECT password_hash FROM users WHERE id=$1 AND deleted_at IS NULL`, uid).Scan(&hash); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+		return
+	}
+	if err := auth.VerifyPassword(req.Password, hash); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "wrong password"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 func (a *Auth) jwtConfig() auth.JWTConfig {
 	return auth.JWTConfig{
 		AccessSecret:  []byte(a.cfg.JWTAccessSecret),

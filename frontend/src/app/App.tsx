@@ -4,6 +4,7 @@ import { Toaster } from "@/components/Toaster";
 import { ConfirmHost } from "@/components/ConfirmHost";
 import { RequireAuth } from "@/app/RequireAuth";
 import { LoginPage } from "@/modules/auth/LoginPage";
+import { LockScreen } from "@/modules/auth/LockScreen";
 import { MfaPage } from "@/modules/auth/MfaPage";
 import { ForgotPasswordPage } from "@/modules/auth/ForgotPasswordPage";
 import { ResetPasswordPage } from "@/modules/auth/ResetPasswordPage";
@@ -60,6 +61,7 @@ export function App() {
     <ConfirmHost />
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/lock"  element={<LockScreen />} />
       <Route path="/mfa" element={<MfaPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
