@@ -587,19 +587,52 @@ export function MyCheckinsTab() {
         )}
       </section>
 
-      {editingDay && (
-        <CheckinEditor
-          row={editingDay}
-          onClose={() => setEditingDay(null)}
-        />
-      )}
+      {editingDay && (() => {
+        // Smart prior-day hint — when a user starts a check-in, the most
+        // common "Yesterday — what shipped" answer is literally yesterday's
+        // "Today — what's on". We look that up by day and pass it through so
+        // the wizard can offer a "Use yesterday's plan" one-tap prefill.
+        const prevISO = (() => {
+          const t = new Date(editingDay.day + "T00:00:00").getTime();
+          return new Date(t - 86_400_000).toISOString().slice(0, 10);
+        })();
+        const prior = items.find((r) => r.day === prevISO) ?? null;
+        return (
+          <CheckinEditor
+            row={editingDay}
+            priorRow={prior}
+            onClose={() => setEditingDay(null)}
+          />
+        );
+      })()}
     </div>
   );
 }
 
-function CheckinEditor({ row, onClose }: { row: Row; onClose: () => void }) {
+// Mood metadata — drives the labeled emoji tiles in step 1 and the tone of
+// the conversational nudge that follows. Centralised so the editor and any
+// future surface (settings, exports) stay aligned.
+const MOOD_META: Record<string, { label: string; tone: "good" | "ok" | "rough"; line: string }> = {
+  "😄": { label: "Energised",  tone: "good",  line: "Great day to ship momentum — what's the next bold move?" },
+  "🙂": { label: "Good",       tone: "good",  line: "Steady wins the race. Keep the rhythm going." },
+  "😐": { label: "OK",         tone: "ok",    line: "Neutral days are normal — what would tip it positive?" },
+  "😕": { label: "Off",        tone: "rough", line: "Something feels off — write it out, even just a sentence." },
+  "😩": { label: "Rough",      tone: "rough", line: "Tough day. Be kind to yourself — even logging it counts." },
+};
+
+type WizardStep = 0 | 1 | 2;
+const STEP_TITLES = ["How are you feeling?", "What's the story?", "Anything to attach?"] as const;
+
+function CheckinEditor({
+  row, priorRow, onClose,
+}: {
+  row: Row;
+  priorRow: Row | null;
+  onClose: () => void;
+}) {
   const qc = useQueryClient();
   const isToday = row.day === new Date().toISOString().slice(0, 10);
+  const [step, setStep] = useState<WizardStep>(0);
   const [mood, setMood] = useState(row.mood ?? "");
   const [yesterday, setYesterday] = useState(row.yesterday_note ?? "");
   const [focus, setFocus] = useState(row.focus_note ?? "");
@@ -612,7 +645,14 @@ function CheckinEditor({ row, onClose }: { row: Row; onClose: () => void }) {
     setYesterday(row.yesterday_note ?? "");
     setFocus(row.focus_note ?? "");
     setAttachments(row.attachments ?? []);
+    setStep(0);
   }, [row.day]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Smart prefill — yesterday's "Today" is, more often than not, the right
+  // first draft of today's "Yesterday". We don't auto-write it (clobbering is
+  // hostile) but we expose a one-tap "Use yesterday's plan" inside the wizard.
+  const priorPlan = (priorRow?.focus_note ?? "").trim();
+  const canUsePriorPlan = !!priorPlan && yesterday.trim() === "";
 
   const save = useMutation({
     mutationFn: () => api("/api/v1/me/huddle", {
@@ -627,7 +667,7 @@ function CheckinEditor({ row, onClose }: { row: Row; onClose: () => void }) {
       }),
     }),
     onSuccess: () => {
-      toast.success("Check-in updated", `Saved for ${row.day}.`);
+      toast.success("Check-in saved", `Logged for ${fmtDay(row.day)}.`);
       qc.invalidateQueries({ queryKey: ["me", "daily-checkins"] });
       qc.invalidateQueries({ queryKey: ["me-huddle"] });
       onClose();
@@ -647,157 +687,294 @@ function CheckinEditor({ row, onClose }: { row: Row; onClose: () => void }) {
     setAttachments((p) => p.filter((_, idx) => idx !== i));
   }
 
+  // Step gating — step 1 ("Mood") needs a selection before Next is enabled.
+  // Steps 2 and 3 are always advanceable; the final Save still guards against
+  // an entirely empty submission so we don't write blank rows.
+  const canAdvance = step === 0 ? !!mood : true;
+  const canSave = !save.isPending && (!!mood || !!focus.trim() || !!yesterday.trim());
+  // Last-step actions also enable on Ctrl/Cmd + Enter so power users can move
+  // through the wizard without lifting from the keyboard.
+  function onKey(e: React.KeyboardEvent) {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      if (step < 2 && canAdvance) setStep((s) => (s + 1) as WizardStep);
+      else if (step === 2 && canSave) save.mutate();
+    }
+  }
+
+  const tone = mood ? MOOD_META[mood]?.tone : null;
+  // Hero tint shifts with the chosen mood so the dialog feels like it's
+  // actually listening. Stays neutral until the user picks something.
+  const heroTint =
+    tone === "good"  ? "from-success/10 to-success/5"
+    : tone === "ok"  ? "from-accent-soft to-accent-soft/20"
+    : tone === "rough" ? "from-warn/10 to-warn/5"
+    : "from-accent-soft to-accent-soft/20";
+
   return (
     <div
       className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4"
       role="dialog"
       aria-modal="true"
       onClick={onClose}
+      onKeyDown={onKey}
     >
       <div
-        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden"
+        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-2xl max-h-[92vh] flex flex-col overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="px-5 py-3.5 border-b border-border flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-[11px] uppercase tracking-wider font-bold text-accent">
-              {isToday ? "Edit today's check-in" : `Back-fill ${fmtDay(row.day)}`}
-            </div>
-            <h3 className="text-base font-bold text-text leading-tight">{fmtDay(row.day)}</h3>
-          </div>
+        {/* Branded hero header — wizard step indicator + friendly title.
+            The tint reacts to mood selection so it never feels static. */}
+        <header className={`relative bg-gradient-to-br ${heroTint} px-5 pt-4 pb-3 border-b border-border`}>
           <button
             type="button"
             onClick={onClose}
-            className="p-1.5 rounded hover:bg-bg text-muted hover:text-text"
+            className="absolute top-3 right-3 p-1.5 rounded-full hover:bg-surface/70 text-muted hover:text-text"
             aria-label="Close"
           >
             <X size={16} />
           </button>
+          <div className="text-[10.5px] uppercase tracking-[0.12em] font-bold text-accent inline-flex items-center gap-1.5">
+            <Sparkles size={11} />
+            {isToday ? "Daily check-in" : `Back-fill · ${fmtDay(row.day)}`}
+            <span className="text-muted/70 font-medium">· Step {step + 1} of 3</span>
+          </div>
+          <h3 className="text-xl font-extrabold text-text leading-tight mt-1.5">{STEP_TITLES[step]}</h3>
+
+          {/* Progress dots — clickable so users can jump back to revise. We
+              only allow forward jumps to a step whose prerequisites are met
+              (currently just step 0 → mood). */}
+          <div className="mt-3 flex items-center gap-1.5">
+            {[0, 1, 2].map((i) => {
+              const reached = step >= i;
+              const allowed = i <= step || (i === 1 && !!mood) || i === 2;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  disabled={!allowed}
+                  onClick={() => allowed && setStep(i as WizardStep)}
+                  className={`h-1.5 rounded-full transition-all ${
+                    reached ? "bg-accent" : "bg-bg"
+                  } ${i === step ? "w-10" : "w-6"} ${allowed ? "cursor-pointer hover:opacity-80" : "cursor-not-allowed"}`}
+                  aria-label={`Go to step ${i + 1}`}
+                />
+              );
+            })}
+          </div>
         </header>
 
-        <div className="p-5 space-y-4 overflow-y-auto">
-          <div>
-            <div className="text-sm font-semibold text-text mb-2">Mood</div>
-            <div className="flex items-center gap-1.5">
-              {["😄", "🙂", "😐", "😕", "😩"].map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => setMood(m)}
-                  className={`px-2.5 py-2 rounded-lg text-lg border transition-all ${
-                    mood === m
-                      ? "border-accent bg-accent-soft scale-110"
-                      : "border-transparent hover:border-border hover:bg-bg"
-                  }`}
-                >
-                  {m}
-                </button>
-              ))}
+        {/* ============ Step body ============ */}
+        <div className="p-5 overflow-y-auto flex-1">
+          {step === 0 && (
+            <div className="space-y-4">
+              <p className="text-sm text-muted">
+                One tap — pick the mood that best matches your day. You can change it any time.
+              </p>
+              <div className="grid grid-cols-5 gap-2">
+                {(Object.keys(MOOD_META) as (keyof typeof MOOD_META)[]).map((m) => {
+                  const meta = MOOD_META[m];
+                  const on = mood === m;
+                  return (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setMood(m)}
+                      className={`flex flex-col items-center gap-1 px-2 py-3 rounded-2xl border-2 transition-all ${
+                        on
+                          ? "border-accent bg-accent-soft scale-105 shadow-soft"
+                          : "border-border bg-surface hover:border-accent/40"
+                      }`}
+                    >
+                      <span className="text-3xl leading-none">{m}</span>
+                      <span className={`text-[11px] font-bold ${on ? "text-accent" : "text-muted"}`}>{meta.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Mood-aware tone copy. Slides in to confirm we registered the
+                  selection without forcing the user to read a wall of text. */}
               {mood && (
-                <button
-                  type="button"
-                  onClick={() => setMood("")}
-                  className="text-[11px] text-muted hover:text-text ml-1"
-                  title="Clear mood"
-                >
-                  Clear
-                </button>
+                <div className={`text-[12.5px] rounded-xl px-3.5 py-2.5 border ${
+                  tone === "good"  ? "bg-success/5 text-success border-success/20"
+                  : tone === "ok"    ? "bg-accent-soft/40 text-accent border-accent/20"
+                  : "bg-warn/5 text-warn border-warn/20"
+                }`}>
+                  {MOOD_META[mood].line}
+                </div>
               )}
             </div>
-          </div>
+          )}
 
-          <div>
-            <div className="text-sm font-semibold text-text mb-2">Yesterday — what shipped</div>
-            <textarea
-              value={yesterday}
-              onChange={(e) => setYesterday(e.target.value)}
-              rows={3}
-              className="input w-full resize-none"
-              placeholder="What did you finish, hand off, or get stuck on?"
-            />
-          </div>
-
-          <div>
-            <div className="text-sm font-semibold text-text mb-2">{isToday ? "Today — what's on" : "That day — what you were on"}</div>
-            <textarea
-              value={focus}
-              onChange={(e) => setFocus(e.target.value)}
-              rows={4}
-              className="input w-full resize-none"
-              placeholder="One or two things you were owning."
-            />
-          </div>
-
-          <div>
-            <div className="text-sm font-semibold text-text mb-2 flex items-center gap-1.5">
-              <Link2 size={12} className="text-muted" /> Attachments
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="url"
-                value={linkDraft}
-                onChange={(e) => setLinkDraft(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLink(); } }}
-                placeholder="https://…"
-                className="input flex-1 text-sm"
-              />
-              <button
-                type="button"
-                onClick={addLink}
-                disabled={!linkDraft.trim()}
-                className="text-sm font-semibold px-3 py-2 rounded-lg bg-bg border border-border hover:border-accent/40 disabled:opacity-50 disabled:cursor-not-allowed text-text"
-              >
-                Add
-              </button>
-            </div>
-            {attachments.length > 0 && (
-              <ul className="mt-2 space-y-1">
-                {attachments.map((a, i) => (
-                  <li key={i} className="flex items-center gap-2 text-[12.5px] bg-bg/60 border border-border rounded-lg px-2.5 py-1.5">
-                    <Link2 size={11} className="text-muted shrink-0" />
-                    <a
-                      href={a.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-accent hover:underline truncate flex-1"
-                      title={a.url}
-                    >
-                      {a.name}
-                    </a>
+          {step === 1 && (
+            <div className="space-y-5">
+              <div>
+                <div className="text-sm font-semibold text-text mb-1 flex items-center justify-between gap-2">
+                  <span>Yesterday — what shipped</span>
+                  {canUsePriorPlan && (
                     <button
                       type="button"
-                      onClick={() => removeAttachment(i)}
-                      className="text-muted hover:text-danger p-1"
-                      aria-label="Remove"
+                      onClick={() => setYesterday(priorPlan)}
+                      className="text-[11px] font-semibold text-accent hover:underline inline-flex items-center gap-1"
+                      title={`Copy yesterday's plan: ${priorPlan.slice(0, 80)}${priorPlan.length > 80 ? "…" : ""}`}
                     >
-                      <Trash2 size={11} />
+                      <Sparkles size={10} /> Use yesterday's plan
                     </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+                  )}
+                </div>
+                <textarea
+                  value={yesterday}
+                  onChange={(e) => setYesterday(e.target.value)}
+                  rows={3}
+                  className="input w-full resize-none"
+                  placeholder="What did you finish, hand off, or get stuck on?"
+                  autoFocus
+                />
+                <div className="text-[10.5px] text-muted/80 mt-1 text-right">{yesterday.trim().length} chars</div>
+              </div>
+
+              <div>
+                <div className="text-sm font-semibold text-text mb-1">
+                  {isToday ? "Today — what's on" : "That day — what you were on"}
+                </div>
+                <textarea
+                  value={focus}
+                  onChange={(e) => setFocus(e.target.value)}
+                  rows={4}
+                  className="input w-full resize-none"
+                  placeholder={
+                    tone === "rough"
+                      ? "Even one small thing counts — what's the first achievable next move?"
+                      : "One or two things you're owning today."
+                  }
+                />
+                <div className="text-[10.5px] text-muted/80 mt-1 text-right">{focus.trim().length} chars</div>
+              </div>
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="space-y-5">
+              <div>
+                <div className="text-sm font-semibold text-text mb-2 flex items-center gap-1.5">
+                  <Link2 size={12} className="text-muted" /> Attachments (optional)
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="url"
+                    value={linkDraft}
+                    onChange={(e) => setLinkDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLink(); } }}
+                    placeholder="https://… a doc, ticket, PR, or design"
+                    className="input flex-1 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={addLink}
+                    disabled={!linkDraft.trim()}
+                    className="text-sm font-semibold px-3 py-2 rounded-lg bg-bg border border-border hover:border-accent/40 disabled:opacity-50 disabled:cursor-not-allowed text-text"
+                  >
+                    Add
+                  </button>
+                </div>
+                {attachments.length > 0 ? (
+                  <ul className="mt-2 space-y-1">
+                    {attachments.map((a, i) => (
+                      <li key={i} className="flex items-center gap-2 text-[12.5px] bg-bg/60 border border-border rounded-lg px-2.5 py-1.5">
+                        <Link2 size={11} className="text-muted shrink-0" />
+                        <a
+                          href={a.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-accent hover:underline truncate flex-1"
+                          title={a.url}
+                        >
+                          {a.name}
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(i)}
+                          className="text-muted hover:text-danger p-1"
+                          aria-label="Remove"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="text-[11.5px] text-muted/80 mt-2">No links added — that's fine, this step is optional.</div>
+                )}
+              </div>
+
+              {/* Review summary — shows everything the user is about to save
+                  so the final click feels intentional. */}
+              <div className="bg-bg/40 border border-border rounded-2xl p-4 space-y-2.5">
+                <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted inline-flex items-center gap-1">
+                  <CheckCircle2 size={11} className="text-accent" /> Ready to save
+                </div>
+                <ReviewLine label="Mood">{mood
+                  ? <span><span className="text-base mr-1">{mood}</span><span className="text-muted text-[12px]">{MOOD_META[mood]?.label}</span></span>
+                  : <span className="text-muted italic">none</span>}</ReviewLine>
+                <ReviewLine label="Yesterday">{yesterday.trim()
+                  ? <span className="line-clamp-2">{yesterday.trim()}</span>
+                  : <span className="text-muted italic">empty</span>}</ReviewLine>
+                <ReviewLine label="Today">{focus.trim()
+                  ? <span className="line-clamp-2">{focus.trim()}</span>
+                  : <span className="text-muted italic">empty</span>}</ReviewLine>
+                <ReviewLine label="Attachments">{attachments.length
+                  ? `${attachments.length} link${attachments.length === 1 ? "" : "s"}`
+                  : <span className="text-muted italic">none</span>}</ReviewLine>
+              </div>
+            </div>
+          )}
         </div>
 
-        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+        {/* ============ Footer ============ */}
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-between gap-2 bg-bg/20">
           <button
             type="button"
-            onClick={onClose}
-            className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text"
+            onClick={step === 0 ? onClose : () => setStep((s) => (s - 1) as WizardStep)}
+            className="text-sm font-semibold px-3 py-2 rounded-lg text-muted hover:text-text inline-flex items-center gap-1.5"
           >
-            Cancel
+            {step === 0 ? "Cancel" : "← Back"}
           </button>
-          <button
-            type="button"
-            onClick={() => save.mutate()}
-            disabled={save.isPending || (!mood && !focus.trim() && !yesterday.trim())}
-            className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {save.isPending ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
-            {save.isPending ? "Saving…" : isToday ? "Save check-in" : "Save back-fill"}
-          </button>
+          <div className="text-[11px] text-muted hidden md:block">
+            Tip: <kbd className="px-1.5 py-0.5 bg-bg border border-border rounded text-[10px] font-mono">⌘ Enter</kbd> {step === 2 ? "to save" : "to advance"}
+          </div>
+          {step < 2 ? (
+            <button
+              type="button"
+              onClick={() => canAdvance && setStep((s) => (s + 1) as WizardStep)}
+              disabled={!canAdvance}
+              className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Next →
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => save.mutate()}
+              disabled={!canSave}
+              className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {save.isPending ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />}
+              {save.isPending ? "Saving…" : isToday ? "Save check-in" : "Save back-fill"}
+            </button>
+          )}
         </footer>
       </div>
+    </div>
+  );
+}
+
+// ReviewLine — tight key/value row for the final wizard step. Keeping it
+// inline keeps the review markup readable.
+function ReviewLine({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[90px_minmax(0,1fr)] gap-2 items-baseline text-[12.5px]">
+      <span className="text-[10.5px] uppercase tracking-wider font-bold text-muted">{label}</span>
+      <div className="text-text">{children}</div>
     </div>
   );
 }
