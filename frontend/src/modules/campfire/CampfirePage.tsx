@@ -1216,37 +1216,93 @@ function MoodTrendCard() {
  * Help wall
  * ───────────────────────────────────────────────────────────────────────── */
 
+type HelpTab = "open" | "in_progress" | "resolved" | "mine" | "all";
+
+// HELP_STATUS_META — tone + label for the status pill that now appears on
+// every Help wall card. Keeps the "what state is this in" answer in one
+// place regardless of which tab the user is on.
+const HELP_STATUS_META: Record<"open" | "in_progress" | "resolved", { label: string; cls: string }> = {
+  open:        { label: "Open",        cls: "bg-accent-soft text-accent border-accent/30" },
+  in_progress: { label: "In progress", cls: "bg-warn/15 text-warn border-warn/30" },
+  resolved:    { label: "Resolved",    cls: "bg-success/15 text-success border-success/30" },
+};
+
 function HelpWall({ currentUserId }: { currentUserId: string }) {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<"open" | "in_progress" | "resolved">("open");
+  const [tab, setTab] = useState<HelpTab>("open");
   const [open, setOpen] = useState(false);
+
+  // Single fetch for ALL items — backend returns everything when status is
+  // omitted, ordered open-first then newest-first. We slice it client-side
+  // per tab so picking something up never makes it vanish; it just moves
+  // from "Open" to "In progress" (and stays under "Mine" / "All").
   const { data } = useQuery<{ items: HelpItem[] }>({
-    queryKey: ["campfire", "help", tab],
-    queryFn: () => api(`/api/v1/campfire/help?status=${tab}`),
+    queryKey: ["campfire", "help", "all"],
+    queryFn: () => api(`/api/v1/campfire/help`),
     refetchInterval: 30_000,
   });
 
   const updateStatus = useMutation({
     mutationFn: ({ id, status }: { id: string; status: HelpItem["status"] }) =>
       api(`/api/v1/campfire/help/${id}/status`, { method: "PATCH", body: JSON.stringify({ status }) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["campfire", "help"] }),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ["campfire", "help"] });
+      if (vars.status === "in_progress") {
+        toast.success("You took it on", "Switch to Mine or In progress to see it any time.");
+      } else if (vars.status === "resolved") {
+        toast.success("Marked resolved", "Great work — it'll stay in Resolved for the record.");
+      }
+    },
+    onError: (e: Error) => toast.error("Could not update", e.message),
   });
 
-  const items = data?.items ?? [];
+  const all = data?.items ?? [];
+  const counts = useMemo(() => ({
+    open:        all.filter((h) => h.status === "open").length,
+    in_progress: all.filter((h) => h.status === "in_progress").length,
+    resolved:    all.filter((h) => h.status === "resolved").length,
+    mine:        all.filter((h) => h.requester.id === currentUserId || h.resolver.id === currentUserId).length,
+    all:         all.length,
+  }), [all, currentUserId]);
+
+  const items = useMemo(() => {
+    if (tab === "all")  return all;
+    if (tab === "mine") return all.filter((h) => h.requester.id === currentUserId || h.resolver.id === currentUserId);
+    return all.filter((h) => h.status === tab);
+  }, [all, tab, currentUserId]);
+
+  const TABS: { key: HelpTab; label: string }[] = [
+    { key: "open",        label: "Open" },
+    { key: "in_progress", label: "In progress" },
+    { key: "resolved",    label: "Resolved" },
+    { key: "mine",        label: "Mine" },
+    { key: "all",         label: "All" },
+  ];
+
+  const emptyCopy: Record<HelpTab, { title: string; body: string }> = {
+    open:        { title: "Nothing open — good news!",      body: "When someone needs help, they'll post it here. Anyone can pick it up." },
+    in_progress: { title: "Nothing in progress right now",  body: "Anything someone takes on lands here." },
+    resolved:    { title: "No resolved items yet",          body: "Once a request gets wrapped up, it stays here as history." },
+    mine:        { title: "Nothing of yours yet",           body: "Anything you post or pick up shows here so you can find it later." },
+    all:         { title: "The help wall is empty",         body: "When someone needs help, they'll post it here." },
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-1 bg-surface border border-border rounded-full p-1">
-          {(["open", "in_progress", "resolved"] as const).map((t) => (
+          {TABS.map((t) => (
             <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-3 py-1 text-[12px] font-semibold rounded-full ${
-                tab === t ? "bg-accent text-white" : "text-muted hover:text-text"
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`px-3 py-1 text-[12px] font-semibold rounded-full transition-colors ${
+                tab === t.key ? "bg-accent text-white" : "text-muted hover:text-text"
               }`}
             >
-              {t === "in_progress" ? "In progress" : t[0].toUpperCase() + t.slice(1)}
+              {t.label}
+              <span className={`ml-1.5 text-[10.5px] ${tab === t.key ? "opacity-90" : "opacity-60"}`}>
+                {counts[t.key]}
+              </span>
             </button>
           ))}
         </div>
@@ -1268,8 +1324,8 @@ function HelpWall({ currentUserId }: { currentUserId: string }) {
       {items.length === 0 ? (
         <EmptyState
           icon={HelpCircle}
-          title={tab === "open" ? "Nothing open — good news!" : `No ${tab.replace("_", " ")} items`}
-          body="When someone needs help, they'll post it here. Anyone can pick it up."
+          title={emptyCopy[tab].title}
+          body={emptyCopy[tab].body}
         />
       ) : (
         <div className="space-y-3">
@@ -1278,21 +1334,43 @@ function HelpWall({ currentUserId }: { currentUserId: string }) {
             const Icon = k.icon;
             const canPick = h.status === "open";
             const canResolve = (h.status === "in_progress" && h.resolver.id === currentUserId) || h.requester.id === currentUserId;
+            const isMine = h.requester.id === currentUserId || h.resolver.id === currentUserId;
+            const sm = HELP_STATUS_META[h.status];
+            // Subtle left rail mirrors the status pill so the visual state
+            // reads at a glance even when the row title runs long.
+            const railCls =
+              h.status === "open" ? "bg-accent"
+              : h.status === "in_progress" ? "bg-warn"
+              : "bg-success";
             return (
-              <div key={h.id} className="bg-surface border border-border rounded-2xl p-4 flex items-start gap-3">
+              <div key={h.id} className="bg-surface border border-border rounded-2xl p-4 flex items-start gap-3 relative overflow-hidden">
+                <span className={`absolute left-0 top-3 bottom-3 w-[3px] rounded-r ${railCls}`} aria-hidden />
                 <span className={`w-10 h-10 rounded-lg grid place-items-center shrink-0 ${k.tint}`}>
                   <Icon size={16} />
                 </span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className={`pill ${k.tint} text-[10.5px]`}>{k.label}</span>
+                    {/* Status pill — now visible on every card so users on
+                        Mine / All / Resolved still know the state. */}
+                    <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${sm.cls}`}>
+                      {sm.label}
+                    </span>
+                    {isMine && (
+                      <span className="pill bg-bg text-muted border border-border text-[10px] uppercase tracking-wide font-bold">
+                        Mine
+                      </span>
+                    )}
                     <span className="text-[11px] text-muted">{relativeTime(h.created_at)} ago · {h.requester.name || h.requester.email}</span>
                   </div>
                   <div className="text-sm font-bold text-text mt-1">{h.title}</div>
                   {h.body && <SmartBody className="text-[13px] text-muted mt-0.5" text={h.body} />}
                   {h.resolver.id && (
                     <div className="text-[11px] text-accent mt-1.5">
-                      Picked up by <span className="font-semibold">{h.resolver.name}</span>
+                      Picked up by <span className="font-semibold">{h.resolver.id === currentUserId ? "you" : h.resolver.name}</span>
+                      {h.status === "resolved" && h.resolved_at && (
+                        <span className="text-muted"> · resolved {relativeTime(h.resolved_at)} ago</span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1300,7 +1378,8 @@ function HelpWall({ currentUserId }: { currentUserId: string }) {
                   {canPick && (
                     <button
                       onClick={() => updateStatus.mutate({ id: h.id, status: "in_progress" })}
-                      className="text-[11.5px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/90"
+                      disabled={updateStatus.isPending}
+                      className="text-[11.5px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-accent/90 disabled:opacity-60"
                     >
                       I'll take it
                     </button>
@@ -1308,7 +1387,8 @@ function HelpWall({ currentUserId }: { currentUserId: string }) {
                   {canResolve && (
                     <button
                       onClick={() => updateStatus.mutate({ id: h.id, status: "resolved" })}
-                      className="text-[11.5px] font-semibold px-3 py-1.5 rounded-lg bg-success text-white hover:bg-success/90"
+                      disabled={updateStatus.isPending}
+                      className="text-[11.5px] font-semibold px-3 py-1.5 rounded-lg bg-success text-white hover:bg-success/90 disabled:opacity-60"
                     >
                       Mark resolved
                     </button>
