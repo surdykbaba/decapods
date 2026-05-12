@@ -5,9 +5,10 @@
 // Hidden entirely when Microsoft isn't configured / connected (the calendar
 // card already drives the connect CTA, no need to double up).
 import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { Mail as MailIcon, Paperclip, ExternalLink, Loader2, AlertTriangle, AlertCircle, Star, X } from "lucide-react";
+import { toast } from "@/lib/toast";
+import { Mail as MailIcon, Paperclip, ExternalLink, Loader2, AlertTriangle, AlertCircle, Star, X, ListChecks } from "lucide-react";
 
 type Msg = {
   id: string;
@@ -181,6 +182,7 @@ function MessageReader({ id, onClose }: { id: string; onClose: () => void }) {
     queryKey: ["me", "mail", id],
     queryFn: () => api(`/api/v1/me/mail/${encodeURIComponent(id)}`),
   });
+  const [convertOpen, setConvertOpen] = useState(false);
 
   // Wrap the body in a tiny shell so plain-text mails get sensible defaults
   // and HTML mails can't break out of the iframe sandbox. sandbox=""
@@ -226,6 +228,16 @@ function MessageReader({ id, onClose }: { id: string; onClose: () => void }) {
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {data && (
+              <button
+                type="button"
+                onClick={() => setConvertOpen(true)}
+                className="inline-flex items-center gap-1.5 text-[11.5px] font-bold bg-accent text-white px-3 py-1.5 rounded-full hover:bg-accent/90"
+                title="Create a project task from this email"
+              >
+                <ListChecks size={12} /> Convert to task
+              </button>
+            )}
             {data?.web_link && (
               <a
                 href={data.web_link}
@@ -248,6 +260,14 @@ function MessageReader({ id, onClose }: { id: string; onClose: () => void }) {
           </div>
         </header>
 
+        {convertOpen && data && (
+          <EmailToTaskDialog
+            message={data}
+            onClose={() => setConvertOpen(false)}
+            onCreated={() => { setConvertOpen(false); onClose(); }}
+          />
+        )}
+
         {isLoading ? (
           <div className="px-5 py-10 text-muted inline-flex items-center gap-2 text-sm">
             <Loader2 size={14} className="animate-spin" /> Loading message…
@@ -264,6 +284,186 @@ function MessageReader({ id, onClose }: { id: string; onClose: () => void }) {
             className="flex-1 w-full bg-white rounded-b-2xl border-0"
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+type ProjectLite = { id: string; name: string; code: string; status: string };
+
+function EmailToTaskDialog({
+  message, onClose, onCreated,
+}: {
+  message: MsgFull;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const qc = useQueryClient();
+  // Active projects only — closed/archived ones rarely take new work, and a
+  // long picker is friction during quick triage.
+  const { data: projects, isLoading: projectsLoading } = useQuery<ProjectLite[]>({
+    queryKey: ["projects", "lite"],
+    queryFn: () => api<{ items: ProjectLite[] }>("/api/v1/projects").then((r) =>
+      r.items.filter((p) => !["closed", "archived"].includes(p.status))
+    ),
+    staleTime: 60_000,
+  });
+
+  const [projectId, setProjectId] = useState("");
+  const [title, setTitle] = useState(message.subject || "(no subject)");
+  // Body of the task includes a clear "From email" preamble so the next
+  // reader knows where it came from, plus the sender, a snippet of the
+  // preview and a deep-link back to the original Outlook message.
+  const initialDescription = useMemo(() => {
+    const lines: string[] = [];
+    lines.push(`From email: ${message.from_name} <${message.from}>`);
+    if (message.received) lines.push(`Received: ${new Date(message.received).toLocaleString()}`);
+    if (message.preview) lines.push("", message.preview);
+    if (message.web_link) lines.push("", `Outlook link: ${message.web_link}`);
+    return lines.join("\n");
+  }, [message]);
+  const [description, setDescription] = useState(initialDescription);
+  const [priority, setPriority] = useState(3);
+  const [dueOn, setDueOn] = useState("");
+
+  const create = useMutation({
+    mutationFn: () => {
+      if (!projectId) throw new Error("Pick a project first");
+      if (!title.trim()) throw new Error("Title required");
+      return api(`/api/v1/projects/${projectId}/tasks`, {
+        method: "POST",
+        body: JSON.stringify({
+          title: title.trim(),
+          description: description.trim(),
+          priority,
+          due_on: dueOn,
+        }),
+      });
+    },
+    onSuccess: () => {
+      toast.success("Task created", "We've filed this email under the project.");
+      qc.invalidateQueries({ queryKey: ["projects"] });
+      qc.invalidateQueries({ queryKey: ["me", "work"] });
+      onCreated();
+    },
+    onError: (e: any) => toast.error("Could not create task", e?.message),
+  });
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] bg-black/60 grid place-items-center p-4"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-xl flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className="px-5 py-3.5 border-b border-border flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <ListChecks size={16} className="text-accent shrink-0" />
+            <h3 className="text-base font-bold text-text leading-tight truncate">
+              Convert email to task
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="p-1.5 rounded hover:bg-bg text-muted hover:text-text"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </header>
+
+        <div className="p-5 space-y-4 overflow-y-auto max-h-[70vh]">
+          <label className="block">
+            <div className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Project</div>
+            {projectsLoading ? (
+              <div className="text-[12px] text-muted inline-flex items-center gap-1.5">
+                <Loader2 size={12} className="animate-spin" /> Loading projects…
+              </div>
+            ) : (
+              <select
+                value={projectId}
+                onChange={(e) => setProjectId(e.target.value)}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="">— Pick a project —</option>
+                {(projects ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.code ? `${p.code} · ` : ""}{p.name}
+                  </option>
+                ))}
+              </select>
+            )}
+          </label>
+
+          <label className="block">
+            <div className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Title</div>
+            <input
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </label>
+
+          <label className="block">
+            <div className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Description</div>
+            <textarea
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm font-mono leading-relaxed"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={8}
+            />
+          </label>
+
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <div className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Priority</div>
+              <select
+                value={priority}
+                onChange={(e) => setPriority(parseInt(e.target.value, 10))}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm"
+              >
+                <option value={1}>1 — Critical</option>
+                <option value={2}>2 — High</option>
+                <option value={3}>3 — Normal</option>
+                <option value={4}>4 — Low</option>
+                <option value={5}>5 — Backlog</option>
+              </select>
+            </label>
+            <label className="block">
+              <div className="text-[11px] font-semibold text-muted uppercase tracking-wider mb-1">Due on</div>
+              <input
+                type="date"
+                value={dueOn}
+                onChange={(e) => setDueOn(e.target.value)}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm"
+              />
+            </label>
+          </div>
+        </div>
+
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => create.mutate()}
+            disabled={create.isPending || !projectId || !title.trim()}
+            className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {create.isPending ? <Loader2 size={13} className="animate-spin" /> : <ListChecks size={13} />}
+            {create.isPending ? "Creating…" : "Create task"}
+          </button>
+        </footer>
       </div>
     </div>
   );
