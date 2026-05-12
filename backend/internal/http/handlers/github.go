@@ -20,6 +20,82 @@ type GitHub struct {
 
 func NewGitHub(db *pgxpool.Pool, cfg *config.Config) *GitHub { return &GitHub{db: db, cfg: cfg} }
 
+// Status — admin-only health view of the integration. We don't return the
+// actual secret; we just say whether it's configured so the UI can show a
+// "ready / needs setup" badge.
+func (h *GitHub) Status(c *gin.Context) {
+	c.JSON(200, gin.H{
+		"webhook_secret_configured": h.cfg.GitHubWebhookSecret != "",
+	})
+}
+
+// ListRepos returns every linked repository in this tenant with its project,
+// linker, and a couple of activity hints (counts of PRs and commits we've
+// ingested via webhooks).
+func (h *GitHub) ListRepos(c *gin.Context) {
+	rows, err := h.db.Query(c, `
+		SELECT r.id, r.owner, r.name, COALESCE(r.installation_id, 0),
+		       r.project_id, p.code, p.name,
+		       (SELECT COUNT(*) FROM gh_pull_requests pr WHERE pr.repo_id = r.id) AS prs,
+		       (SELECT COUNT(*) FROM gh_commits c       WHERE c.repo_id = r.id) AS commits
+		FROM gh_repositories r
+		JOIN projects p ON p.id = r.project_id
+		WHERE p.tenant_id = (SELECT tenant_id FROM users WHERE id = $1)
+		  AND p.deleted_at IS NULL
+		ORDER BY r.owner, r.name`,
+		c.MustGet("ctx.user_id"))
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	out := []gin.H{}
+	for rows.Next() {
+		var (
+			id, projectID         uuid.UUID
+			owner, name           string
+			installID             int64
+			projectCode, projName string
+			prs, commits          int
+		)
+		if err := rows.Scan(&id, &owner, &name, &installID, &projectID, &projectCode, &projName, &prs, &commits); err == nil {
+			out = append(out, gin.H{
+				"id":              id,
+				"owner":           owner,
+				"name":            name,
+				"installation_id": installID,
+				"project_id":      projectID,
+				"project_code":    projectCode,
+				"project_name":    projName,
+				"pull_requests":   prs,
+				"commits":         commits,
+			})
+		}
+	}
+	c.JSON(200, gin.H{"items": out})
+}
+
+// UnlinkRepo drops the repository link. PR / commit / deployment history
+// cascades away (ON DELETE CASCADE on the FK), so the row vanishes entirely.
+// Re-linking later re-creates the row fresh — we never restore the ingest.
+func (h *GitHub) UnlinkRepo(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	tag, err := h.db.Exec(c, `DELETE FROM gh_repositories WHERE id = $1`, id)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		c.JSON(404, gin.H{"error": "not linked"})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
 func (h *GitHub) LinkRepo(c *gin.Context) {
 	var req struct {
 		ProjectID  uuid.UUID `json:"project_id" binding:"required"`

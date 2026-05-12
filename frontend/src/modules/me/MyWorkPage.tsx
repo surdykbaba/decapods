@@ -92,9 +92,9 @@ const STATUS_COLOR: Record<TaskRow["status"], string> = {
 };
 const PRIORITY_LABEL = ["", "Lowest", "Low", "Medium", "High", "Highest"];
 
-type Tab = "dashboard" | "tasks" | "updates" | "timesheet" | "profile";
+type Tab = "dashboard" | "tasks" | "updates" | "timesheet" | "inbox" | "profile";
 
-const VALID_TABS: Tab[] = ["dashboard", "tasks", "updates", "timesheet", "profile"];
+const VALID_TABS: Tab[] = ["dashboard", "tasks", "updates", "timesheet", "inbox", "profile"];
 
 export function MyWorkPage() {
   const [params, setParams] = useSearchParams();
@@ -166,6 +166,14 @@ export function MyWorkPage() {
     refetchInterval: 5 * 60_000,
     staleTime: 60_000,
   });
+  // Inbox unread count for the tab badge. Cheap — we already cache /me/mail
+  // for the Inbox tab itself, so this reuses the same query key.
+  const { data: mailData } = useQuery<{ connected: boolean; items?: { is_read: boolean }[] }>({
+    queryKey: ["me", "mail"],
+    queryFn: () => api("/api/v1/me/mail?top=25"),
+    refetchInterval: 2 * 60_000,
+    staleTime: 60_000,
+  });
 
   // Badge rule of thumb: only render a number when there's something the
   // user can act on right now. Workload totals (e.g. "you have 3 tasks")
@@ -188,20 +196,27 @@ export function MyWorkPage() {
     // Profile — MFA setup pending only when the admin has marked the user
     // mfa_required.
     const profileCount = profileData?.mfa_required && !profileData?.mfa_enabled ? 1 : 0;
+    // Inbox — unread message count when Microsoft is connected. Skips the
+    // badge entirely when not connected so it doesn't nag.
+    const inboxCount = (mailData?.connected && mailData.items)
+      ? mailData.items.filter((m) => !m.is_read).length
+      : 0;
     return {
       dashboard: todayCount,
       tasks:     tasksCount,
       updates:   updatesCount,
       timesheet: timesheetCount,
+      inbox:     inboxCount,
       profile:   profileCount,
     };
-  }, [badgeData, profileData]);
+  }, [badgeData, profileData, mailData]);
 
   const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; badge?: number; badgeTone?: "danger" | "warn" | "accent" }[] = [
     { key: "dashboard", label: "Today",     icon: Zap,            badge: badges.dashboard, badgeTone: "danger" },
     { key: "tasks",     label: "My tasks",  icon: ListChecks,     badge: badges.tasks,     badgeTone: "danger" },
     { key: "updates",   label: "Updates",   icon: MessageSquare,  badge: badges.updates,   badgeTone: "warn"   },
     { key: "timesheet", label: "Timesheet", icon: Clock,          badge: badges.timesheet, badgeTone: "warn"   },
+    { key: "inbox",     label: "Inbox",     icon: Inbox,          badge: badges.inbox,     badgeTone: "accent" },
     { key: "profile",   label: "Profile",   icon: Github,         badge: badges.profile,   badgeTone: "danger" },
   ];
 
@@ -252,6 +267,7 @@ export function MyWorkPage() {
       {tab === "tasks"     && <TasksTab />}
       {tab === "updates"   && <UpdatesTab />}
       {tab === "timesheet" && <TimesheetTab />}
+      {tab === "inbox"     && <InboxTab />}
       {tab === "profile"   && <ProfileTab />}
     </div>
   );
@@ -371,10 +387,6 @@ function DashboardTab() {
       {/* Microsoft calendar — only renders when the workspace has wired the
           Azure AD app. Otherwise stays silent so nobody sees an orphan card. */}
       <MeetingsCard />
-
-      {/* Microsoft Inbox — same connection as the calendar card, hidden
-          when not connected so it never becomes a second silent CTA. */}
-      <MailCard />
 
       {/* Smart briefing — adaptive headline, health badge, briefing sentence */}
       <section className="bg-surface border border-border rounded-2xl p-5">
@@ -1629,6 +1641,40 @@ function TimesheetTab() {
             </tbody>
           </table>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Inbox ---------- */
+
+function InboxTab() {
+  // The Inbox tab is intentionally thin — MailCard already handles all the
+  // states (loading, error, empty, scope-missing). We just wrap it in a
+  // descriptive header so the tab doesn't look bare on first load.
+  const { data: status } = useQuery<{ configured: boolean; connected: boolean }>({
+    queryKey: ["me", "ms-status"],
+    queryFn: () => api("/api/v1/me/microsoft/status"),
+  });
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="h2">Inbox</h2>
+        <p className="text-sm text-muted mt-1">
+          Latest from your Microsoft mailbox. Connect Microsoft on the Today
+          tab if you don't see your inbox here.
+        </p>
+      </div>
+      {!status?.connected ? (
+        <div className="bg-surface border border-border rounded-2xl p-8 text-center">
+          <Inbox size={28} className="mx-auto text-muted mb-3" />
+          <div className="text-sm font-semibold text-text">Inbox isn't connected yet</div>
+          <p className="text-xs text-muted mt-1 max-w-sm mx-auto">
+            Head to the Today tab and click Connect Microsoft. Your mail will appear here as soon as it's linked.
+          </p>
+        </div>
+      ) : (
+        <MailCard />
       )}
     </div>
   );
