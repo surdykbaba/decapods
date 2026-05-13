@@ -1256,6 +1256,32 @@ function PreviewDocumentDialog({
   })();
   const isImage = ["png","jpg","jpeg","gif","webp","svg"].includes(ext);
   const isPdf = ext === "pdf";
+  // Hosts that block iframe embedding via X-Frame-Options or CSP
+  // frame-ancestors. We don't even attempt to load an <iframe> for
+  // these — they would just render the browser's "refused to connect"
+  // dead-page. Instead the user gets a clean "open in new tab" card
+  // with the URL surfaced and a primary CTA to launch the doc.
+  //
+  // Match the host conservatively (endsWith) so a malicious doc.example
+  // pretending to be sharepoint.com.attacker.example doesn't slip past.
+  const FRAME_BLOCKED_HOSTS = [
+    "sharepoint.com",
+    "office.com", "office365.com",
+    "onedrive.live.com",
+    "docs.google.com", "drive.google.com",
+    "dropbox.com",
+    "box.com",
+    "notion.so",
+    "github.com",
+    "atlassian.net",
+  ];
+  const isFrameBlocked = (() => {
+    if (!isUrl) return false;
+    try {
+      const host = new URL(key).hostname.toLowerCase();
+      return FRAME_BLOCKED_HOSTS.some((h) => host === h || host.endsWith("." + h));
+    } catch { return false; }
+  })();
 
   // For internal doc://<id> uploads we fetch the binary with the user's
   // bearer token, turn it into a blob URL, and feed that into the iframe.
@@ -1341,6 +1367,39 @@ function PreviewDocumentDialog({
           ) : previewSrc && isImage ? (
             <div className="h-full grid place-items-center p-4">
               <img src={previewSrc} alt={doc.name} className="max-w-full max-h-full object-contain" />
+            </div>
+          ) : previewSrc && isUrl && isFrameBlocked ? (
+            // SharePoint / Google Docs / Box etc. block iframe embedding.
+            // Render a clean "open in new tab" card instead of letting
+            // the browser show "refused to connect".
+            <div className="h-full grid place-items-center p-8 text-center">
+              <div className="max-w-md">
+                <div className="w-12 h-12 mx-auto rounded-full bg-accent-soft text-accent grid place-items-center mb-3">
+                  <ExternalLink size={20} />
+                </div>
+                <div className="text-sm font-bold text-text">
+                  {(() => {
+                    try { return new URL(previewSrc).hostname.replace(/^www\./, ""); }
+                    catch { return "External host"; }
+                  })()}
+                  {" "}can't be previewed inline
+                </div>
+                <p className="text-[12.5px] text-muted mt-1.5 leading-relaxed">
+                  This host (SharePoint, Google Docs, Box, etc.) blocks embedded preview for security.
+                  Open the document in a new tab to view it.
+                </p>
+                <a
+                  href={previewSrc}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-4 inline-flex items-center gap-1.5 bg-accent text-white font-bold px-4 py-2 rounded-full text-sm hover:bg-[rgb(var(--accent-hover))] press-fx"
+                >
+                  <ExternalLink size={14} /> Open {doc.name || "document"}
+                </a>
+                <div className="mt-4 text-[10.5px] font-mono text-muted/80 break-all">
+                  {previewSrc}
+                </div>
+              </div>
             </div>
           ) : previewSrc && (isPdf || isUrl) ? (
             // PDFs and public URLs render inline. Office formats (.docx, .xlsx)
