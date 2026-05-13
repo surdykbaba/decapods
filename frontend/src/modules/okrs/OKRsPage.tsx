@@ -90,7 +90,7 @@ export function OKRsPage() {
   const [tab, setTab] = useState<"mine" | "workspace">("mine");
   const [activeCycleId, setActiveCycleId] = useState<string | null>(null);
   const [editing, setEditing] = useState<OKR | null>(null);
-  const [creating, setCreating] = useState<{ cycleId: string; kind: OKR["kind"]; parentId?: string } | null>(null);
+  const [creating, setCreating] = useState<{ cycleId: string; kind: OKR["kind"]; parentId?: string; seed?: string } | null>(null);
   // Phase 2 — check-in dialog target + history-popover target.
   const [checkingIn, setCheckingIn] = useState<OKR | null>(null);
   const [historyFor, setHistoryFor] = useState<OKR | null>(null);
@@ -216,26 +216,12 @@ export function OKRsPage() {
           {isLoading ? (
             <div className="text-muted">Loading…</div>
           ) : grouped.objs.length === 0 ? (
-            <section className="bg-surface border border-border rounded-2xl p-8 text-center">
-              <Sparkles size={28} className="mx-auto text-muted mb-3" />
-              <div className="text-base font-bold text-text">
-                {tab === "mine" ? "No objectives this cycle" : "Nothing posted yet for this cycle"}
-              </div>
-              <p className="text-sm text-muted mt-1 max-w-md mx-auto">
-                {tab === "mine"
-                  ? "Set 1–3 objectives that capture your priorities for the cycle. Each one gets 2–4 measurable key results underneath."
-                  : "When teammates publish objectives they'll appear here."}
-              </p>
-              {tab === "mine" && (
-                <button
-                  type="button"
-                  onClick={() => setCreating({ cycleId: cycle.id, kind: "objective" })}
-                  className="mt-4 inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90"
-                >
-                  <Plus size={14} /> Add my first objective
-                </button>
-              )}
-            </section>
+            <ObjectivesEmptyState
+              cycle={cycle}
+              tab={tab}
+              onCreate={(seed) => setCreating({ cycleId: cycle.id, kind: "objective", seed })}
+              onSwitchToMine={() => setTab("mine")}
+            />
           ) : (
             <ul className="space-y-3">
               {grouped.objs.map((obj) => (
@@ -267,6 +253,7 @@ export function OKRsPage() {
           cycleId={creating.cycleId}
           kind={creating.kind}
           parentId={creating.parentId}
+          seedTitle={creating.seed}
           onClose={() => setCreating(null)}
         />
       )}
@@ -386,6 +373,149 @@ function OKRsEmptyState({ isAdmin, onCreateCycle }: { isAdmin: boolean; onCreate
           That's it — one objective, a handful of measurable key results, and a weekly check-in to keep the confidence honest.
         </p>
       </div>
+    </section>
+  );
+}
+
+// ObjectivesEmptyState — the empty body when a cycle exists but no
+// objectives have been added yet. Splits into two states:
+//
+//  Mine tab — first-author surface. Ready-to-use template cards (Ship /
+//  Grow / Reduce) seed the create dialog with a sentence stem so the
+//  blank-canvas problem vanishes. Cycle countdown reminds the user how
+//  much runway the cycle has.
+//
+//  Workspace tab — "be first" nudge. Surfaces the cycle countdown plus
+//  a button that flips back to Mine so the user can set theirs (the
+//  fastest way to populate the Workspace view is for one person to ship
+//  the first objective).
+function ObjectivesEmptyState({
+  cycle, tab, onCreate, onSwitchToMine,
+}: {
+  cycle: Cycle;
+  tab: "mine" | "workspace";
+  onCreate: (seedTitle?: string) => void;
+  onSwitchToMine: () => void;
+}) {
+  // Days remaining until the cycle ends. Helps anchor the "how big should
+  // my objective be?" mental math — a 90-day cycle frames bigger bets
+  // than a 14-day one.
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const endMs = new Date(cycle.ends_on + "T00:00:00").getTime();
+  const startMs = new Date(cycle.starts_on + "T00:00:00").getTime();
+  const totalDays = Math.max(1, Math.round((endMs - startMs) / 86_400_000));
+  const daysLeft = Math.max(0, Math.round((endMs - today.getTime()) / 86_400_000));
+  const elapsedPct = Math.min(100, Math.max(0, Math.round(((today.getTime() - startMs) / (endMs - startMs)) * 100)));
+  const status: "fresh" | "mid" | "late" = elapsedPct < 33 ? "fresh" : elapsedPct < 66 ? "mid" : "late";
+
+  // Template cards — five archetypes covering the OKR vocabulary 99% of
+  // workspaces actually use. Each tap pre-fills the title field; the
+  // user finishes the sentence.
+  const templates: { emoji: string; tone: string; label: string; seed: string; sub: string }[] = [
+    { emoji: "🚀", tone: "bg-success/10 text-success border-success/30",   label: "Ship",     seed: "Ship ",     sub: "Land a feature / milestone" },
+    { emoji: "📈", tone: "bg-accent-soft text-accent border-accent/30",    label: "Grow",     seed: "Grow ",     sub: "Move a number up" },
+    { emoji: "📉", tone: "bg-warn/10 text-warn border-warn/30",            label: "Reduce",   seed: "Reduce ",   sub: "Bring a number down" },
+    { emoji: "🛡️", tone: "bg-bg/60 text-muted border-border",              label: "Maintain", seed: "Maintain ", sub: "Hold quality / SLA" },
+    { emoji: "✨", tone: "bg-accent-soft text-accent border-accent/30",    label: "Launch",   seed: "Launch ",   sub: "Public release / GA" },
+  ];
+
+  return (
+    <section className="bg-surface border border-border rounded-2xl overflow-hidden">
+      {/* Hero — cycle name, status pill, days-left countdown with a
+          progress bar so the user feels the runway shrink. */}
+      <div className="relative px-6 sm:px-8 py-6" style={{ background: "linear-gradient(135deg, rgba(15,123,151,0.08), rgba(15,123,151,0.02))" }}>
+        <div className="flex items-start gap-4 flex-wrap">
+          <div className="w-12 h-12 rounded-2xl bg-accent grid place-items-center text-white shadow-soft shrink-0">
+            <Target size={22} strokeWidth={2.4} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-lg font-extrabold text-text">{cycle.name}</h2>
+              <span className={`pill text-[10px] uppercase tracking-wider font-bold ${
+                cycle.status === "active" ? "bg-success/15 text-success"
+                : cycle.status === "planning" ? "bg-accent-soft text-accent"
+                : "bg-bg/60 text-muted"
+              }`}>{cycle.status}</span>
+              <span className={`text-[11px] font-bold ${status === "late" ? "text-danger" : status === "mid" ? "text-warn" : "text-muted"}`}>
+                {daysLeft === 0 ? "Ends today" : `${daysLeft} day${daysLeft === 1 ? "" : "s"} left`}
+                <span className="text-muted/70 font-normal"> · {totalDays}d total</span>
+              </span>
+            </div>
+            <div className="mt-2 h-1 bg-bg/60 rounded-full overflow-hidden max-w-md">
+              <div
+                className={`h-full rounded-full transition-[width] ${
+                  status === "late" ? "bg-danger" : status === "mid" ? "bg-warn" : "bg-accent"
+                }`}
+                style={{ width: `${elapsedPct}%` }}
+              />
+            </div>
+            <p className="text-[12.5px] text-muted mt-3 max-w-lg">
+              {tab === "mine"
+                ? "Set 1–3 objectives that capture your priorities for this cycle. Each one gets 2–4 measurable key results underneath that prove it's done."
+                : "When teammates publish objectives they'll appear here. Start the snowball — be the first to share yours and the rest of the workspace usually follows."}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {tab === "mine" ? (
+        <div className="px-6 sm:px-8 py-6 border-t border-border space-y-4">
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-2 inline-flex items-center gap-1.5">
+              <Sparkles size={11} /> Start from a template
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {templates.map((t) => (
+                <button
+                  key={t.label}
+                  type="button"
+                  onClick={() => onCreate(t.seed)}
+                  className={`text-left rounded-xl border p-3 hover-lift press-fx transition-colors ${t.tone}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg leading-none">{t.emoji}</span>
+                    <div className="font-bold text-[13.5px]">{t.label}…</div>
+                  </div>
+                  <div className="text-[11.5px] opacity-80 mt-1">{t.sub}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3 flex-wrap pt-2">
+            <p className="text-[11.5px] text-muted italic max-w-md">
+              Tip: keep the objective qualitative ("Grow active users") and let the key results be the numbers ("from 1,200 → 2,000 MAU"). Tighter scoring, less arguing.
+            </p>
+            <button
+              type="button"
+              onClick={() => onCreate()}
+              className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-[rgb(var(--accent-hover))] shadow-soft press-fx"
+            >
+              <Plus size={14} /> Start blank
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="px-6 sm:px-8 py-6 border-t border-border">
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex-1 min-w-0">
+              <div className="text-[13.5px] font-bold text-text inline-flex items-center gap-2">
+                <Sparkles size={13} className="text-accent" /> Be the first to publish
+              </div>
+              <p className="text-[12px] text-muted mt-0.5">
+                Switch to the Mine tab and ship the first objective — teammates usually follow within the day.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onSwitchToMine}
+              className="inline-flex items-center gap-1.5 text-[12.5px] font-bold bg-accent text-white px-3.5 py-1.5 rounded-full hover:bg-[rgb(var(--accent-hover))] shadow-soft press-fx shrink-0"
+            >
+              <Plus size={12} /> Set my first objective
+            </button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -800,18 +930,19 @@ function formatNum(n: number): string {
 //     objective is added we open a quick-add row that the user can
 //     fill 0–3 KRs into without re-opening the dialog.
 function CreateOKRDialog({
-  cycleId, kind, parentId, onClose,
+  cycleId, kind, parentId, seedTitle, onClose,
 }: {
   cycleId: string;
   kind: OKR["kind"];
   parentId?: string;
+  seedTitle?: string;
   onClose: () => void;
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const isObjective = kind === "objective";
 
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(seedTitle ?? "");
   const [description, setDescription] = useState("");
   const [target, setTarget] = useState("");
   const [unit, setUnit] = useState("");
