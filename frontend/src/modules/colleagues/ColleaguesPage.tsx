@@ -175,6 +175,37 @@ export function ColleaguesPage() {
   });
   useEffect(() => { localStorage.setItem("colleagues:view", view); }, [view]);
 
+  // Sort + paginate the colleague list. Both persist to localStorage so
+  // a user who likes "Joined date · newest first" doesn't reset their
+  // preference on every visit. Page resets to 1 whenever the filter,
+  // role, search, sort, or page-size change so the user can't get
+  // stuck on page 4 of a single-page result.
+  type SortKey = "name-asc" | "name-desc" | "joined-new" | "joined-old" | "active-recent" | "checkin-status";
+  const SORTS: { key: SortKey; label: string }[] = [
+    { key: "name-asc",       label: "Name · A → Z" },
+    { key: "name-desc",      label: "Name · Z → A" },
+    { key: "joined-new",     label: "Joined · newest first" },
+    { key: "joined-old",     label: "Joined · oldest first" },
+    { key: "active-recent",  label: "Active · most recent" },
+    { key: "checkin-status", label: "Checked in today first" },
+  ];
+  const [sort, setSort] = useState<SortKey>(() => {
+    const v = localStorage.getItem("colleagues:sort") as SortKey | null;
+    return v && SORTS.some((s) => s.key === v) ? v : "name-asc";
+  });
+  useEffect(() => { localStorage.setItem("colleagues:sort", sort); }, [sort]);
+
+  type PageSize = 12 | 24 | 50 | 100 | "all";
+  const [pageSize, setPageSize] = useState<PageSize>(() => {
+    const v = localStorage.getItem("colleagues:page_size");
+    if (v === "all") return "all";
+    const n = Number(v);
+    return ([12, 24, 50, 100] as const).includes(n as any) ? (n as PageSize) : 24;
+  });
+  useEffect(() => { localStorage.setItem("colleagues:page_size", String(pageSize)); }, [pageSize]);
+
+  const [page, setPage] = useState(1);
+
   const { data, isLoading } = useQuery<Resp>({
     queryKey: ["colleagues", "list"],
     queryFn: () => api("/api/v1/members"),
@@ -225,8 +256,52 @@ export function ColleaguesPage() {
         (c.name + " " + c.email + " " + c.roles.join(" ")).toLowerCase().includes(q),
       );
     }
+    // Sort — applied after filter so the comparator only walks the
+    // already-narrowed set.
+    const cmpStr = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: "base" });
+    out = [...out].sort((a, b) => {
+      switch (sort) {
+        case "name-asc":      return cmpStr(a.name || a.email, b.name || b.email);
+        case "name-desc":     return cmpStr(b.name || b.email, a.name || a.email);
+        case "joined-new":    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+        case "joined-old":    return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+        case "active-recent": {
+          // seconds_since is -1 when the user has never heartbeated;
+          // those go to the bottom so the genuinely-active people
+          // float to the top.
+          const aS = a.seconds_since < 0 ? Number.MAX_SAFE_INTEGER : a.seconds_since;
+          const bS = b.seconds_since < 0 ? Number.MAX_SAFE_INTEGER : b.seconds_since;
+          return aS - bS;
+        }
+        case "checkin-status": {
+          // Checked-in colleagues first, then alphabetical inside each
+          // group. Useful for HR Monday-morning scans.
+          const aC = a.checked_in_today ? 0 : 1;
+          const bC = b.checked_in_today ? 0 : 1;
+          if (aC !== bC) return aC - bC;
+          return cmpStr(a.name || a.email, b.name || b.email);
+        }
+        default: return 0;
+      }
+    });
     return out;
-  }, [items, filter, roleFilter, search]);
+  }, [items, filter, roleFilter, search, sort]);
+
+  // Reset to page 1 whenever the filter / search / role / page-size /
+  // sort changes — otherwise a user can land on page 5 of a result set
+  // that now only has one page.
+  useEffect(() => { setPage(1); }, [filter, roleFilter, search, pageSize, sort]);
+
+  // Slice for the current page. "all" returns the whole list.
+  const totalCount = filtered.length;
+  const size = pageSize === "all" ? totalCount : pageSize;
+  const totalPages = pageSize === "all" || size === 0 ? 1 : Math.max(1, Math.ceil(totalCount / size));
+  const safePage = Math.min(page, totalPages);
+  const sliceStart = (safePage - 1) * size;
+  const sliceEnd = pageSize === "all" ? totalCount : Math.min(sliceStart + size, totalCount);
+  const paged = pageSize === "all" ? filtered : filtered.slice(sliceStart, sliceEnd);
+  const showFrom = totalCount === 0 ? 0 : sliceStart + 1;
+  const showTo = sliceEnd;
 
   function switchFilter(next: Filter, role?: string) {
     setFilter(next);
@@ -273,6 +348,19 @@ export function ColleaguesPage() {
             </select>
           </div>
         )}
+        {/* Sort picker — second pill on the strip. Lives next to Role
+            so the eye groups them as "filter / order" controls. */}
+        <div className="pl-2 border-l border-border flex items-center gap-1.5">
+          <span className="text-[10.5px] uppercase tracking-wider font-bold text-muted shrink-0">Sort</span>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value as typeof sort)}
+            className="bg-bg/40 border border-border rounded-full text-[12px] px-2.5 py-1 no-cap"
+            title="Sort the colleagues list"
+          >
+            {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+        </div>
         <div className="ml-auto flex items-center gap-2">
           <div className="relative">
             <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
@@ -321,7 +409,7 @@ export function ColleaguesPage() {
         <KudosInbox kudos={myKudos} onOpenSender={(id) => setOpenId(id)} />
       )}
 
-      {/* Grid */}
+      {/* Grid / list with smart pagination */}
       {isLoading ? (
         <GridSkeleton />
       ) : filtered.length === 0 ? (
@@ -332,20 +420,61 @@ export function ColleaguesPage() {
             {filter !== "all" ? "Try clearing the filter or search." : "Once HR invites more teammates, they'll appear here."}
           </p>
         </div>
-      ) : view === "grid" ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 animate-stagger">
-          {filtered.map((c) => (
-            <ColleagueCard key={c.id} c={c} onOpen={() => setOpenId(c.id)} />
-          ))}
-        </div>
       ) : (
-        <div className="bg-surface border border-border rounded-2xl overflow-hidden animate-fade-in">
-          <ul className="divide-y divide-border">
-            {filtered.map((c) => (
-              <ColleagueRow key={c.id} c={c} onOpen={() => setOpenId(c.id)} />
-            ))}
-          </ul>
-        </div>
+        <>
+          {view === "grid" ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 animate-stagger">
+              {paged.map((c) => (
+                <ColleagueCard key={c.id} c={c} onOpen={() => setOpenId(c.id)} />
+              ))}
+            </div>
+          ) : (
+            <div className="bg-surface border border-border rounded-2xl overflow-hidden animate-fade-in">
+              <ul className="divide-y divide-border">
+                {paged.map((c) => (
+                  <ColleagueRow key={c.id} c={c} onOpen={() => setOpenId(c.id)} />
+                ))}
+              </ul>
+            </div>
+          )}
+          {/* Pagination footer — truthful count + page picker. Hides
+              the Prev/Next strip when there's only one page so the
+              footer stays quiet on a 12-row workspace. */}
+          <footer className="mt-3 flex items-center justify-between gap-3 flex-wrap text-[12px]">
+            <div className="flex items-center gap-2 text-muted">
+              <span>Showing <span className="font-semibold text-text">{showFrom}–{showTo}</span> of <span className="font-semibold text-text">{totalCount}</span></span>
+              <span className="hidden sm:inline">·</span>
+              <label className="hidden sm:inline-flex items-center gap-1.5">
+                Rows per page
+                <select
+                  value={String(pageSize)}
+                  onChange={(e) => setPageSize(e.target.value === "all" ? "all" : (Number(e.target.value) as PageSize))}
+                  className="bg-surface border border-border rounded-md px-1.5 py-1 text-[12px] no-cap"
+                >
+                  {[12, 24, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+                  <option value="all">All</option>
+                </select>
+              </label>
+            </div>
+            {pageSize !== "all" && totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={safePage <= 1}
+                  className="px-2 py-1 rounded-md text-muted hover:text-text hover:bg-bg/40 disabled:opacity-40 disabled:hover:bg-transparent transition-colors press-fx"
+                >‹ Prev</button>
+                <span className="px-2 text-muted">
+                  Page <span className="font-semibold text-text">{safePage}</span> of {totalPages}
+                </span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={safePage >= totalPages}
+                  className="px-2 py-1 rounded-md text-muted hover:text-text hover:bg-bg/40 disabled:opacity-40 disabled:hover:bg-transparent transition-colors press-fx"
+                >Next ›</button>
+              </div>
+            )}
+          </footer>
+        </>
       )}
 
       {active && (
