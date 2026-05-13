@@ -14,7 +14,7 @@ import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
   Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
-  Sparkles, Bell, XCircle, Pencil,
+  Sparkles, Bell, XCircle, Pencil, Smile,
   Mail as MailIcon, Paperclip, Reply, AtSign, Users as UsersIcon, AlertCircle,
   RefreshCw, ExternalLink,
 } from "lucide-react";
@@ -251,10 +251,84 @@ export function MyWorkPage() {
 
 /* ---------- Dashboard ---------- */
 
+// Widget vocabulary for the Today tab. Each entry is one card the user
+// can toggle in / out and re-order. Widgets are render-fn-driven so adding
+// a new one is a single object plus a switch case in renderWidget below —
+// no scaffolding per widget.
+type WidgetKey =
+  | "hero"
+  | "heads_up"
+  | "meetings"
+  | "needs_now"
+  | "projects"
+  | "next_moves"
+  | "kudos_received"
+  | "birthdays_today"
+  | "mood_pulse";
+
+const WIDGET_META: Record<WidgetKey, { label: string; help: string }> = {
+  hero:            { label: "Welcome hero",       help: "Time-of-day greeting + your today snapshot." },
+  heads_up:        { label: "Heads-up",           help: "Recent workspace events that landed on you." },
+  meetings:        { label: "Meetings",           help: "Your Microsoft / Google calendar for today." },
+  needs_now:       { label: "Needs you now",      help: "Overdue, due today, blocked, and soon-due tasks." },
+  projects:        { label: "Your projects",      help: "Quick links to projects you're allocated to." },
+  next_moves:      { label: "Suggested next moves", help: "Adaptive prompts based on what's slipping." },
+  kudos_received:  { label: "Kudos you received", help: "Recognition colleagues sent your way." },
+  birthdays_today: { label: "Birthdays today",    help: "Wish your teammates a happy birthday." },
+  mood_pulse:      { label: "Mood pulse",         help: "Quick-pick mood for the current check-in slot." },
+};
+
+const DEFAULT_LAYOUT: WidgetKey[] = [
+  "hero", "heads_up", "meetings", "needs_now", "projects",
+  "kudos_received", "birthdays_today", "mood_pulse", "next_moves",
+];
+
+const ALL_WIDGETS: WidgetKey[] = [
+  "hero", "heads_up", "meetings", "needs_now", "projects",
+  "next_moves", "kudos_received", "birthdays_today", "mood_pulse",
+];
+
+const LAYOUT_KEY = "me-today-layout";
+
 function DashboardTab() {
+  const { user } = useAuth();
   const { data, isLoading } = useQuery<WorkResponse>({
     queryKey: ["me", "work"], queryFn: () => api("/api/v1/me/work"),
   });
+  // Optional widget data — fetched at the top so the layout stays
+  // declarative and we don't pay for queries the user has hidden.
+  const { data: kudosData } = useQuery<{ items: { id: string; from: { id: string; name: string; email: string }; badge: string; message: string; created_at: string }[] }>({
+    queryKey: ["me", "kudos-received"],
+    queryFn: () => api("/api/v1/campfire/kudos?limit=20"),
+    refetchInterval: 5 * 60_000,
+    staleTime: 60_000,
+  });
+  const { data: membersData } = useQuery<{ items: { id: string; name: string; email: string; status: string; birthday?: string | null }[] }>({
+    queryKey: ["me", "members-for-birthdays"],
+    queryFn: () => api("/api/v1/members"),
+    refetchInterval: 10 * 60_000,
+    staleTime: 5 * 60_000,
+  });
+
+  // Layout state — array of WidgetKey in render order. Hidden widgets are
+  // not in the array. Persisted to localStorage per device so a user's
+  // hand-picked dashboard survives reloads + tab navigations.
+  const [layout, setLayout] = useState<WidgetKey[]>(() => {
+    try {
+      const raw = localStorage.getItem(LAYOUT_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.every((k) => ALL_WIDGETS.includes(k))) return arr;
+      }
+    } catch { /* fall through */ }
+    return DEFAULT_LAYOUT;
+  });
+  function saveLayout(next: WidgetKey[]) {
+    setLayout(next);
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(next));
+  }
+  const [customising, setCustomising] = useState(false);
+
   if (isLoading || !data) return <div className="text-muted">Loading…</div>;
 
   const c = data.counts;
@@ -356,129 +430,458 @@ function DashboardTab() {
     });
   }
 
+  // myKudos — kudos where the recipient is the caller. Computed here so
+  // both the widget body + the empty-state check share one source.
+  const myKudos = (kudosData?.items ?? []).filter((k) =>
+    (k as any).to?.id === user?.id // eslint-disable-line @typescript-eslint/no-explicit-any
+  );
+  // Today's birthdays — month + day match against members.birthday. Empty
+  // when no one in the workspace has shared a birthday.
+  const todaysBirthdays = (() => {
+    const now = new Date();
+    const m = now.getMonth();
+    const d = now.getDate();
+    return (membersData?.items ?? []).filter((mem) => {
+      if (mem.status !== "active" || !mem.birthday) return false;
+      const bd = new Date(mem.birthday + (mem.birthday.length === 10 ? "T00:00:00Z" : ""));
+      if (isNaN(bd.getTime())) return false;
+      return bd.getUTCMonth() === m && bd.getUTCDate() === d;
+    });
+  })();
+
+  // renderWidget — single dispatch so adding a new widget is one switch
+  // case + the metadata entry above. Each case returns null when there's
+  // nothing to show so hidden-but-empty widgets don't reserve space.
+  // `wd` re-binds `data` as non-nullable since the early-return above
+  // proved it. TypeScript can't narrow across the closure boundary.
+  const wd: WorkResponse = data;
+  function renderWidget(key: WidgetKey): React.ReactNode {
+    switch (key) {
+      case "hero":
+        return <HeroCard key="hero" user={user} data={wd} overdue={overdue.length} dueToday={dueToday.length} blocked={blocked.length} />;
+      case "heads_up":
+        return <HeadsUpPanel key="heads_up" />;
+      case "meetings":
+        return <MeetingsCard key="meetings" />;
+      case "needs_now":
+        return <NeedsNowCard key="needs_now" data={wd} overdue={overdue} dueToday={dueToday} blocked={blocked} orderedTriage={orderedTriage} />;
+      case "projects":
+        return <ProjectsCard key="projects" projects={wd.projects} />;
+      case "next_moves":
+        return suggestions.length > 0 ? <NextMovesCard key="next_moves" suggestions={suggestions} /> : null;
+      case "kudos_received":
+        return myKudos.length > 0 ? <KudosReceivedCard key="kudos_received" kudos={myKudos} /> : null;
+      case "birthdays_today":
+        return todaysBirthdays.length > 0 ? <BirthdaysCard key="birthdays_today" birthdays={todaysBirthdays} /> : null;
+      case "mood_pulse":
+        return <MoodPulseCard key="mood_pulse" />;
+    }
+  }
+
   return (
     <div className="space-y-5">
-      {/* Heads-up panel — recent unread workspace events that landed on this
-          user (leave decisions, kudos, milestone assignments, mentions). */}
-      <HeadsUpPanel />
-
-      {/* Microsoft calendar — only renders when the workspace has wired the
-          Azure AD app. Otherwise stays silent so nobody sees an orphan card. */}
-      <MeetingsCard />
-
-      {/* "Today's briefing" + the 4-tile KPI strip lived here. Removed at
-          the user's request — the Needs you now / Your projects panels
-          below carry the same actionable signal without the duplicated
-          counts and "Your queue is clear" billboard. Briefing /
-          KpiTile helpers are kept above (void'd) in case we revive a
-          smarter, less noisy top-of-page later. */}
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        {/* Triage — overdue → today → blocked → soon → rest */}
-        <section className="bg-surface border border-border rounded-2xl p-5 lg:col-span-2">
-          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-            <h2 className="h2 flex items-center gap-2"><Zap size={16} className="text-accent" /> Needs you now</h2>
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {overdue.length > 0  && <span className="pill bg-danger/15 text-danger">{overdue.length} overdue</span>}
-              {dueToday.length > 0 && <span className="pill bg-warn/15 text-warn">{dueToday.length} today</span>}
-              {blocked.length > 0  && <span className="pill bg-warn/15 text-warn">{blocked.length} blocked</span>}
-              {overdue.length === 0 && dueToday.length === 0 && blocked.length === 0 && (
-                <span className="text-xs text-muted">{data.priorities.length} item{data.priorities.length === 1 ? "" : "s"}</span>
-              )}
-            </div>
-          </div>
-          {data.priorities.length === 0 ? (
-            <EmptyHint
-              icon={<CheckCircle2 size={22} className="text-success" />}
-              title="Inbox zero"
-              body="You don't have any open tasks. Take a breather or sync with your PM for new work."
-            />
-          ) : (
-            <ul className="divide-y divide-border">
-              {orderedTriage.map((t) => (
-                <li key={t.id} className="relative">
-                  {/* Left edge accent strip — quick visual cue for bucket */}
-                  <span className={`absolute left-0 top-0 bottom-0 w-1 rounded-r ${
-                    t.bucket === "overdue" ? "bg-danger"
-                    : t.bucket === "blocked" ? "bg-warn"
-                    : t.bucket === "today"   ? "bg-accent"
-                    : t.bucket === "soon"    ? "bg-accent/40"
-                    : "bg-transparent"
-                  }`} />
-                  <div className="pl-3">
-                    <TaskRowItem task={t} compact />
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        {/* Active projects */}
-        <section className="bg-surface border border-border rounded-2xl p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="h2 flex items-center gap-2"><Activity size={16} className="text-accent" /> Your projects</h2>
-            <span className="text-xs text-muted">{data.projects.length}</span>
-          </div>
-          {data.projects.length === 0 ? (
-            <EmptyHint
-              icon={<Inbox size={22} className="text-muted" />}
-              title="Not on any project yet"
-              body="A project manager will assign you when there's work to ship."
-            />
-          ) : (
-            <ul className="space-y-2.5">
-              {data.projects.map((p) => (
-                <li key={p.id}>
-                  <Link
-                    to={`/projects/${p.id}`}
-                    className="block bg-bg/60 border border-border rounded-xl px-3 py-2.5 hover:border-accent transition-colors"
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-[13px] font-bold text-text truncate">{p.name}</span>
-                      <span className={`pill ${
-                        p.health === "green" ? "bg-success/15 text-success"
-                        : p.health === "amber" ? "bg-warn/15 text-warn"
-                        : "bg-danger/15 text-danger"
-                      }`}>{p.health}</span>
-                    </div>
-                    <div className="flex items-center justify-between text-[11px] text-muted mt-0.5">
-                      <span className="truncate">{p.role || "Member"} · {p.code}</span>
-                      <span>{Math.round(p.allocation * 100)}%</span>
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+      {/* Customise — quiet header strip with the Edit-layout pencil. The
+          button is always visible so a user who's hidden every widget can
+          still bring them back. */}
+      <div className="flex items-center justify-end -mb-2">
+        <button
+          type="button"
+          onClick={() => setCustomising(true)}
+          className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-muted hover:text-accent press-fx"
+          title="Add or hide widgets, change order"
+        >
+          <Pencil size={11} /> Customise layout
+        </button>
       </div>
 
-      {suggestions.length > 0 && (
-        <section className="bg-surface border border-border rounded-2xl p-5">
-          <h2 className="h2 flex items-center gap-2 mb-3">
-            <Sparkles size={16} className="text-accent" /> Suggested next moves
-          </h2>
-          <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {suggestions.map((s, i) => {
-              const toneCls = s.tone === "warn" ? "bg-warn/10 text-warn border-warn/30"
-                : s.tone === "info" ? "bg-accent-soft text-accent border-accent/30"
-                : "bg-success/10 text-success border-success/30";
-              return (
-                <li key={i} className="flex items-start gap-3 bg-bg/40 border border-border rounded-xl p-3">
-                  <span className={`w-7 h-7 rounded-full grid place-items-center shrink-0 border ${toneCls}`}>
-                    {s.icon}
-                  </span>
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-bold text-text">{s.title}</div>
-                    <div className="text-[12px] text-muted leading-snug mt-0.5">{s.body}</div>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
+      {layout.map((key) => renderWidget(key))}
+
+      {customising && (
+        <CustomiseLayoutDialog
+          layout={layout}
+          onClose={() => setCustomising(false)}
+          onSave={(next) => { saveLayout(next); setCustomising(false); }}
+          onReset={() => { saveLayout(DEFAULT_LAYOUT); setCustomising(false); }}
+        />
       )}
+    </div>
+  );
+}
+
+// HeroCard — rebranded welcome strip. Time-of-day greeting + a one-line
+// snapshot ("3 due today · 1 blocked"). Replaces the static "Hi Sadiq 👋"
+// header text with something that actually reads the user's state.
+function HeroCard({
+  user, data, overdue, dueToday, blocked,
+}: {
+  user: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+  data: WorkResponse;
+  overdue: number; dueToday: number; blocked: number;
+}) {
+  const h = new Date().getHours();
+  const greeting = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
+  const emoji = h < 12 ? "🌅" : h < 17 ? "☀️" : "🌙";
+  const first = (user?.name?.split(" ")[0]) || "there";
+  const pieces: string[] = [];
+  if (overdue > 0)  pieces.push(`${overdue} overdue`);
+  if (dueToday > 0) pieces.push(`${dueToday} due today`);
+  if (blocked > 0)  pieces.push(`${blocked} blocked`);
+  const summary = pieces.length === 0
+    ? data.counts.active_tasks > 0
+      ? `${data.counts.active_tasks} task${data.counts.active_tasks === 1 ? "" : "s"} in flight, nothing on fire.`
+      : "Your queue is clear — perfect time to plan the week."
+    : pieces.join(" · ");
+  const tone = overdue > 0 || blocked > 0
+    ? "from-warn/20 to-warn/5 border-warn/40"
+    : "from-accent-soft to-accent-soft/30 border-accent/30";
+  return (
+    <section className={`relative overflow-hidden bg-gradient-to-br ${tone} border rounded-2xl p-5`}>
+      <div aria-hidden className="absolute -top-8 -right-8 w-32 h-32 rounded-full bg-white/20 pointer-events-none" />
+      <div className="relative flex items-center justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-[11px] uppercase tracking-[0.14em] font-bold text-text/70">My day</div>
+          <h2 className="text-2xl font-extrabold text-text leading-tight mt-1">
+            <span className="mr-1.5">{emoji}</span>
+            {greeting}, {first}.
+          </h2>
+          <p className="text-[13px] text-text/80 mt-1">{summary}</p>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-[11px] uppercase tracking-wider text-muted font-bold">This week</div>
+          <div className="text-2xl font-extrabold text-text">{data.counts.hours_this_week.toFixed(1)}h</div>
+          <div className="text-[10.5px] text-muted">logged</div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// NeedsNowCard — triage panel (overdue → today → blocked → soon → rest).
+// Full-width when alone; the parent layout doesn't bundle it with Projects
+// anymore because users can hide either one independently now.
+function NeedsNowCard({
+  data, overdue, dueToday, blocked, orderedTriage,
+}: {
+  data: WorkResponse;
+  overdue: any[]; dueToday: any[]; blocked: any[]; orderedTriage: any[]; // eslint-disable-line @typescript-eslint/no-explicit-any
+}) {
+  return (
+    <section className="bg-surface border border-border rounded-2xl p-5">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <h2 className="h2 flex items-center gap-2"><Zap size={16} className="text-accent" /> Needs you now</h2>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {overdue.length > 0  && <span className="pill bg-danger/15 text-danger">{overdue.length} overdue</span>}
+          {dueToday.length > 0 && <span className="pill bg-warn/15 text-warn">{dueToday.length} today</span>}
+          {blocked.length > 0  && <span className="pill bg-warn/15 text-warn">{blocked.length} blocked</span>}
+          {overdue.length === 0 && dueToday.length === 0 && blocked.length === 0 && (
+            <span className="text-xs text-muted">{data.priorities.length} item{data.priorities.length === 1 ? "" : "s"}</span>
+          )}
+        </div>
+      </div>
+      {data.priorities.length === 0 ? (
+        <EmptyHint
+          icon={<CheckCircle2 size={22} className="text-success" />}
+          title="Inbox zero"
+          body="You don't have any open tasks. Take a breather or sync with your PM for new work."
+        />
+      ) : (
+        <ul className="divide-y divide-border">
+          {orderedTriage.map((t) => (
+            <li key={t.id} className="relative">
+              <span className={`absolute left-0 top-0 bottom-0 w-1 rounded-r ${
+                t.bucket === "overdue" ? "bg-danger"
+                : t.bucket === "blocked" ? "bg-warn"
+                : t.bucket === "today"   ? "bg-accent"
+                : t.bucket === "soon"    ? "bg-accent/40"
+                : "bg-transparent"
+              }`} />
+              <div className="pl-3">
+                <TaskRowItem task={t} compact />
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// ProjectsCard — quick links to allocated projects with health pill.
+function ProjectsCard({ projects }: { projects: WorkResponse["projects"] }) {
+  return (
+    <section className="bg-surface border border-border rounded-2xl p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="h2 flex items-center gap-2"><Activity size={16} className="text-accent" /> Your projects</h2>
+        <span className="text-xs text-muted">{projects.length}</span>
+      </div>
+      {projects.length === 0 ? (
+        <EmptyHint
+          icon={<Inbox size={22} className="text-muted" />}
+          title="Not on any project yet"
+          body="A project manager will assign you when there's work to ship."
+        />
+      ) : (
+        <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          {projects.map((p) => (
+            <li key={p.id}>
+              <Link
+                to={`/projects/${p.id}`}
+                className="block bg-bg/60 border border-border rounded-xl px-3 py-2.5 hover:border-accent transition-colors"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[13px] font-bold text-text truncate">{p.name}</span>
+                  <span className={`pill ${
+                    p.health === "green" ? "bg-success/15 text-success"
+                    : p.health === "amber" ? "bg-warn/15 text-warn"
+                    : "bg-danger/15 text-danger"
+                  }`}>{p.health}</span>
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-muted mt-0.5">
+                  <span className="truncate">{p.role || "Member"} · {p.code}</span>
+                  <span>{Math.round(p.allocation * 100)}%</span>
+                </div>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+// NextMovesCard — adaptive "what to do next" prompts.
+function NextMovesCard({
+  suggestions,
+}: {
+  suggestions: { icon: React.ReactNode; title: string; body: string; tone: "warn" | "info" | "good" }[];
+}) {
+  return (
+    <section className="bg-surface border border-border rounded-2xl p-5">
+      <h2 className="h2 flex items-center gap-2 mb-3">
+        <Sparkles size={16} className="text-accent" /> Suggested next moves
+      </h2>
+      <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
+        {suggestions.map((s, i) => {
+          const toneCls = s.tone === "warn" ? "bg-warn/10 text-warn border-warn/30"
+            : s.tone === "info" ? "bg-accent-soft text-accent border-accent/30"
+            : "bg-success/10 text-success border-success/30";
+          return (
+            <li key={i} className="flex items-start gap-3 bg-bg/40 border border-border rounded-xl p-3">
+              <span className={`w-7 h-7 rounded-full grid place-items-center shrink-0 border ${toneCls}`}>
+                {s.icon}
+              </span>
+              <div className="min-w-0">
+                <div className="text-[13px] font-bold text-text">{s.title}</div>
+                <div className="text-[12px] text-muted leading-snug mt-0.5">{s.body}</div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+// KudosReceivedCard — recent recognition from colleagues. Hidden when the
+// caller hasn't received any yet.
+function KudosReceivedCard({
+  kudos,
+}: {
+  kudos: { id: string; from: { id: string; name: string; email: string }; badge: string; message: string; created_at: string }[];
+}) {
+  const BADGES: Record<string, { label: string; emoji: string }> = {
+    delivery_champion: { label: "Delivery champion", emoji: "🏆" },
+    problem_solver:    { label: "Problem solver",    emoji: "🧠" },
+    team_player:       { label: "Team player",       emoji: "🤝" },
+    fast_responder:    { label: "Fast responder",    emoji: "⚡" },
+    client_hero:       { label: "Client hero",       emoji: "🌟" },
+    custom:            { label: "Thanks",            emoji: "🙌" },
+  };
+  return (
+    <section className="bg-gradient-to-br from-warn/10 to-accent-soft border border-warn/30 rounded-2xl p-5">
+      <h2 className="h2 flex items-center gap-2 mb-3 text-warn">
+        🎉 Kudos you received
+        <span className="text-[12px] text-muted font-medium">· {kudos.length} total</span>
+      </h2>
+      <ul className="space-y-2">
+        {kudos.slice(0, 4).map((k) => {
+          const meta = BADGES[k.badge] ?? { label: k.badge, emoji: "🙌" };
+          return (
+            <li key={k.id} className="bg-surface/70 border border-border/60 rounded-xl px-3 py-2.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[12.5px] font-bold text-text">{k.from.name || k.from.email.split("@")[0]}</span>
+                <span className="pill bg-bg text-text border border-border text-[10px] uppercase tracking-wide font-bold">
+                  <span className="mr-0.5">{meta.emoji}</span> {meta.label}
+                </span>
+                <span className="text-[11px] text-muted ml-auto">{relTimeShort(k.created_at)}</span>
+              </div>
+              {k.message && <p className="text-[12.5px] text-text/80 mt-0.5 leading-snug line-clamp-2">{k.message}</p>}
+            </li>
+          );
+        })}
+      </ul>
+      {kudos.length > 4 && (
+        <div className="text-[11.5px] text-muted text-center mt-2">
+          + {kudos.length - 4} more · open <Link to="/colleagues" className="text-accent hover:underline">Colleagues</Link>
+        </div>
+      )}
+    </section>
+  );
+}
+
+// BirthdaysCard — celebrate teammates whose birthday is today.
+function BirthdaysCard({
+  birthdays,
+}: {
+  birthdays: { id: string; name: string; email: string }[];
+}) {
+  return (
+    <section className="bg-gradient-to-br from-warn/15 to-accent-soft/40 border border-warn/30 rounded-2xl p-5">
+      <h2 className="h2 flex items-center gap-2 mb-3">
+        🎂 Happy birthday today
+      </h2>
+      <ul className="flex flex-wrap gap-2">
+        {birthdays.map((b) => (
+          <li key={b.id}>
+            <Link
+              to={`/colleagues?openId=${b.id}`}
+              className="inline-flex items-center gap-2 bg-surface/70 border border-border/60 hover:border-accent/40 rounded-full pl-1 pr-3 py-1 transition-colors"
+            >
+              <span className="w-6 h-6 rounded-full bg-bg grid place-items-center text-[10px] font-bold text-muted">
+                {(b.name || b.email).slice(0, 1).toUpperCase()}
+              </span>
+              <span className="text-[12.5px] font-semibold text-text">{b.name || b.email.split("@")[0]}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+      <p className="text-[11.5px] text-muted mt-2">Tap a name to open their drawer and send a kudo.</p>
+    </section>
+  );
+}
+
+// MoodPulseCard — fast-track to the slot-aware Check-in tab. Hides nothing;
+// always visible so a user with a tough morning gets a one-click path to
+// log it.
+function MoodPulseCard() {
+  return (
+    <section className="bg-surface border border-border rounded-2xl p-5 flex items-center justify-between gap-4 flex-wrap">
+      <div>
+        <h2 className="h2 flex items-center gap-2"><Smile size={16} className="text-accent" /> Mood pulse</h2>
+        <p className="text-[12.5px] text-muted mt-1">
+          Up to three quick check-ins per day — morning, afternoon, evening. One tap to log.
+        </p>
+      </div>
+      <Link
+        to="/my-work?tab=checkins"
+        className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 press-fx"
+      >
+        <Smile size={13} /> Check in
+      </Link>
+    </section>
+  );
+}
+
+// CustomiseLayoutDialog — modal that lets the user toggle widgets on/off
+// and re-order them with up/down arrows. Keeping it as a list (not a
+// drag-and-drop canvas) avoids a dependency for one screen and still
+// gives every user full control over their dashboard.
+function CustomiseLayoutDialog({
+  layout, onClose, onSave, onReset,
+}: {
+  layout: WidgetKey[];
+  onClose: () => void;
+  onSave: (next: WidgetKey[]) => void;
+  onReset: () => void;
+}) {
+  const [draft, setDraft] = useState<WidgetKey[]>(layout);
+  const enabled = new Set(draft);
+  function toggle(k: WidgetKey) {
+    if (enabled.has(k)) setDraft(draft.filter((x) => x !== k));
+    else setDraft([...draft, k]);
+  }
+  function move(k: WidgetKey, dir: -1 | 1) {
+    const i = draft.indexOf(k);
+    if (i < 0) return;
+    const j = i + dir;
+    if (j < 0 || j >= draft.length) return;
+    const next = [...draft];
+    [next[i], next[j]] = [next[j], next[i]];
+    setDraft(next);
+  }
+  // Hidden widgets render at the bottom so the user can pull them in.
+  const hidden = ALL_WIDGETS.filter((k) => !enabled.has(k));
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose} role="dialog" aria-modal="true">
+      <div onClick={(e) => e.stopPropagation()} className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden">
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold text-text">Customise your Today</h2>
+            <p className="text-[11.5px] text-muted">Pick the widgets you want — drag-friendly up/down per row.</p>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-text"><X size={16} /></button>
+        </header>
+        <div className="p-3 space-y-1.5 overflow-y-auto flex-1">
+          {draft.map((k, i) => (
+            <div key={k} className="flex items-center gap-2 bg-bg/40 border border-border rounded-xl px-3 py-2">
+              <div className="flex-1 min-w-0">
+                <div className="text-[13px] font-semibold text-text">{WIDGET_META[k].label}</div>
+                <div className="text-[11px] text-muted leading-snug">{WIDGET_META[k].help}</div>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => move(k, -1)}
+                  disabled={i === 0}
+                  className="text-muted hover:text-text disabled:opacity-30 disabled:cursor-not-allowed p-1"
+                  title="Move up"
+                >
+                  <ChevronRight size={14} className="-rotate-90" />
+                </button>
+                <button
+                  onClick={() => move(k, 1)}
+                  disabled={i === draft.length - 1}
+                  className="text-muted hover:text-text disabled:opacity-30 disabled:cursor-not-allowed p-1"
+                  title="Move down"
+                >
+                  <ChevronRight size={14} className="rotate-90" />
+                </button>
+                <button
+                  onClick={() => toggle(k)}
+                  className="text-muted hover:text-danger p-1"
+                  title="Remove"
+                >
+                  <XCircle size={14} />
+                </button>
+              </div>
+            </div>
+          ))}
+          {hidden.length > 0 && (
+            <>
+              <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted px-1 pt-3">Hidden — tap to add</div>
+              {hidden.map((k) => (
+                <button
+                  key={k}
+                  onClick={() => toggle(k)}
+                  className="w-full text-left flex items-center gap-2 bg-bg/20 hover:bg-bg/50 border border-border border-dashed rounded-xl px-3 py-2 transition-colors"
+                >
+                  <Plus size={13} className="text-accent" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] font-semibold text-text">{WIDGET_META[k].label}</div>
+                    <div className="text-[11px] text-muted leading-snug">{WIDGET_META[k].help}</div>
+                  </div>
+                </button>
+              ))}
+            </>
+          )}
+        </div>
+        <footer className="px-4 py-3 border-t border-border flex items-center justify-between gap-2 bg-bg/30">
+          <button onClick={onReset} className="text-[12px] font-semibold text-muted hover:text-text">Reset to default</button>
+          <div className="flex items-center gap-2">
+            <button onClick={onClose} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg text-muted hover:text-text">Cancel</button>
+            <button onClick={() => onSave(draft)} className="text-[12.5px] font-bold bg-accent text-white px-3 py-1.5 rounded-lg hover:bg-accent/90">Save layout</button>
+          </div>
+        </footer>
+      </div>
     </div>
   );
 }
