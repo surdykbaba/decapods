@@ -300,6 +300,7 @@ function CollapseChevron({ collapsed, onClick }: { collapsed: boolean; onClick: 
 // no scaffolding per widget.
 type WidgetKey =
   | "hero"
+  | "standup"
   | "heads_up"
   | "meetings"
   | "needs_now"
@@ -312,6 +313,7 @@ type WidgetKey =
 
 const WIDGET_META: Record<WidgetKey, { label: string; help: string }> = {
   hero:            { label: "Welcome hero",       help: "Time-of-day greeting + your today snapshot." },
+  standup:         { label: "Standup",             help: "Pre-standup nudge + late / can't-make-it status buttons." },
   heads_up:        { label: "Heads-up",           help: "Recent workspace events that landed on you." },
   meetings:        { label: "Meetings",           help: "Your Microsoft / Google calendar for today." },
   needs_now:       { label: "Needs you now",      help: "Overdue, due today, blocked, and soon-due tasks." },
@@ -324,12 +326,12 @@ const WIDGET_META: Record<WidgetKey, { label: string; help: string }> = {
 };
 
 const DEFAULT_LAYOUT: WidgetKey[] = [
-  "hero", "heads_up", "meetings", "needs_now", "projects",
+  "hero", "standup", "heads_up", "meetings", "needs_now", "projects",
   "kudos_received", "birthdays_today", "mood_pulse", "overtime", "next_moves",
 ];
 
 const ALL_WIDGETS: WidgetKey[] = [
-  "hero", "heads_up", "meetings", "needs_now", "projects",
+  "hero", "standup", "heads_up", "meetings", "needs_now", "projects",
   "next_moves", "kudos_received", "birthdays_today", "mood_pulse", "overtime",
 ];
 
@@ -522,6 +524,8 @@ function DashboardTab() {
         return <MoodPulseCard key="mood_pulse" />;
       case "overtime":
         return <OvertimeCard key="overtime" hoursThisWeek={wd.counts.hours_this_week} />;
+      case "standup":
+        return <StandupCard key="standup" />;
     }
   }
 
@@ -927,6 +931,151 @@ function OvertimeCard({ hoursThisWeek }: { hoursThisWeek: number }) {
             haven't logged, the number won't reflect it.
           </p>
         </>
+      )}
+    </section>
+  );
+}
+
+// StandupCard — combined "pre-standup nudge" + "late-status broadcaster"
+// for the team's daily standup. Reads standup_at from the existing
+// /me/huddle endpoint (HH:MM in the tenant's local sense) and slots_done
+// for the morning check-in.
+//
+// Behaviour by time-of-day:
+//   • >30 min before standup → hides entirely.
+//   • Last 30 min → "Standup in Nm. Check in now" + a one-tap link to the
+//                   Check-in editor.
+//   • Standup hour → "Standup starting" + the late-status buttons so a
+//                    user can broadcast "Running 10 min late" / "Can't
+//                    make it today" without writing a fresh post.
+//   • Up to 60 min after → still shows the late-status buttons (people
+//                          who slept in benefit).
+//   • Otherwise → hides.
+//
+// Late-status buttons all hit POST /api/v1/campfire/posts as a kind="update"
+// post. Single round-trip, lands in the workspace pulse feed where the
+// team is already looking.
+function StandupCard() {
+  const [collapsed, toggle] = useCollapsible("standup");
+  const { data: huddle } = useQuery<{ standup_at?: string; slots_done?: string[] }>({
+    queryKey: ["me-huddle"],
+    queryFn: () => api("/api/v1/me/huddle"),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+  // Parse "HH:MM" into a "minutes from start of day" int. Tenants without
+  // a configured value fall back to 09:30 (matches the backend default).
+  const standupMin = (() => {
+    const raw = huddle?.standup_at ?? "09:30";
+    const m = /^(\d{1,2}):(\d{2})$/.exec(raw);
+    if (!m) return 9 * 60 + 30;
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  })();
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const minutesToStandup = standupMin - nowMin; // negative = past standup
+  // Window: 30 min before through 60 min after.
+  const inWindow = minutesToStandup <= 30 && minutesToStandup >= -60;
+  const morningDone = (huddle?.slots_done ?? []).includes("morning");
+  if (!inWindow) return null;
+
+  const phase: "pre" | "now" | "post" =
+    minutesToStandup > 5 ? "pre"
+    : minutesToStandup > -10 ? "now"
+    : "post";
+
+  const qc = useQueryClient();
+  const broadcast = useMutation({
+    mutationFn: (body: string) =>
+      api("/api/v1/campfire/posts", {
+        method: "POST",
+        body: JSON.stringify({
+          kind: "update",
+          body,
+          meta: { source: "standup_status" },
+        }),
+      }),
+    onSuccess: () => {
+      toast.success("Standup status posted", "Your update is visible in Campfire's pulse feed.");
+      qc.invalidateQueries({ queryKey: ["campfire", "posts"] });
+    },
+    onError: (e: any) => toast.error("Couldn't post status", e?.message),
+  });
+
+  const tone =
+    phase === "pre" && !morningDone ? "bg-warn/10 border-warn/30 text-warn"
+    : phase === "now" ? "bg-accent-soft border-accent/40 text-accent"
+    : "bg-bg/40 border-border text-muted";
+
+  const headline =
+    phase === "pre" && minutesToStandup > 0
+      ? `Standup in ${minutesToStandup}m`
+      : phase === "now"
+        ? "Standup starting now"
+        : `Standup was ${Math.abs(minutesToStandup)}m ago`;
+
+  return (
+    <section className={`border rounded-2xl ${tone} ${collapsed ? "px-5 py-3" : "p-5"}`}>
+      <div className={`flex items-center justify-between gap-2 ${collapsed ? "" : "mb-3"}`}>
+        <h2 className="h2 flex items-center gap-2">
+          <Bell size={16} /> {headline}
+          {!morningDone && phase !== "post" && (
+            <span className="pill bg-bg text-warn text-[10px] uppercase tracking-wide font-bold ml-1">
+              Check in pending
+            </span>
+          )}
+        </h2>
+        <CollapseChevron collapsed={collapsed} onClick={toggle} />
+      </div>
+      {collapsed ? null : (
+        <div className="space-y-3">
+          {!morningDone && phase !== "post" && (
+            <div className="flex items-center justify-between gap-3 bg-surface/70 border border-border/60 rounded-xl px-3 py-2 flex-wrap">
+              <span className="text-[13px] text-text">
+                Your morning check-in isn't logged yet — get it in before standup so the team has the context.
+              </span>
+              <Link
+                to="/my-work?tab=checkins"
+                className="inline-flex items-center gap-1.5 text-[12.5px] font-bold bg-accent text-white px-3 py-1.5 rounded-full hover:bg-accent/90"
+              >
+                <Smile size={12} /> Check in
+              </Link>
+            </div>
+          )}
+          {/* Late-status broadcasters. Three templated posts that drop into
+              the pulse feed — saves the "where's X?" pings. */}
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1.5">
+              Heading to standup? Let the team know:
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => broadcast.mutate("📍 On my way to standup.")}
+                disabled={broadcast.isPending}
+                className="inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-full bg-surface/80 border border-border hover:border-accent/40 hover:text-accent press-fx disabled:opacity-50"
+              >
+                📍 On my way
+              </button>
+              <button
+                type="button"
+                onClick={() => broadcast.mutate("⏱️ Running ~10 minutes late to standup — please start without me.")}
+                disabled={broadcast.isPending}
+                className="inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-full bg-surface/80 border border-border hover:border-accent/40 hover:text-accent press-fx disabled:opacity-50"
+              >
+                ⏱️ Running 10m late
+              </button>
+              <button
+                type="button"
+                onClick={() => broadcast.mutate("🙏 Can't make standup today. Will post my update in writing.")}
+                disabled={broadcast.isPending}
+                className="inline-flex items-center gap-1.5 text-[12px] font-semibold px-3 py-1.5 rounded-full bg-surface/80 border border-border hover:border-accent/40 hover:text-accent press-fx disabled:opacity-50"
+              >
+                🙏 Can't make today
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </section>
   );

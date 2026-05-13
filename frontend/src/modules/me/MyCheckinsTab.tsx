@@ -796,6 +796,24 @@ function CheckinEditor({
   const priorPlan = (priorRow?.focus_note ?? "").trim();
   const canUsePriorPlan = !!priorPlan && yesterday.trim() === "";
 
+  // Smart draft from tasks — fetch the user's open priorities and offer a
+  // one-tap "Draft from my tasks" button on the Today field. Only fires for
+  // today's check-in (back-fills don't get the suggestion since the open
+  // task list reflects the present, not the past). The query is cheap and
+  // already cached if the user has visited the My Work dashboard.
+  const { data: meWork } = useQuery<{ priorities?: { id: string; title: string; status: string; due_on: string | null }[] }>({
+    queryKey: ["me", "work-for-checkin-draft"],
+    queryFn: () => api("/api/v1/me/work"),
+    staleTime: 60_000,
+    enabled: isToday,
+  });
+  const smartFocus = useMemo(() => {
+    if (!isToday) return "";
+    const tasks = (meWork?.priorities ?? []).filter((t) => t.status !== "done").slice(0, 5);
+    if (tasks.length === 0) return "";
+    return tasks.map((t) => `• ${t.title}`).join("\n");
+  }, [meWork, isToday]);
+
   const save = useMutation({
     mutationFn: () => api("/api/v1/me/huddle", {
       method: "POST",
@@ -991,8 +1009,22 @@ function CheckinEditor({
               </div>
 
               <div>
-                <div className="text-sm font-semibold text-text mb-1">
-                  {isToday ? "Today — what's on" : "That day — what you were on"}
+                <div className="text-sm font-semibold text-text mb-1 flex items-center justify-between gap-2">
+                  <span>{isToday ? "Today — what's on" : "That day — what you were on"}</span>
+                  {/* Smart-fill — only when today's morning slot is being
+                      filled and the field is empty. Drafts a bulleted list
+                      of the user's open priorities so the wizard never
+                      starts from a blank page. Standup-ready. */}
+                  {isToday && focus.trim() === "" && smartFocus && (
+                    <button
+                      type="button"
+                      onClick={() => setFocus(smartFocus)}
+                      className="text-[11px] font-semibold text-accent hover:underline inline-flex items-center gap-1"
+                      title="Draft from your open priorities"
+                    >
+                      <Sparkles size={10} /> Smart draft from my tasks
+                    </button>
+                  )}
                 </div>
                 <textarea
                   value={focus}
