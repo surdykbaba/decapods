@@ -21,7 +21,7 @@ import {
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
   Wrench, Briefcase, Hash, Plus, Loader2, CalendarDays, Calendar,
   Lock, Users as UsersIcon, X as XIcon, UserPlus as UserPlusIcon, Search as SearchIcon, Check,
-  ChevronLeft, Trash2,
+  ChevronLeft, ChevronDown, ChevronUp, Trash2,
 } from "lucide-react";
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -603,67 +603,77 @@ function UpcomingEventsBanner() {
     return out.sort((a, b) => a.whenSort - b.whenSort).slice(0, 4);
   }, [data]);
 
-  // Dismissal — every member can hide the banner. We remember the dismissal
-  // in localStorage keyed by a hash of the *current event set*, so the
-  // banner only stays hidden as long as the contents stay the same. The
-  // moment a new event lands (a new joiner, an anniversary nearing) the
-  // hash changes and the banner re-appears — they're not silenced forever.
-  const eventsKey = useMemo(() => events.map((e) => e.key).sort().join("|"), [events]);
-  const [hidden, setHidden] = useState(false);
-  useEffect(() => {
-    if (!eventsKey) { setHidden(false); return; }
-    setHidden(localStorage.getItem("campfire-upcoming-dismissed") === eventsKey);
-  }, [eventsKey]);
-  function dismiss() {
-    localStorage.setItem("campfire-upcoming-dismissed", eventsKey);
-    setHidden(true);
+  // Collapse state — every member can toggle. Persists across page loads
+  // via localStorage but never fully hides the banner: in the closed state
+  // a slim header still shows the title + event count and a chevron to
+  // expand. That way the user can always bring it back without waiting on
+  // a new event.
+  const [collapsed, setCollapsed] = useState<boolean>(() =>
+    localStorage.getItem("campfire-upcoming-collapsed") === "1",
+  );
+  function toggle() {
+    setCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem("campfire-upcoming-collapsed", next ? "1" : "0");
+      return next;
+    });
   }
 
-  if (events.length === 0 || hidden) return null;
+  if (events.length === 0) return null;
 
   return (
     <div className="relative overflow-hidden rounded-3xl shadow-soft text-white" style={{ background: "#107B97" }}>
       <div aria-hidden className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-white/10 pointer-events-none" />
       <div aria-hidden className="absolute -bottom-12 -left-8 w-44 h-44 rounded-full bg-white/5 pointer-events-none" />
 
-      {/* Dismiss — visible to every member. Persists until a new event lands
-          in the set, at which point it re-surfaces (see eventsKey above). */}
-      <button
-        type="button"
-        onClick={dismiss}
-        className="absolute top-3 right-3 z-10 w-7 h-7 rounded-full bg-white/10 hover:bg-white/25 text-white/85 hover:text-white inline-flex items-center justify-center transition-colors"
-        aria-label="Hide what's coming up"
-        title="Hide this — it'll come back when something new lands"
-      >
-        <X size={14} />
-      </button>
-
-      <div className="relative p-4 sm:p-5">
-        <div className="flex items-center gap-2 mb-3">
-          <Calendar size={14} className="text-white/90" />
+      <div className={`relative ${collapsed ? "px-4 py-3" : "p-4 sm:p-5"}`}>
+        {/* Header — title, event count, chevron toggle. The whole strip is
+            the click target when collapsed so the affordance is generous. */}
+        <button
+          type="button"
+          onClick={toggle}
+          className={`flex items-center gap-2 ${collapsed ? "w-full text-left" : "mb-3"} group`}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? "Open what's coming up" : "Hide what's coming up"}
+          title={collapsed ? "Open" : "Hide"}
+        >
+          <Calendar size={14} className="text-white/90 shrink-0" />
           <span className="text-[11px] uppercase tracking-[0.14em] font-bold text-white/85">
             What's coming up
           </span>
-        </div>
+          {collapsed && (
+            <span className="text-[11px] font-semibold text-white/70">
+              · {events.length} event{events.length === 1 ? "" : "s"}
+            </span>
+          )}
+          <span
+            className="ml-auto inline-flex items-center justify-center w-7 h-7 rounded-full bg-white/10 group-hover:bg-white/25 text-white/85 group-hover:text-white transition-colors"
+            aria-hidden
+          >
+            {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          </span>
+        </button>
 
-        <div className="flex flex-wrap gap-2">
-          {events.map((e) => (
-            <div
-              key={e.key}
-              className="inline-flex items-center gap-2 bg-white/12 hover:bg-white/20 transition-colors border border-white/20 rounded-2xl pl-1.5 pr-3 py-1.5 min-w-0"
-              title={`${typeof e.title === "string" ? e.title : ""} · ${e.when}`}
-            >
-              <span className="ring-2 ring-white/30 rounded-full block shrink-0">
-                <Avatar name={e.avatar.name} email={e.avatar.email} size={24} />
-              </span>
-              <span className="text-[13px] leading-tight truncate max-w-[260px]">
-                <span className="mr-1">{e.emoji}</span>
-                {e.title}
-              </span>
-              <span className="text-[11px] font-semibold text-white/80 shrink-0">· {e.when}</span>
-            </div>
-          ))}
-        </div>
+        {!collapsed && (
+          <div className="flex flex-wrap gap-2">
+            {events.map((e) => (
+              <div
+                key={e.key}
+                className="inline-flex items-center gap-2 bg-white/12 hover:bg-white/20 transition-colors border border-white/20 rounded-2xl pl-1.5 pr-3 py-1.5 min-w-0"
+                title={`${typeof e.title === "string" ? e.title : ""} · ${e.when}`}
+              >
+                <span className="ring-2 ring-white/30 rounded-full block shrink-0">
+                  <Avatar name={e.avatar.name} email={e.avatar.email} size={24} />
+                </span>
+                <span className="text-[13px] leading-tight truncate max-w-[260px]">
+                  <span className="mr-1">{e.emoji}</span>
+                  {e.title}
+                </span>
+                <span className="text-[11px] font-semibold text-white/80 shrink-0">· {e.when}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
