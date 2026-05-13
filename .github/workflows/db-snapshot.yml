@@ -1,0 +1,90 @@
+name: db-snapshot
+
+# Pull a redacted-friendly dump of the production Postgres onto the
+# Actions runner and upload it as a downloadable artifact. SSH/DB
+# credentials stay inside GitHub secrets — they never hit your laptop.
+#
+# Workflow is manual-only. After it succeeds:
+#   1. Open the run, scroll to "Artifacts", download `pgdp-snapshot.tar`
+#   2. Untar, then restore locally:
+#        tar -xf pgdp-snapshot.tar
+#        gunzip -c snapshot.sql.gz | psql "$DATABASE_URL"
+#
+# Note: the dump is compressed and uploaded raw. GitHub artifacts are
+# scoped to the repo, expire after 7 days, and require auth to download.
+# Treat it as sensitive — don't share the artifact URL.
+
+on:
+  workflow_dispatch:
+    inputs:
+      schema_only:
+        description: "Dump schema only (skip row data)"
+        type: boolean
+        default: false
+      include_blobs:
+        description: "Include the campfire_attachments / project_files content columns"
+        type: boolean
+        default: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - name: SSH + pg_dump on the server
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DATABASE_URL:  ${{ secrets.DATABASE_URL }}
+          SCHEMA_ONLY:   ${{ inputs.schema_only }}
+          INCLUDE_BLOBS: ${{ inputs.include_blobs }}
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port:     ${{ secrets.SSH_PORT }}
+          envs: DATABASE_URL,SCHEMA_ONLY,INCLUDE_BLOBS
+          script: |
+            set -euo pipefail
+            OUT=/tmp/snapshot.sql.gz
+            rm -f "$OUT"
+            FLAGS="--no-owner --no-privileges --no-comments"
+            if [ "$SCHEMA_ONLY" = "true" ]; then
+              FLAGS="$FLAGS --schema-only"
+            fi
+            EXCLUDES=""
+            if [ "$INCLUDE_BLOBS" != "true" ]; then
+              EXCLUDES="--exclude-table-data=campfire_attachments \
+                        --exclude-table-data=project_files"
+            fi
+            pg_dump "$DATABASE_URL" $FLAGS $EXCLUDES | gzip -9 > "$OUT"
+            ls -lh "$OUT"
+
+      - name: Pull dump back to runner
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port:     ${{ secrets.SSH_PORT }}
+          source:   /tmp/snapshot.sql.gz
+          target:   ./
+          strip_components: 2
+
+      - name: Wipe the dump on the server
+        if: always()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port:     ${{ secrets.SSH_PORT }}
+          script: rm -f /tmp/snapshot.sql.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pgdp-snapshot
+          path: snapshot.sql.gz
+          retention-days: 3
+          if-no-files-found: error
