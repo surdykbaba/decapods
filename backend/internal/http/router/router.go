@@ -84,6 +84,7 @@ func New(d Deps) http.Handler {
 	authed.POST("/opportunities/:id/transition", mw.RequirePermission("opportunity:write"), opp.Transition)
 	authed.POST("/opportunities/:id/documents",            mw.RequirePermission("document:write"), opp.AttachDocument)
 	authed.POST("/opportunities/:id/documents/upload",     mw.RequirePermission("document:write"), opp.UploadDocument)
+	authed.PATCH("/opportunities/:id/documents/:docId",    mw.RequirePermission("document:write"), opp.UpdateDocument)
 	authed.GET("/opportunities/:id/documents/:docId/content", mw.RequirePermission("opportunity:read"), opp.DownloadDocument)
 
 	workflows := handlers.NewWorkflows(d.DB)
@@ -145,6 +146,17 @@ func New(d Deps) http.Handler {
 
 	sysAudit := handlers.NewSystemAudit(d.DB)
 	authed.GET("/admin/audit", sysAudit.List)
+
+	// Legals — workspace document warehouse (NDAs, employee contracts,
+	// vendor MSAs, client SOWs, policies, etc). Read for governance:read
+	// roles, write/delete for governance:write only.
+	legals := handlers.NewLegals(d.DB)
+	authed.GET("/legals",                mw.RequirePermission("governance:read"),  legals.List)
+	authed.GET("/legals/:id",            mw.RequirePermission("governance:read"),  legals.Get)
+	authed.GET("/legals/:id/download",   mw.RequirePermission("governance:read"),  legals.Download)
+	authed.POST("/legals",               mw.RequirePermission("governance:write"), legals.Create)
+	authed.PATCH("/legals/:id",          mw.RequirePermission("governance:write"), legals.Update)
+	authed.DELETE("/legals/:id",         mw.RequirePermission("governance:write"), legals.Delete)
 
 	huddle := handlers.NewHuddle(d.DB)
 	authed.GET("/me/huddle",  huddle.Get)

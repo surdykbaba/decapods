@@ -31,6 +31,12 @@ type Document = {
   name: string;
   object_key: string;
   uploaded_at: string;
+  // Per-document visibility allowlist. Empty array = visible to everyone
+  // with opportunity access (existing behaviour). Non-empty = restricted
+  // to the listed users (plus uploader + governance admins, enforced
+  // server-side in DownloadDocument).
+  visible_user_ids?: string[];
+  uploaded_by?: string | null;
 };
 
 type Opportunity = {
@@ -117,6 +123,9 @@ export function OpportunityDetail() {
   });
 
   const [uploadKind, setUploadKind] = useState<DocKind | null>(null);
+  // Editing an existing document — separate state so the dialog knows
+  // whether to render the edit copy + PATCH endpoint or the upload one.
+  const [editingDoc, setEditingDoc] = useState<Document | null>(null);
   const [previewDoc, setPreviewDoc] = useState<Document | null>(null);
   const [violations, setViolations] = useState<Violation[] | null>(null);
   const [addStakeholderOpen, setAddStakeholderOpen] = useState(false);
@@ -377,13 +386,29 @@ export function OpportunityDetail() {
                   </div>
                 </div>
                 {attached ? (
-                  <button
-                    className="btn-outline"
-                    onClick={() => setPreviewDoc(attached)}
-                    title="Preview this document"
-                  >
-                    <Eye size={14} /> Preview
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {/* Visibility hint chip — only renders when restricted */}
+                    {(attached.visible_user_ids?.length ?? 0) > 0 && (
+                      <span className="pill bg-warn/10 text-warn border border-warn/30 text-[10px] uppercase tracking-wide font-bold"
+                        title={`Restricted to ${attached.visible_user_ids!.length} people`}>
+                        🔒 {attached.visible_user_ids!.length}
+                      </span>
+                    )}
+                    <button
+                      className="btn-outline"
+                      onClick={() => setPreviewDoc(attached)}
+                      title="Preview this document"
+                    >
+                      <Eye size={14} /> Preview
+                    </button>
+                    <button
+                      className="btn-outline"
+                      onClick={() => setEditingDoc(attached)}
+                      title="Re-upload, rename, or change visibility"
+                    >
+                      <Pencil size={14} /> Edit
+                    </button>
+                  </div>
                 ) : (
                   <button className="btn-outline" onClick={() => setUploadKind(kind)}>
                     <Upload size={14} /> Attach
@@ -425,8 +450,17 @@ export function OpportunityDetail() {
                           {(DOC_LABELS[d.kind] ?? { label: d.kind }).label}
                         </div>
                       </div>
+                      {(d.visible_user_ids?.length ?? 0) > 0 && (
+                        <span className="pill bg-warn/10 text-warn border border-warn/30 text-[10px] uppercase tracking-wide font-bold"
+                          title={`Restricted to ${d.visible_user_ids!.length} people`}>
+                          🔒 {d.visible_user_ids!.length}
+                        </span>
+                      )}
                       <button className="btn-outline" onClick={() => setPreviewDoc(d)} title="Preview this document">
                         <Eye size={14} /> Preview
+                      </button>
+                      <button className="btn-outline" onClick={() => setEditingDoc(d)} title="Re-upload, rename, or change visibility">
+                        <Pencil size={14} /> Edit
                       </button>
                     </li>
                   ))}
@@ -534,16 +568,18 @@ export function OpportunityDetail() {
         />
       )}
 
-      {uploadKind && (
+      {(uploadKind || editingDoc) && (
         <UploadDocumentDialog
           oppId={id!}
-          kind={uploadKind}
-          label={(DOC_LABELS[uploadKind]?.label) ?? uploadKind}
-          onClose={() => setUploadKind(null)}
+          kind={editingDoc ? editingDoc.kind : uploadKind!}
+          label={(DOC_LABELS[editingDoc ? editingDoc.kind : uploadKind!]?.label) ?? (editingDoc ? editingDoc.kind : uploadKind!)}
+          existing={editingDoc ?? undefined}
+          onClose={() => { setUploadKind(null); setEditingDoc(null); }}
           onUploaded={() => {
             setUploadKind(null);
+            setEditingDoc(null);
             qc.invalidateQueries({ queryKey: ["opp", id] });
-      qc.invalidateQueries({ queryKey: ["opps"] });
+            qc.invalidateQueries({ queryKey: ["opps"] });
           }}
         />
       )}
@@ -1933,21 +1969,48 @@ function ViolationDialog({
 }
 
 function UploadDocumentDialog({
-  oppId, kind, label, onClose, onUploaded,
+  oppId, kind, label, existing, onClose, onUploaded,
 }: {
   oppId: string;
   kind: string;
   label: string;
+  // Pass an existing document to switch the dialog into edit mode —
+  // the user can replace the bytes, rename, or just change visibility.
+  // Omit for fresh uploads.
+  existing?: Document;
   onClose: () => void;
   onUploaded: () => void;
 }) {
   type Mode = "file" | "link";
+  const editing = !!existing;
   const [mode, setMode] = useState<Mode>("file");
   const [file, setFile] = useState<File | null>(null);
   const [link, setLink] = useState("");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(existing?.name ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Visibility allowlist. Empty = "everyone with opportunity access"
+  // (the default). Non-empty = restricted to these users (uploader +
+  // admins always retain access — enforced server-side).
+  const [visibleUserIds, setVisibleUserIds] = useState<string[]>(existing?.visible_user_ids ?? []);
+  // Members directory — used to render the multi-select picker. We fetch
+  // it lazily (only when the dialog is open) so the page itself doesn't
+  // pay for a member list it might not need.
+  const { data: membersData } = useQuery<{ items: { id: string; name: string; email: string }[] }>({
+    queryKey: ["opportunity-doc-visibility-members"],
+    queryFn: () => api("/api/v1/members"),
+    staleTime: 5 * 60_000,
+  });
+  const members = (membersData?.items ?? []).filter((m) => m.id !== existing?.uploaded_by);
+  const [memberSearch, setMemberSearch] = useState("");
+  const matchingMembers = members.filter((m) => {
+    if (!memberSearch.trim()) return true;
+    const q = memberSearch.toLowerCase();
+    return (m.name + " " + m.email).toLowerCase().includes(q);
+  });
+  function toggleUser(id: string) {
+    setVisibleUserIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  }
 
   function isValidUrl(v: string): boolean {
     try {
@@ -1959,10 +2022,30 @@ function UploadDocumentDialog({
   async function attach() {
     setErr(null);
     let payloadName = name.trim();
-
     setBusy(true);
     try {
-      if (mode === "file") {
+      if (editing) {
+        // Edit existing doc: PATCH with optional file + name +
+        // visible_user_ids. The file field is optional — re-uploading
+        // is one path the user might take, but they might also just
+        // be changing visibility or renaming.
+        const fd = new FormData();
+        if (file) fd.append("file", file);
+        if (payloadName) fd.append("name", payloadName);
+        // Always send visible_user_ids so the user can clear the
+        // allowlist back to "everyone" by deselecting everyone.
+        fd.append("visible_user_ids", visibleUserIds.join(","));
+        const res = await fetch(`/api/v1/opportunities/${oppId}/documents/${existing!.id}`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${useAuth.getState().token ?? ""}` },
+          body: fd,
+        });
+        if (!res.ok) {
+          const body = await res.text();
+          try { throw new Error(JSON.parse(body).error || res.statusText); }
+          catch { throw new Error(body || res.statusText); }
+        }
+      } else if (mode === "file") {
         if (!file) { setErr("Choose a file to attach."); setBusy(false); return; }
         if (!payloadName) payloadName = file.name;
         // Real upload: multipart/form-data → backend stores bytes inline
@@ -1972,6 +2055,7 @@ function UploadDocumentDialog({
         fd.append("file", file);
         fd.append("kind", kind);
         fd.append("name", payloadName);
+        if (visibleUserIds.length > 0) fd.append("visible_user_ids", visibleUserIds.join(","));
         const res = await fetch(`/api/v1/opportunities/${oppId}/documents/upload`, {
           method: "POST",
           headers: {
@@ -2003,7 +2087,7 @@ function UploadDocumentDialog({
       }
       onUploaded();
     } catch (e: any) {
-      setErr(e.message ?? "Attach failed");
+      setErr(e.message ?? (editing ? "Update failed" : "Attach failed"));
     } finally {
       setBusy(false);
     }
@@ -2026,7 +2110,16 @@ function UploadDocumentDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center justify-between p-5 border-b border-border">
-          <h2 className="text-lg font-semibold text-text">Attach {label}</h2>
+          <div>
+            <h2 className="text-lg font-semibold text-text">
+              {editing ? `Edit ${label}` : `Attach ${label}`}
+            </h2>
+            {editing && (
+              <p className="text-[11.5px] text-muted mt-0.5">
+                Currently: <span className="font-mono">{existing!.name}</span>
+              </p>
+            )}
+          </div>
           <button onClick={onClose} className="text-muted hover:text-text p-1 rounded">
             <X size={18} />
           </button>
@@ -2083,6 +2176,62 @@ function UploadDocumentDialog({
               onKeyDown={(e) => { if (e.key === "Enter") attach(); }}
             />
           </label>
+
+          {/* Visibility — empty = everyone with opportunity access can see
+              it; selecting names restricts to those users (plus uploader +
+              admins, enforced server-side). Most uploads stay open since
+              the default expectation for required docs is team-wide. */}
+          <div className="border-t border-border pt-3">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <div>
+                <div className="text-sm font-semibold text-text inline-flex items-center gap-1.5">
+                  <Eye size={12} className="text-muted" /> Who can see this?
+                </div>
+                <div className="text-[11px] text-muted">
+                  {visibleUserIds.length === 0
+                    ? "Everyone with access to this opportunity."
+                    : `Restricted to ${visibleUserIds.length} ${visibleUserIds.length === 1 ? "person" : "people"} (plus you and admins).`}
+                </div>
+              </div>
+              {visibleUserIds.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setVisibleUserIds([])}
+                  className="text-[11px] font-semibold text-accent hover:underline"
+                >
+                  Clear (open to all)
+                </button>
+              )}
+            </div>
+            <input
+              type="text"
+              value={memberSearch}
+              onChange={(e) => setMemberSearch(e.target.value)}
+              placeholder="Search by name or email…"
+              className="input text-sm w-full"
+            />
+            <div className="mt-2 max-h-[160px] overflow-y-auto border border-border rounded-lg divide-y divide-border bg-bg/30">
+              {matchingMembers.length === 0 ? (
+                <div className="px-3 py-2 text-[12px] text-muted italic">No matching members.</div>
+              ) : matchingMembers.slice(0, 50).map((m) => {
+                const on = visibleUserIds.includes(m.id);
+                return (
+                  <label
+                    key={m.id}
+                    className="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:bg-bg/60"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={() => toggleUser(m.id)}
+                    />
+                    <span className="text-[12.5px] font-semibold text-text">{m.name || m.email.split("@")[0]}</span>
+                    <span className="text-[11px] text-muted">{m.email}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
 
           {err && <div className="text-danger text-sm">{err}</div>}
 

@@ -243,7 +243,11 @@ func (h *Opportunities) Get(c *gin.Context) {
 		return
 	}
 	docs := []gin.H{}
-	docRows, derr := h.db.Query(c, `SELECT id, kind, name, object_key, uploaded_at FROM opportunity_documents WHERE opportunity_id=$1 ORDER BY uploaded_at DESC`, oid)
+	docRows, derr := h.db.Query(c, `
+		SELECT id, kind, name, object_key, uploaded_at,
+		       COALESCE(visible_user_ids, '{}'), uploaded_by
+		  FROM opportunity_documents WHERE opportunity_id=$1
+		 ORDER BY uploaded_at DESC`, oid)
 	if derr == nil {
 		defer docRows.Close()
 		for docRows.Next() {
@@ -251,12 +255,16 @@ func (h *Opportunities) Get(c *gin.Context) {
 				did                  uuid.UUID
 				kind, name, objKey   string
 				uploaded             any
+				visibleUserIDs       []uuid.UUID
+				uploadedBy           *uuid.UUID
 			)
-			if err := docRows.Scan(&did, &kind, &name, &objKey, &uploaded); err == nil {
+			if err := docRows.Scan(&did, &kind, &name, &objKey, &uploaded, &visibleUserIDs, &uploadedBy); err == nil {
 				docs = append(docs, gin.H{
 					"id": did, "kind": kind, "name": name,
 					"object_key":  objKey,
 					"uploaded_at": uploaded,
+					"visible_user_ids": visibleUserIDs,
+					"uploaded_by":      uploadedBy,
 				})
 			}
 		}
@@ -848,6 +856,11 @@ func (h *Opportunities) UploadDocument(c *gin.Context) {
 		name = fh.Filename
 	}
 	contentType := fh.Header.Get("Content-Type")
+	// Optional per-document visibility allowlist. CSV of UUIDs. Empty
+	// (or absent) means "anyone with access to the opportunity can see
+	// this doc". The uploader is always allowed regardless of what's in
+	// the list — that's enforced in DownloadDocument.
+	visibleIDs := parseUUIDCSV(c.PostForm("visible_user_ids"))
 
 	f, err := fh.Open()
 	if err != nil {
@@ -874,20 +887,171 @@ func (h *Opportunities) UploadDocument(c *gin.Context) {
 	if _, err := h.db.Exec(c, `
 		INSERT INTO opportunity_documents
 		  (id, opportunity_id, tenant_id, kind, name, object_key,
-		   content_type, size_bytes, bytes, uploaded_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		docID, oid, tid, kind, name, objKey, contentType, len(bytes), bytes, uid); err != nil {
+		   content_type, size_bytes, bytes, uploaded_by, visible_user_ids)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		docID, oid, tid, kind, name, objKey, contentType, len(bytes), bytes, uid, visibleIDs); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{
-		"id":           docID,
-		"object_key":   objKey,
-		"name":         name,
-		"kind":         kind,
-		"content_type": contentType,
-		"size_bytes":   len(bytes),
+		"id":               docID,
+		"object_key":       objKey,
+		"name":             name,
+		"kind":             kind,
+		"content_type":     contentType,
+		"size_bytes":       len(bytes),
+		"visible_user_ids": visibleIDs,
 	})
+}
+
+// UpdateDocument — PATCH /api/v1/opportunities/:id/documents/:docId
+//
+// Edits an existing attached document. Body is multipart/form-data so it
+// can carry an optional replacement file alongside the metadata. Any of the
+// fields can be omitted to leave the existing value alone.
+//
+//   file              (optional) replacement bytes; if absent, the stored
+//                     bytes are kept as-is.
+//   name              (optional) display name.
+//   visible_user_ids  (optional) CSV of UUIDs. Pass an explicit empty
+//                     string to clear the allowlist back to "all".
+//
+// Only the original uploader and users with governance:write can edit.
+// Everyone else gets a 403 — the visibility allowlist isn't an editing
+// affordance.
+func (h *Opportunities) UpdateDocument(c *gin.Context) {
+	oid, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad opportunity id"})
+		return
+	}
+	docID, err := uuid.Parse(c.Param("docId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad document id"})
+		return
+	}
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	isAdmin := false
+	for _, r := range roles {
+		if r == "super_admin" || r == "ceo" || r == "coo" || r == "governance_admin" {
+			isAdmin = true
+			break
+		}
+	}
+
+	// Existence + ownership check first so we never bind a body for an
+	// invalid target.
+	var uploadedBy *uuid.UUID
+	if err := h.db.QueryRow(c, `
+		SELECT uploaded_by FROM opportunity_documents
+		 WHERE id=$1 AND opportunity_id=$2 AND tenant_id=$3`,
+		docID, oid, tid).Scan(&uploadedBy); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
+		return
+	}
+	if !isAdmin && (uploadedBy == nil || *uploadedBy != uid) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "only the uploader (or an admin) can edit this document",
+			"code":  "not_uploader",
+		})
+		return
+	}
+
+	// Cap the body before the multipart parser allocates against it.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, oppDocMaxBytes+1024*1024)
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "upload too large (max 25MB)"})
+		return
+	}
+
+	// Each field is optional — only the present ones change.
+	newName := strings.TrimSpace(c.PostForm("name"))
+	// visible_user_ids: distinguish "not sent" from "empty string". An empty
+	// string is the explicit "clear the allowlist" signal.
+	_, visibilitySent := c.Request.MultipartForm.Value["visible_user_ids"]
+	visibleIDs := parseUUIDCSV(c.PostForm("visible_user_ids"))
+
+	// Optional replacement file. Same 25MB cap as upload.
+	var newBytes []byte
+	var newContentType string
+	if fh, err := c.FormFile("file"); err == nil && fh != nil {
+		if fh.Size > oppDocMaxBytes {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "file exceeds 25MB cap"})
+			return
+		}
+		f, err := fh.Open()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read upload"})
+			return
+		}
+		defer f.Close()
+		newBytes, err = io.ReadAll(f)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read upload bytes"})
+			return
+		}
+		newContentType = fh.Header.Get("Content-Type")
+		if newName == "" {
+			newName = fh.Filename
+		}
+	}
+
+	// Build an UPDATE that only touches the columns we received. COALESCE
+	// keeps the existing value when the new one is nil/empty.
+	sets := []string{}
+	args := []any{docID}
+	idx := 2
+	if newName != "" {
+		sets = append(sets, "name = $"+strconv.Itoa(idx))
+		args = append(args, newName)
+		idx++
+	}
+	if newBytes != nil {
+		sets = append(sets, "bytes = $"+strconv.Itoa(idx),
+			"size_bytes = $"+strconv.Itoa(idx+1),
+			"content_type = COALESCE(NULLIF($"+strconv.Itoa(idx+2)+", ''), content_type)")
+		args = append(args, newBytes, len(newBytes), newContentType)
+		idx += 3
+	}
+	if visibilitySent {
+		sets = append(sets, "visible_user_ids = $"+strconv.Itoa(idx)+"::uuid[]")
+		args = append(args, visibleIDs)
+		idx++
+	}
+	if len(sets) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "nothing to update — provide file, name, or visible_user_ids"})
+		return
+	}
+	q := "UPDATE opportunity_documents SET " + strings.Join(sets, ", ") + " WHERE id = $1"
+	if _, err := h.db.Exec(c, q, args...); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// parseUUIDCSV — parses a comma-separated UUID list (used by the upload /
+// update form). Invalid entries are skipped silently rather than 400'd so
+// a partial list still works; the caller is the source of truth for which
+// IDs they intend to permit.
+func parseUUIDCSV(s string) []uuid.UUID {
+	if s == "" {
+		return []uuid.UUID{}
+	}
+	out := []uuid.UUID{}
+	for _, raw := range strings.Split(s, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if id, err := uuid.Parse(raw); err == nil {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // DownloadDocument — GET /api/v1/opportunities/:id/documents/:docId/content
@@ -897,6 +1061,9 @@ func (h *Opportunities) UploadDocument(c *gin.Context) {
 // middleware; tenant_id check prevents cross-tenant fetches.
 func (h *Opportunities) DownloadDocument(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
 	oid, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad opportunity id"})
@@ -910,14 +1077,50 @@ func (h *Opportunities) DownloadDocument(c *gin.Context) {
 	var (
 		name, contentType string
 		bytes             []byte
+		visibleUserIDs    []uuid.UUID
+		uploadedBy        *uuid.UUID
 	)
 	if err := h.db.QueryRow(c, `
-		SELECT name, COALESCE(content_type, 'application/octet-stream'), bytes
+		SELECT name, COALESCE(content_type, 'application/octet-stream'), bytes,
+		       COALESCE(visible_user_ids, '{}'), uploaded_by
 		  FROM opportunity_documents
 		 WHERE id=$1 AND opportunity_id=$2 AND tenant_id=$3`,
-		docID, oid, tid).Scan(&name, &contentType, &bytes); err != nil {
+		docID, oid, tid).Scan(&name, &contentType, &bytes, &visibleUserIDs, &uploadedBy); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "document not found"})
 		return
+	}
+	// Per-document visibility allowlist. An empty array means "everyone
+	// with opportunity access can see this" (existing behaviour). A
+	// non-empty array restricts to the listed users plus the uploader
+	// plus governance:write admins.
+	if len(visibleUserIDs) > 0 {
+		allowed := false
+		if uploadedBy != nil && *uploadedBy == uid {
+			allowed = true
+		}
+		if !allowed {
+			for _, allowedID := range visibleUserIDs {
+				if allowedID == uid {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed {
+			for _, r := range roles {
+				if r == "super_admin" || r == "ceo" || r == "coo" || r == "governance_admin" {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "this document is restricted — ask the uploader to share it with you",
+				"code":  "doc_restricted",
+			})
+			return
+		}
 	}
 	if len(bytes) == 0 {
 		c.JSON(http.StatusGone, gin.H{"error": "document body not stored (legacy local:// pointer)"})
