@@ -217,7 +217,7 @@ export function CampfirePage() {
   const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; admin?: boolean }[] = [
     { key: "feed",   label: "Pulse feed",        icon: Newspaper },
     { key: "kudos",  label: "Recognition",       icon: Trophy },
-    { key: "mood",   label: isAdmin ? "Mood & insights" : "Mood check", icon: Smile },
+    { key: "mood",   label: "Mood & insights",  icon: Smile, admin: true },
     { key: "help",   label: "Help wall",         icon: HelpCircle },
     { key: "rooms",  label: "Channels",          icon: Hash },
   ];
@@ -1123,49 +1123,20 @@ function MoodCheck({ isAdmin }: { isAdmin: boolean }) {
     },
   });
 
+  // The "How are you today?" input card lived here. The daily check-in
+  // already collects the same signal on the Check-ins page; surfacing
+  // the mood picker on Campfire too was duplicating the action. The
+  // admin-side workspace pulse (Insights + 14-day trend) stays because
+  // it's a read-only rollup, not a duplicate input.
+  void today; void set; void note; void setNote; void MOODS;
+  if (!isAdmin) return null;
   return (
     <div className="space-y-5">
-      <div className="bg-surface border border-border rounded-2xl p-6">
-        <h2 className="text-base font-bold mb-1">How are you today?</h2>
-        <p className="text-sm text-muted mb-4">
-          A quick daily pulse. Honest answers help us spot burnout early — this is not a performance signal.
-        </p>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-          {MOODS.map((m) => {
-            const Icon = m.icon;
-            const active = today?.mood === m.value;
-            return (
-              <button
-                key={m.value}
-                onClick={() => set.mutate(m.value)}
-                className={`flex flex-col items-center gap-1.5 px-3 py-4 rounded-xl border-2 transition-colors ${
-                  active ? `${m.cls} font-bold` : "border-border text-muted hover:bg-bg/40"
-                }`}
-              >
-                <Icon size={22} />
-                <span className="text-[12px]">{m.label}</span>
-              </button>
-            );
-          })}
-        </div>
-        <textarea
-          className="input min-h-[60px] mt-4"
-          placeholder="Optional note — only your manager / HR can see this."
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          onBlur={() => { if (today?.mood) set.mutate(today.mood); }}
-        />
+      <div>
+        <h3 className="text-sm font-bold text-text mb-2 px-1">Workspace insights</h3>
+        <Insights />
       </div>
-
-      {isAdmin && (
-        <>
-          <div>
-            <h3 className="text-sm font-bold text-text mb-2 px-1">Workspace insights</h3>
-            <Insights />
-          </div>
-          <MoodTrendCard />
-        </>
-      )}
+      <MoodTrendCard />
     </div>
   );
 }

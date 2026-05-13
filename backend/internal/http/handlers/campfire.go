@@ -808,7 +808,7 @@ func (h *Campfire) ListRooms(c *gin.Context) {
 		       (SELECT COUNT(*) FROM campfire_messages m WHERE m.room_id=r.id) AS msg_count,
 		       (SELECT MAX(m.created_at) FROM campfire_messages m WHERE m.room_id=r.id) AS last_at,
 		       (SELECT COUNT(*) FROM campfire_room_members rm WHERE rm.room_id=r.id) AS member_count,
-		       (r.created_by = $2) AS is_owner
+		       COALESCE(r.created_by = $2, false) AS is_owner
 		FROM campfire_rooms r
 		WHERE r.tenant_id=$1
 		  AND (
