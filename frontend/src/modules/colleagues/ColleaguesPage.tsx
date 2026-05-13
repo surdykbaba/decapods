@@ -612,34 +612,41 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
     onError: (e: any) => toast.error("Couldn't open channel", e?.message),
   });
 
-  // Shout-out in Campfire — posts an announcement to the Pulse feed with
-  // a pre-baked welcome / appreciation copy that mentions the colleague.
-  // One click; the author doesn't have to switch to Campfire to do it.
-  // We pick the verb based on tenure: ≤7 days reads as "welcome", older
-  // reads as a shout-out so it doesn't look like a fake welcome to a
-  // long-tenured teammate.
+  // Shout-out in Campfire — opens a confirmation dialog with an editable
+  // preview before posting. Used to auto-post on click; the user pointed
+  // out (rightly) that broadcasting to the workspace without a "are you
+  // sure" step is too easy to fire by accident.
+  //
+  // Pre-baked copy is tenure-aware: ≤7 days reads as a welcome (and
+  // posts as kind=joiner), older reads as a shout-out (kind=celebration).
+  // The user can rewrite both lines before confirming.
+  const tenureDays = relativeDays(c.created_at);
+  const isWelcome = tenureDays < 7;
+  const firstName = (c.name || c.email.split("@")[0]).split(" ")[0];
+  const defaultTitle = isWelcome
+    ? `👋 Welcome ${firstName}!`
+    : `🙌 Shout-out to ${firstName}`;
+  const defaultBody = isWelcome
+    ? `Big welcome to ${c.name || c.email} — say hi when you get a moment.`
+    : `Just wanted to give ${c.name || c.email} a shout-out for being a great colleague. Drop a 🔥 if you agree.`;
+  const [shoutOpen, setShoutOpen] = useState(false);
+  const [shoutTitle, setShoutTitle] = useState(defaultTitle);
+  const [shoutBody, setShoutBody] = useState(defaultBody);
+
   const announce = useMutation({
-    mutationFn: () => {
-      const firstName = (c.name || c.email.split("@")[0]).split(" ")[0];
-      const tenureDays = relativeDays(c.created_at);
-      const isWelcome = tenureDays < 7;
-      const title = isWelcome
-        ? `👋 Welcome ${firstName}!`
-        : `🙌 Shout-out to ${firstName}`;
-      const body = isWelcome
-        ? `Big welcome to **${c.name || c.email}** — say hi when you get a moment.`
-        : `Just wanted to give **${c.name || c.email}** a shout-out for being a great colleague. Drop a 🔥 if you agree.`;
-      return api("/api/v1/campfire/posts", {
+    mutationFn: () =>
+      api("/api/v1/campfire/posts", {
         method: "POST",
         body: JSON.stringify({
           kind: isWelcome ? "joiner" : "celebration",
-          title, body,
+          title: shoutTitle.trim(),
+          body: shoutBody.trim(),
         }),
-      });
-    },
+      }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["campfire-posts"] });
       toast.success("Posted to Campfire");
+      setShoutOpen(false);
     },
     onError: (e: any) => toast.error("Couldn't post", e?.message),
   });
@@ -729,12 +736,11 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
             <MessageCircle size={13} /> {openDM.isPending ? "…" : "Channel"}
           </button>
           <button
-            onClick={() => announce.mutate()}
-            disabled={announce.isPending}
-            className="inline-flex items-center justify-center gap-1.5 text-[12.5px] font-semibold px-3 py-2 rounded-xl border border-accent/30 bg-accent-soft/40 text-accent hover:bg-accent-soft press-fx disabled:opacity-60"
-            title="Post a shout-out for this colleague in the Pulse feed"
+            onClick={() => { setShoutTitle(defaultTitle); setShoutBody(defaultBody); setShoutOpen(true); }}
+            className="inline-flex items-center justify-center gap-1.5 text-[12.5px] font-semibold px-3 py-2 rounded-xl border border-accent/30 bg-accent-soft/40 text-accent hover:bg-accent-soft press-fx"
+            title="Open a preview before posting to the Campfire pulse feed"
           >
-            <Megaphone size={13} /> {announce.isPending ? "…" : "Shout-out"}
+            <Megaphone size={13} /> Shout-out
           </button>
           <a
             href={`mailto:${c.email}`}
@@ -818,6 +824,60 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
           </div>
         </div>
       </div>
+
+      {/* Shout-out confirmation. Fires when the user clicks the
+          Shout-out quick-action — used to auto-post silently, now
+          previews the title + body and tells you exactly where it'll
+          show up. Edit both fields inline, Cancel to bail, "Post to
+          Campfire" to broadcast. */}
+      {shoutOpen && (
+        <div className="fixed inset-0 z-[60] bg-black/40 grid place-items-center p-4" onClick={(e) => { e.stopPropagation(); setShoutOpen(false); }}>
+          <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md p-5" onClick={(e) => e.stopPropagation()}>
+            <header className="flex items-center justify-between gap-2 mb-3">
+              <h3 className="text-base font-bold text-text inline-flex items-center gap-2">
+                <Megaphone size={14} className="text-accent" /> Post to Campfire
+              </h3>
+              <button onClick={() => setShoutOpen(false)} className="p-1.5 rounded hover:bg-bg text-muted">
+                <XIcon size={14} />
+              </button>
+            </header>
+            <div className="text-[12px] text-muted bg-accent-soft/40 border border-accent/30 rounded-lg px-3 py-2 mb-3">
+              This will appear in the <span className="font-semibold text-text">Pulse feed</span> for everyone in the workspace. Review the preview below before posting.
+            </div>
+            <label className="block mb-2">
+              <div className="label">Headline</div>
+              <input
+                className="input"
+                value={shoutTitle}
+                onChange={(e) => setShoutTitle(e.target.value)}
+              />
+            </label>
+            <label className="block">
+              <div className="label">Message</div>
+              <textarea
+                className="input min-h-[90px]"
+                value={shoutBody}
+                onChange={(e) => setShoutBody(e.target.value)}
+              />
+            </label>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                onClick={() => setShoutOpen(false)}
+                className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg text-muted hover:bg-bg/40 press-fx"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={announce.isPending || !shoutBody.trim()}
+                onClick={() => announce.mutate()}
+                className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-[rgb(var(--accent-hover))] disabled:opacity-60 press-fx"
+              >
+                {announce.isPending ? "Posting…" : "Post to Campfire"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
