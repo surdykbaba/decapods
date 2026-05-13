@@ -55,7 +55,21 @@ func (h *Members) List(c *gin.Context) {
 		       u.manual_status, u.manual_status_until,
 		       COALESCE(u.avatar_url, ''),
 		       COALESCE(u.birthday, '') AS birthday,
-		       COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
+		       COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles,
+		       -- Today's check-in flags. We surface both whether the
+		       -- daily_checkins row exists for today AND whether it
+		       -- carries any actual content (mood / focus / yesterday).
+		       -- A row may exist but be all-NULL if the user opened the
+		       -- editor and saved an empty draft — counting that as
+		       -- "checked in" would mis-state activity. UI uses
+		       -- checked_in_today=true (with content).
+		       EXISTS (
+		         SELECT 1 FROM daily_checkins dc
+		         WHERE dc.tenant_id = u.tenant_id
+		           AND dc.user_id = u.id
+		           AND dc.day = (now() AT TIME ZONE 'UTC')::date
+		           AND (dc.mood IS NOT NULL OR dc.focus_note IS NOT NULL OR dc.yesterday_note IS NOT NULL)
+		       ) AS checked_in_today
 		FROM users u
 		LEFT JOIN user_roles ur ON ur.user_id = u.id
 		LEFT JOIN roles r       ON r.id = ur.role_id
@@ -86,7 +100,7 @@ func (h *Members) List(c *gin.Context) {
 		var (
 			id                                  uuid.UUID
 			email, name, status, avatar, birthday string
-			mfa, mfaRequired                    bool
+			mfa, mfaRequired, checkedInToday    bool
 			lastLogin, lastSeen                 *time.Time
 			manual                              *string
 			manualUntil                         *time.Time
@@ -94,7 +108,7 @@ func (h *Members) List(c *gin.Context) {
 			roles                               []string
 		)
 		if err := rows.Scan(&id, &email, &name, &status, &mfa, &mfaRequired, &lastLogin, &created, &lastSeen,
-			&manual, &manualUntil, &avatar, &birthday, &roles); err == nil {
+			&manual, &manualUntil, &avatar, &birthday, &roles, &checkedInToday); err == nil {
 			// Single source of truth for presence — see derivePresence in me.go.
 			presence := derivePresence(manual, manualUntil, lastSeen)
 			var sinceSec int64 = -1
@@ -119,6 +133,7 @@ func (h *Members) List(c *gin.Context) {
 				"seconds_since": sinceSec,
 				"avatar_url":    avatar,
 				"birthday":      bday,
+				"checked_in_today": checkedInToday,
 			})
 		}
 	}

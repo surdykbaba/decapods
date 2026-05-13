@@ -40,6 +40,11 @@ type Colleague = {
   // but the matching code only looks at month + day so privacy-conscious
   // users can pass any sentinel year (1900, 2000) and still get the chime.
   birthday?: string | null;
+  // True when the colleague saved a daily check-in (mood or notes) for
+  // today. Surfaced as a green "Checked in" pill in the list view; the
+  // alternative is a muted "No check-in" pill so admins can spot quiet
+  // teammates without opening the HR Check-ins page.
+  checked_in_today?: boolean;
 };
 
 type Resp = { items: Colleague[] };
@@ -531,11 +536,22 @@ function ColleagueRow({ c, onOpen }: { c: Colleague; onOpen: () => void }) {
             <span className="text-[10.5px] font-semibold text-muted/70">+{c.roles.length - 2}</span>
           )}
         </div>
-        <div className="hidden lg:block text-[11px] text-muted whitespace-nowrap shrink-0">
-          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full ${presenceCls} bg-opacity-10`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${presenceCls}`} />
-            {presenceLabel}
-          </span>
+        {/* Today's check-in pill. Replaces the old "Offline" presence
+            pill — the green dot on the avatar already tells you whether
+            they're online, but whether they did their daily huddle is
+            the more useful signal in a workforce directory. */}
+        <div className="hidden lg:block text-[11px] whitespace-nowrap shrink-0">
+          {c.checked_in_today ? (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-success/15 text-success border border-success/25 font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-success" />
+              Checked in today
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted/10 text-muted border border-border font-semibold" title="Hasn't logged a daily check-in yet today">
+              <span className="w-1.5 h-1.5 rounded-full bg-muted/50" />
+              No check-in today
+            </span>
+          )}
         </div>
         <div className="hidden sm:block text-[11px] text-muted whitespace-nowrap shrink-0 w-[120px] text-right">
           <span className="inline-flex items-center gap-1 justify-end">
