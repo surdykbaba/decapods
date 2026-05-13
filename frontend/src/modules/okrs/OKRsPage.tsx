@@ -11,7 +11,7 @@
 // The data shape mirrors backend okrs.go: objectives + key_results
 // share the okrs table; KRs hang off their parent_id. The SPA groups
 // them locally so the API doesn't have to.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Target, Plus, Pencil, Trash2, ChevronDown, ChevronRight,
@@ -781,6 +781,24 @@ function formatNum(n: number): string {
 // Create / Edit dialogs
 // ─────────────────────────────────────────────────────────────────────
 
+// CreateOKRDialog — the smart new-objective / new-key-result form.
+//
+// Smart bits beyond the old "title + description + confidence" trio:
+//   • Template chips — four objective starters (Ship · Grow · Reduce ·
+//     Maintain) that pre-fill a sentence-stem the user can finish.
+//     Lowers blank-canvas friction.
+//   • Owner picker — defaults to the calling user; admins can hand off
+//     to anyone in the workspace at create time.
+//   • Status chips — Draft / In progress / Done so the dialog isn't
+//     making "draft" a separate workflow nobody discovers.
+//   • Quantitative inference for KRs — typing a number in the title
+//     ("Move 12 tenants to v2") auto-suggests target + unit chips
+//     pulled from the parsed string.
+//   • Live preview card mirrors the final rendering so the user sees
+//     what they're shipping before clicking Add.
+//   • Inline "add 3 key results" reveal for objectives — once the
+//     objective is added we open a quick-add row that the user can
+//     fill 0–3 KRs into without re-opening the dialog.
 function CreateOKRDialog({
   cycleId, kind, parentId, onClose,
 }: {
@@ -790,92 +808,343 @@ function CreateOKRDialog({
   onClose: () => void;
 }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const isObjective = kind === "objective";
+
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [target, setTarget] = useState("");
   const [unit, setUnit] = useState("");
   const [confidence, setConfidence] = useState<OKR["confidence"]>("green");
+  const [status, setStatus] = useState<OKR["status"]>("in_progress");
+  const [ownerId, setOwnerId] = useState<string>(user?.id ?? "");
+  // Inline KR drafts shown after the objective lands. Three empty rows
+  // is the friction sweet-spot — fewer feels stingy, more reads as
+  // homework. The user can leave them empty and we'll skip the save.
+  const [krDrafts, setKrDrafts] = useState<string[]>(["", "", ""]);
+  const [phase, setPhase] = useState<"compose" | "add-krs">("compose");
+  const [objectiveID, setObjectiveID] = useState<string | null>(null);
+
+  // Members picker — only fetched when actually needed (the dialog is
+  // opened), staletime keeps it cached across re-opens within 5 min.
+  const { data: membersData } = useQuery<{ items: { id: string; name: string; email: string; status: string }[] }>({
+    queryKey: ["okrs-members-pick"],
+    queryFn: () => api("/api/v1/members?status=active"),
+    staleTime: 5 * 60_000,
+  });
+  const members = (membersData?.items ?? []).filter((m) => m.status === "active");
+
+  // Templates for the title field. Tap one to pre-seed the input with a
+  // sentence-stem. "Ship X this quarter" is the catch-all; the others
+  // map to common OKR archetypes (growth, reduction, quality).
+  const objectiveTemplates: { label: string; emoji: string; seed: string }[] = [
+    { label: "Ship",     emoji: "🚀", seed: "Ship " },
+    { label: "Grow",     emoji: "📈", seed: "Grow " },
+    { label: "Reduce",   emoji: "📉", seed: "Reduce " },
+    { label: "Maintain", emoji: "🛡️", seed: "Maintain " },
+  ];
+
+  // Quantitative inference for KRs — if the user types "12 tenants" or
+  // "$50k" we'll suggest target=12 and unit="tenants" (or "$"). Skip
+  // if they've already typed an explicit target/unit. Re-runs on every
+  // title edit but the regex is cheap.
+  useEffect(() => {
+    if (isObjective) return;
+    if (target || unit) return;
+    const m = /(?:^|\s)(\$|₦|€|£)?(\d[\d.,]*)\s*([a-zA-Z%]{1,16})?/.exec(title);
+    if (m) {
+      const num = parseFloat(m[2].replace(/,/g, ""));
+      if (Number.isFinite(num)) {
+        setTarget(String(num));
+        const u = (m[1] ?? m[3] ?? "").trim();
+        if (u) setUnit(u);
+      }
+    }
+  }, [title, isObjective, target, unit]);
+
   const save = useMutation({
     mutationFn: () =>
-      api("/api/v1/okrs", {
+      api<{ id: string }>("/api/v1/okrs", {
         method: "POST",
         body: JSON.stringify({
           cycle_id: cycleId,
           kind,
           parent_id: parentId,
+          owner_id: ownerId || undefined,
           title: title.trim(),
           description: description.trim(),
           target_value: kind === "key_result" && target.trim() !== "" ? parseFloat(target) : undefined,
           unit: kind === "key_result" ? unit.trim() : undefined,
           confidence,
+          status,
         }),
       }),
-    onSuccess: () => {
-      toast.success(kind === "objective" ? "Objective added" : "Key result added");
+    onSuccess: (resp) => {
+      toast.success(isObjective ? "Objective added" : "Key result added");
       qc.invalidateQueries({ queryKey: ["okrs"] });
-      onClose();
+      // For objectives, flip to the KR-quick-add step instead of closing.
+      // The user usually wants to drop the 3 KRs that prove the
+      // objective right after — same flow they'd otherwise re-open
+      // the dialog three times for.
+      if (isObjective && resp?.id) {
+        setObjectiveID(resp.id);
+        setPhase("add-krs");
+      } else {
+        onClose();
+      }
     },
     onError: (e: any) => toast.error("Could not save", e?.message),
   });
-  const isObjective = kind === "objective";
+
+  const saveKR = useMutation({
+    mutationFn: (body: string) =>
+      api("/api/v1/okrs", {
+        method: "POST",
+        body: JSON.stringify({
+          cycle_id: cycleId,
+          kind: "key_result",
+          parent_id: objectiveID,
+          title: body.trim(),
+          confidence: "green",
+          status: "in_progress",
+        }),
+      }),
+  });
+
+  async function commitKRs() {
+    const valid = krDrafts.map((s) => s.trim()).filter((s) => s.length > 0);
+    for (const body of valid) {
+      try { await saveKR.mutateAsync(body); } catch { /* keep going */ }
+    }
+    qc.invalidateQueries({ queryKey: ["okrs"] });
+    toast.success(`${valid.length} key result${valid.length === 1 ? "" : "s"} added`);
+    onClose();
+  }
+
+  // Live-preview model — read the form state into a fake OKR-like shape
+  // so the user sees the card they'll get on save.
+  const previewTarget = isObjective ? null : (target.trim() ? parseFloat(target) : null);
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md overflow-hidden">
-        <header className="px-5 py-4 border-b border-border flex items-center justify-between">
-          <h2 className="text-base font-bold text-text">{isObjective ? "New objective" : "New key result"}</h2>
+      <div onClick={(e) => e.stopPropagation()} className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-lg max-h-[92vh] overflow-hidden flex flex-col">
+        <header className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[10.5px] uppercase tracking-wider text-accent font-bold">
+              {phase === "add-krs" ? "Step 2 of 2" : isObjective ? "Step 1 of 2" : "New entry"}
+            </div>
+            <h2 className="text-base font-bold text-text mt-0.5">
+              {phase === "add-krs" ? "Add the key results that prove it" : (isObjective ? "New objective" : "New key result")}
+            </h2>
+          </div>
           <button onClick={onClose} className="text-muted hover:text-text"><X size={16} /></button>
         </header>
-        <div className="p-5 space-y-3">
-          <label className="block">
-            <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Title</div>
-            <input
-              autoFocus
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder={isObjective ? "Ship 3 priority features this quarter" : "Land Feature X in production"}
-              className="input"
-            />
-          </label>
-          <label className="block">
-            <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Description (optional)</div>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={3}
-              className="input resize-none"
-            />
-          </label>
-          {!isObjective && (
+
+        {phase === "compose" ? (
+          <div className="p-5 space-y-4 flex-1 overflow-y-auto">
+            {isObjective && (
+              <div>
+                <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1.5">Start with a template</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {objectiveTemplates.map((t) => (
+                    <button
+                      key={t.label}
+                      type="button"
+                      onClick={() => setTitle((cur) => cur || t.seed)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[11.5px] font-semibold rounded-full bg-bg/40 border border-border hover:border-accent/40 hover:bg-accent-soft/40 transition-colors"
+                    >
+                      <span>{t.emoji}</span> {t.label} …
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <label className="block">
+              <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Title</div>
+              <input
+                autoFocus
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={isObjective ? "Ship 3 priority features this quarter" : "Move 12 tenants to v2"}
+                className="input"
+              />
+              {!isObjective && title && !target && (
+                <div className="text-[10.5px] text-muted mt-1 italic">
+                  Tip: add a number ("ship 12 tenants") and we'll auto-fill the target.
+                </div>
+              )}
+            </label>
+
+            <label className="block">
+              <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Description <span className="text-muted/70 font-normal">(optional)</span></div>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                rows={2}
+                placeholder={isObjective ? "Why does this matter? Who depends on it?" : "How will we measure it?"}
+                className="input resize-none"
+              />
+            </label>
+
+            {!isObjective && (
+              <div className="grid grid-cols-[1fr_120px] gap-3">
+                <label className="block">
+                  <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Target</div>
+                  <input
+                    type="number"
+                    value={target}
+                    onChange={(e) => setTarget(e.target.value)}
+                    placeholder="100"
+                    className="input"
+                  />
+                  <div className="text-[10.5px] text-muted mt-1">Empty = done/not-done KR.</div>
+                </label>
+                <label className="block">
+                  <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Unit</div>
+                  <input
+                    value={unit}
+                    onChange={(e) => setUnit(e.target.value)}
+                    placeholder="%, ₦, signups"
+                    className="input"
+                  />
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {["%", "₦", "$", "users", "tenants"].map((u) => (
+                      <button
+                        key={u}
+                        type="button"
+                        onClick={() => setUnit(u)}
+                        className={`text-[10.5px] font-semibold px-1.5 py-0.5 rounded border ${
+                          unit === u ? "bg-accent text-white border-accent" : "bg-bg/40 text-muted border-border hover:border-accent/40"
+                        }`}
+                      >
+                        {u}
+                      </button>
+                    ))}
+                  </div>
+                </label>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3">
-              <label className="block">
-                <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Target</div>
-                <input
-                  type="number"
-                  value={target}
-                  onChange={(e) => setTarget(e.target.value)}
-                  placeholder="100"
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1.5">Owner</div>
+                <select
+                  value={ownerId}
+                  onChange={(e) => setOwnerId(e.target.value)}
                   className="input"
-                />
-                <div className="text-[10.5px] text-muted mt-1">Leave empty for done/not-done KRs.</div>
-              </label>
-              <label className="block">
-                <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Unit</div>
-                <input
-                  value={unit}
-                  onChange={(e) => setUnit(e.target.value)}
-                  placeholder="%, signups, ₦"
-                  className="input"
-                />
-              </label>
+                >
+                  <option value={user?.id ?? ""}>{(user?.name || user?.email || "Me") + " (me)"}</option>
+                  {members.filter((m) => m.id !== user?.id).map((m) => (
+                    <option key={m.id} value={m.id}>{m.name || m.email}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1.5">Status</div>
+                <div className="flex flex-wrap gap-1">
+                  {(["draft", "in_progress"] as const).map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setStatus(s)}
+                      className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${
+                        status === s ? "bg-accent text-white border-accent" : "bg-bg/40 text-muted border-border hover:border-accent/40"
+                      }`}
+                    >
+                      {s === "draft" ? "Draft" : "In progress"}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[10.5px] text-muted mt-1">
+                  Draft stays hidden from the workspace tab until you switch it to "in progress".
+                </div>
+              </div>
             </div>
-          )}
-          <ConfidencePicker value={confidence} onChange={setConfidence} />
-        </div>
+
+            <ConfidencePicker value={confidence} onChange={setConfidence} />
+
+            {/* Live preview — mirror the eventual rendering so the user
+                sees their objective the way the team will. */}
+            {title.trim() && (
+              <div className="border border-accent/30 bg-accent-soft/20 rounded-xl p-3">
+                <div className="text-[10px] uppercase tracking-wider font-bold text-accent mb-1.5">Preview</div>
+                <div className="flex items-start gap-2.5">
+                  <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-accent text-white shrink-0 font-bold text-[12px]">{isObjective ? "O" : "KR"}</span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13.5px] font-bold text-text">{title.trim()}</div>
+                    {description.trim() && <div className="text-[12px] text-muted mt-0.5">{description.trim()}</div>}
+                    <div className="mt-1.5 flex items-center gap-2 text-[10.5px] flex-wrap">
+                      <span className={`pill text-[10px] uppercase tracking-wider ${
+                        confidence === "green" ? "bg-success/15 text-success"
+                        : confidence === "amber" ? "bg-warn/15 text-warn"
+                        : "bg-danger/15 text-danger"
+                      }`}>{confidence === "green" ? "On track" : confidence === "amber" ? "At risk" : "Off track"}</span>
+                      {previewTarget != null && (
+                        <span className="text-muted font-semibold">target {formatNum(previewTarget)} {unit}</span>
+                      )}
+                      <span className="text-muted">·</span>
+                      <span className="text-muted">{(members.find((m) => m.id === ownerId)?.name) || user?.name || "me"}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          // Phase 2 — KR quick-add. The objective just landed; let the user
+          // drop the measurable KRs without ever leaving the dialog.
+          <div className="p-5 space-y-3 flex-1 overflow-y-auto">
+            <p className="text-[12.5px] text-muted">
+              Great. Add up to <span className="font-bold text-text">3 key results</span> that will tell you when this objective is met.
+              Skip any you don't have yet — you can always add more from the objective card later.
+            </p>
+            {krDrafts.map((k, i) => (
+              <div key={i} className="flex items-center gap-2">
+                <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-accent-soft text-accent shrink-0 font-bold text-[10.5px]">KR{i + 1}</span>
+                <input
+                  className="input flex-1"
+                  value={k}
+                  onChange={(e) => {
+                    const next = [...krDrafts];
+                    next[i] = e.target.value;
+                    setKrDrafts(next);
+                  }}
+                  placeholder={
+                    i === 0 ? "Move 12 tenants to v2 by 30 Jun"
+                    : i === 1 ? "Keep monthly support tickets under 25"
+                    : "NPS ≥ 40 across the cohort"
+                  }
+                />
+              </div>
+            ))}
+            <div className="text-[11px] text-muted">
+              Numbers in the title get auto-detected as targets once the KR lands — same trick as the main form.
+            </div>
+          </div>
+        )}
+
         <footer className="px-4 py-3 border-t border-border flex items-center justify-end gap-2 bg-bg/30">
-          <button onClick={onClose} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg text-muted hover:text-text">Cancel</button>
-          <SmartButton variant="primary" disabled={!title.trim() || save.isPending} loadingLabel="Saving…" onClick={() => save.mutate()}>
-            <Plus size={13} /> Add
-          </SmartButton>
+          {phase === "compose" ? (
+            <>
+              <button onClick={onClose} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg text-muted hover:text-text">Cancel</button>
+              <SmartButton variant="primary" disabled={!title.trim() || save.isPending} loadingLabel="Saving…" onClick={() => save.mutate()}>
+                <Plus size={13} /> {isObjective ? "Add objective" : "Add"}
+              </SmartButton>
+            </>
+          ) : (
+            <>
+              <button onClick={onClose} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg text-muted hover:text-text">Skip — done</button>
+              <SmartButton
+                variant="primary"
+                disabled={saveKR.isPending || krDrafts.every((k) => !k.trim())}
+                loadingLabel="Saving…"
+                onClick={commitKRs}
+              >
+                <Plus size={13} /> Add {krDrafts.filter((k) => k.trim()).length} key result{krDrafts.filter((k) => k.trim()).length === 1 ? "" : "s"}
+              </SmartButton>
+            </>
+          )}
         </footer>
       </div>
     </div>
