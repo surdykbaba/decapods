@@ -113,6 +113,8 @@ func New(d Deps) http.Handler {
 	authed.POST("/okrs",               mw.RequirePermission("okr:write"), okrs.Create)
 	authed.PATCH("/okrs/:id",          mw.RequirePermission("okr:write"), okrs.Update)
 	authed.DELETE("/okrs/:id",         mw.RequirePermission("okr:write"), okrs.Delete)
+	authed.GET("/okrs/:id/checkins",   mw.RequirePermission("okr:read"),  okrs.ListCheckins)
+	authed.POST("/okrs/:id/checkins",  mw.RequirePermission("okr:write"), okrs.CreateCheckin)
 
 	teamsIntegration := handlers.NewTeamsIntegration(d.DB)
 	authed.GET("/settings/teams",            mw.RequirePermission("governance:write"), teamsIntegration.Get)

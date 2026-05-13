@@ -34,6 +34,7 @@ type OKR = {
   id: string;
   cycle_id: string;
   parent_id: string | null;
+  parent_title?: string;
   owner_id: string;
   owner_name: string;
   owner_email: string;
@@ -47,6 +48,23 @@ type OKR = {
   status: "draft" | "in_progress" | "done" | "dropped";
   position: number;
   progress_pct: number;
+  // Phase 2 — check-in summary.
+  checkin_count: number;
+  latest_checkin_at?: string | null;
+};
+
+type OKRCheckin = {
+  id: string;
+  okr_id: string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  current_value: number | null;
+  percent: number;
+  confidence: "green" | "amber" | "red";
+  status?: "draft" | "in_progress" | "done" | "dropped" | null;
+  comment: string;
+  created_at: string;
 };
 
 const CONFIDENCE_META: Record<OKR["confidence"], { label: string; cls: string }> = {
@@ -68,6 +86,9 @@ export function OKRsPage() {
   const [activeCycleId, setActiveCycleId] = useState<string | null>(null);
   const [editing, setEditing] = useState<OKR | null>(null);
   const [creating, setCreating] = useState<{ cycleId: string; kind: OKR["kind"]; parentId?: string } | null>(null);
+  // Phase 2 — check-in dialog target + history-popover target.
+  const [checkingIn, setCheckingIn] = useState<OKR | null>(null);
+  const [historyFor, setHistoryFor] = useState<OKR | null>(null);
 
   const { data: cyclesData } = useQuery<{ items: Cycle[] }>({
     queryKey: ["okrs", "cycles"],
@@ -211,6 +232,8 @@ export function OKRsPage() {
                   canEdit={tab === "mine" || obj.owner_id === user?.id}
                   onEdit={(o) => setEditing(o)}
                   onAddKR={() => setCreating({ cycleId: cycle.id, kind: "key_result", parentId: obj.id })}
+                  onCheckin={(o) => setCheckingIn(o)}
+                  onHistory={(o) => setHistoryFor(o)}
                 />
               ))}
             </ul>
@@ -221,6 +244,7 @@ export function OKRsPage() {
       {editing && (
         <EditOKRDialog
           okr={editing}
+          cycleObjectives={grouped.objs}
           onClose={() => setEditing(null)}
         />
       )}
@@ -232,6 +256,18 @@ export function OKRsPage() {
           onClose={() => setCreating(null)}
         />
       )}
+      {checkingIn && (
+        <CheckinDialog
+          okr={checkingIn}
+          onClose={() => setCheckingIn(null)}
+        />
+      )}
+      {historyFor && (
+        <HistoryDialog
+          okr={historyFor}
+          onClose={() => setHistoryFor(null)}
+        />
+      )}
     </div>
   );
 }
@@ -240,13 +276,15 @@ export function OKRsPage() {
 // by the avg of the KR progress percentages (objectives don't carry
 // their own quantitative target in v1).
 function ObjectiveCard({
-  objective, keyResults, canEdit, onEdit, onAddKR,
+  objective, keyResults, canEdit, onEdit, onAddKR, onCheckin, onHistory,
 }: {
   objective: OKR;
   keyResults: OKR[];
   canEdit: boolean;
   onEdit: (o: OKR) => void;
   onAddKR: () => void;
+  onCheckin: (o: OKR) => void;
+  onHistory: (o: OKR) => void;
 }) {
   const [expanded, setExpanded] = useState(true);
   const avgPct = keyResults.length === 0 ? 0
@@ -266,15 +304,36 @@ function ObjectiveCard({
               <span className="text-[13px] font-bold text-text">{objective.title}</span>
               <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${conf.cls}`}>{conf.label}</span>
               <span className="text-[11px] text-muted">{objective.owner_name || objective.owner_email}</span>
+              {/* Parent-alignment chip — only when this objective is
+                  aligned upward (cascaded from a team/org objective). */}
+              {objective.parent_id && objective.parent_title && (
+                <span
+                  className="pill bg-accent-soft text-accent border border-accent/30 text-[10px] uppercase tracking-wide font-bold inline-flex items-center gap-1"
+                  title={`Aligned to: ${objective.parent_title}`}
+                >
+                  ↗ {objective.parent_title.length > 28 ? objective.parent_title.slice(0, 28) + "…" : objective.parent_title}
+                </span>
+              )}
             </div>
             {objective.description && (
               <p className="text-[12px] text-muted leading-snug mt-0.5 line-clamp-2">{objective.description}</p>
             )}
+            {/* Stale-checkin nudge: when 7+ days since the last check-in
+                (or never) and this is the owner's own row. */}
+            <CheckinStatus okr={objective} canEdit={canEdit} onCheckin={onCheckin} onHistory={onHistory} />
           </div>
         </button>
         <div className="flex items-center gap-1.5 shrink-0">
           {canEdit && (
             <>
+              <button
+                type="button"
+                onClick={() => onCheckin(objective)}
+                className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-accent hover:underline"
+                title="Log a weekly check-in"
+              >
+                <TrendingUp size={11} /> Check in
+              </button>
               <button
                 type="button"
                 onClick={() => onEdit(objective)}
@@ -311,7 +370,14 @@ function ObjectiveCard({
           {keyResults.length === 0 ? (
             <li className="text-[12px] text-muted italic py-2">No key results yet. Add 2–4 to make this objective measurable.</li>
           ) : keyResults.map((kr) => (
-            <KRRow key={kr.id} kr={kr} canEdit={canEdit} onEdit={() => onEdit(kr)} />
+            <KRRow
+              key={kr.id}
+              kr={kr}
+              canEdit={canEdit}
+              onEdit={() => onEdit(kr)}
+              onCheckin={() => onCheckin(kr)}
+              onHistory={() => onHistory(kr)}
+            />
           ))}
         </ul>
       )}
@@ -322,11 +388,13 @@ function ObjectiveCard({
 // KRRow — one key result. Shows the title, current/target, a slim
 // progress bar, and a confidence pill.
 function KRRow({
-  kr, canEdit, onEdit,
+  kr, canEdit, onEdit, onCheckin, onHistory,
 }: {
   kr: OKR;
   canEdit: boolean;
   onEdit: () => void;
+  onCheckin: () => void;
+  onHistory: () => void;
 }) {
   const conf = CONFIDENCE_META[kr.confidence];
   const status = STATUS_META[kr.status];
@@ -361,6 +429,16 @@ function KRRow({
           {canEdit && (
             <button
               type="button"
+              onClick={onCheckin}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-accent hover:underline"
+              title="Log a weekly check-in"
+            >
+              <TrendingUp size={11} /> Check in
+            </button>
+          )}
+          {canEdit && (
+            <button
+              type="button"
               onClick={onEdit}
               className="text-muted hover:text-accent p-1"
               title="Edit"
@@ -373,7 +451,58 @@ function KRRow({
       <div className="h-1 mt-1.5 bg-bg/60 rounded-full overflow-hidden">
         <div className={`h-full ${kr.progress_pct === 100 ? "bg-success" : kr.progress_pct >= 50 ? "bg-accent" : "bg-warn"}`} style={{ width: `${kr.progress_pct}%` }} />
       </div>
+      <CheckinStatus okr={kr} canEdit={canEdit} onCheckin={() => onCheckin()} onHistory={() => onHistory()} compact />
     </li>
+  );
+}
+
+// CheckinStatus — single line below an OKR header / KR row showing how
+// recently it was checked in on. Renders nothing when there are no
+// check-ins AND the user can't edit; otherwise nudges the owner when
+// the most recent is stale (>7 days) and exposes a "history" link.
+function CheckinStatus({
+  okr, canEdit, onCheckin, onHistory, compact,
+}: {
+  okr: OKR;
+  canEdit: boolean;
+  onCheckin: (o: OKR) => void;
+  onHistory: (o: OKR) => void;
+  compact?: boolean;
+}) {
+  if (okr.checkin_count === 0 && !canEdit) return null;
+  const latest = okr.latest_checkin_at ? new Date(okr.latest_checkin_at) : null;
+  const ageDays = latest ? Math.floor((Date.now() - latest.getTime()) / 86_400_000) : null;
+  const stale = canEdit && (ageDays === null || ageDays >= 7);
+  const fmt = ageDays === null
+    ? "No check-ins yet"
+    : ageDays === 0 ? "Checked in today"
+    : ageDays === 1 ? "Checked in yesterday"
+    : `Checked in ${ageDays}d ago`;
+  return (
+    <div className={`${compact ? "mt-1" : "mt-1.5"} flex items-center gap-2 flex-wrap text-[10.5px]`}>
+      <span className={stale ? "text-warn font-semibold" : "text-muted"}>
+        {stale && "⚠ "}{fmt}
+        {okr.checkin_count > 0 && <span className="text-muted/70"> · {okr.checkin_count} update{okr.checkin_count === 1 ? "" : "s"}</span>}
+      </span>
+      {okr.checkin_count > 0 && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onHistory(okr); }}
+          className="text-accent hover:underline"
+        >
+          See history
+        </button>
+      )}
+      {stale && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onCheckin(okr); }}
+          className="text-accent hover:underline"
+        >
+          Update now
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -487,7 +616,189 @@ function CreateOKRDialog({
   );
 }
 
-function EditOKRDialog({ okr, onClose }: { okr: OKR; onClose: () => void }) {
+// CheckinDialog — weekly progress update. For quantitative KRs we
+// surface a "current value" field + auto-derive percent; qualitative
+// rows just collect confidence + comment + optional status change.
+function CheckinDialog({ okr, onClose }: { okr: OKR; onClose: () => void }) {
+  const qc = useQueryClient();
+  const isQuantitative = okr.target_value !== null;
+  const [current, setCurrent] = useState(String(okr.current_value));
+  const [percent, setPercent] = useState(okr.progress_pct);
+  const [confidence, setConfidence] = useState<OKR["confidence"]>(okr.confidence);
+  const [status, setStatus] = useState<OKR["status"]>(okr.status);
+  const [comment, setComment] = useState("");
+  // Auto-recompute percent from current when quantitative.
+  const derivedPct = useMemo(() => {
+    if (!isQuantitative || okr.target_value === null || okr.target_value === 0) return percent;
+    const p = Math.round((parseFloat(current) / okr.target_value) * 100);
+    return Math.max(0, Math.min(100, p));
+  }, [current, isQuantitative, okr.target_value, percent]);
+
+  const save = useMutation({
+    mutationFn: () => api(`/api/v1/okrs/${okr.id}/checkins`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...(isQuantitative ? { current_value: parseFloat(current) || 0 } : {}),
+        percent: isQuantitative ? undefined : percent,
+        confidence,
+        status,
+        comment: comment.trim(),
+      }),
+    }),
+    onSuccess: () => {
+      toast.success("Check-in saved", "The OKR's progress + confidence are updated.");
+      qc.invalidateQueries({ queryKey: ["okrs"] });
+      onClose();
+    },
+    onError: (e: any) => toast.error("Couldn't save", e?.message),
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md overflow-hidden">
+        <header className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[10.5px] uppercase tracking-wider text-accent font-bold">Weekly check-in</div>
+            <h2 className="text-base font-bold text-text leading-tight mt-0.5 truncate">{okr.title}</h2>
+            {okr.parent_title && <div className="text-[11px] text-muted mt-0.5">↗ {okr.parent_title}</div>}
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-text"><X size={16} /></button>
+        </header>
+        <div className="p-5 space-y-3">
+          {isQuantitative ? (
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Current value</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  value={current}
+                  onChange={(e) => setCurrent(e.target.value)}
+                  className="input flex-1"
+                  autoFocus
+                />
+                {okr.unit && <span className="text-[12.5px] text-muted">{okr.unit}</span>}
+                <span className="text-muted">/</span>
+                <span className="text-[12.5px] font-semibold text-text">{formatNum(okr.target_value ?? 0)}</span>
+              </div>
+              <div className="text-[10.5px] text-muted mt-1">
+                That'll set progress to <span className="font-semibold text-text">{derivedPct}%</span>.
+              </div>
+            </div>
+          ) : (
+            <div>
+              <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Progress</div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={percent}
+                  onChange={(e) => setPercent(parseInt(e.target.value, 10))}
+                  className="flex-1"
+                />
+                <span className="text-[12.5px] font-bold text-text w-10 text-right">{percent}%</span>
+              </div>
+            </div>
+          )}
+          <ConfidencePicker value={confidence} onChange={setConfidence} />
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1.5">Status</div>
+            <div className="flex flex-wrap gap-1">
+              {(["draft", "in_progress", "done", "dropped"] as const).map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setStatus(s)}
+                  className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${
+                    status === s ? STATUS_META[s].cls + " border" : "bg-bg text-muted border-border hover:border-accent/40"
+                  }`}
+                >
+                  {STATUS_META[s].label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <label className="block">
+            <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Comment (optional)</div>
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              rows={3}
+              className="input resize-none text-sm"
+              placeholder={confidence === "red" ? "What's blocking? Who can unblock?" : "What moved the needle this week?"}
+            />
+          </label>
+        </div>
+        <footer className="px-4 py-3 border-t border-border flex items-center justify-end gap-2 bg-bg/30">
+          <button onClick={onClose} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg text-muted hover:text-text">Cancel</button>
+          <SmartButton variant="primary" disabled={save.isPending} loadingLabel="Saving…" onClick={() => save.mutate()}>
+            <Save size={13} /> Save check-in
+          </SmartButton>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+// HistoryDialog — reverse-chronological log of every check-in on this OKR.
+// Useful for 1:1s + cycle-end retrospective.
+function HistoryDialog({ okr, onClose }: { okr: OKR; onClose: () => void }) {
+  const { data, isLoading } = useQuery<{ items: OKRCheckin[] }>({
+    queryKey: ["okrs", "checkins", okr.id],
+    queryFn: () => api(`/api/v1/okrs/${okr.id}/checkins`),
+  });
+  const items = data?.items ?? [];
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden">
+        <header className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[10.5px] uppercase tracking-wider text-accent font-bold">Check-in history</div>
+            <h2 className="text-base font-bold text-text leading-tight mt-0.5 truncate">{okr.title}</h2>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-text"><X size={16} /></button>
+        </header>
+        <div className="p-5 overflow-y-auto flex-1">
+          {isLoading ? (
+            <div className="text-sm text-muted">Loading…</div>
+          ) : items.length === 0 ? (
+            <div className="text-sm text-muted">No check-ins yet on this OKR.</div>
+          ) : (
+            <ul className="space-y-3">
+              {items.map((ck) => (
+                <li key={ck.id} className="bg-bg/40 border border-border rounded-xl px-3 py-2.5">
+                  <div className="flex items-center justify-between gap-2 flex-wrap text-[11.5px]">
+                    <span className="font-bold text-text">{ck.user_name || ck.user_email.split("@")[0]}</span>
+                    <span className="text-muted">{new Date(ck.created_at).toLocaleString()}</span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${CONFIDENCE_META[ck.confidence].cls}`}>
+                      {CONFIDENCE_META[ck.confidence].label}
+                    </span>
+                    <span className="text-[12px] font-semibold text-text">{ck.percent}%</span>
+                    {ck.current_value !== null && (
+                      <span className="text-[12px] text-muted">· value {formatNum(ck.current_value)}</span>
+                    )}
+                    {ck.status && ck.status !== "in_progress" && (
+                      <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${STATUS_META[ck.status].cls}`}>
+                        {STATUS_META[ck.status].label}
+                      </span>
+                    )}
+                  </div>
+                  {ck.comment && (
+                    <p className="text-[12.5px] text-text/80 mt-1.5 whitespace-pre-wrap leading-snug">{ck.comment}</p>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EditOKRDialog({ okr, cycleObjectives, onClose }: { okr: OKR; cycleObjectives: OKR[]; onClose: () => void }) {
   const qc = useQueryClient();
   const [title, setTitle] = useState(okr.title);
   const [description, setDescription] = useState(okr.description);
@@ -496,7 +807,9 @@ function EditOKRDialog({ okr, onClose }: { okr: OKR; onClose: () => void }) {
   const [unit, setUnit] = useState(okr.unit);
   const [confidence, setConfidence] = useState<OKR["confidence"]>(okr.confidence);
   const [status, setStatus] = useState<OKR["status"]>(okr.status);
+  const [parentId, setParentId] = useState<string>(okr.parent_id ?? "");
   const isKR = okr.kind === "key_result";
+  const parentOptions = cycleObjectives.filter((o) => o.id !== okr.id && o.kind === "objective");
   const save = useMutation({
     mutationFn: () =>
       api(`/api/v1/okrs/${okr.id}`, {
@@ -509,6 +822,7 @@ function EditOKRDialog({ okr, onClose }: { okr: OKR; onClose: () => void }) {
           unit,
           confidence,
           status,
+          ...(isKR ? {} : { parent_id: parentId }),
         }),
       }),
     onSuccess: () => {
@@ -543,6 +857,18 @@ function EditOKRDialog({ okr, onClose }: { okr: OKR; onClose: () => void }) {
             <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Description</div>
             <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} className="input resize-none" />
           </label>
+          {!isKR && (
+            <label className="block">
+              <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1">Aligns to parent objective</div>
+              <select value={parentId} onChange={(e) => setParentId(e.target.value)} className="input">
+                <option value="">— No parent —</option>
+                {parentOptions.map((p) => (
+                  <option key={p.id} value={p.id}>{p.title}</option>
+                ))}
+              </select>
+              <div className="text-[11px] text-muted mt-1">Cascades roll up under the chosen parent in the workspace view.</div>
+            </label>
+          )}
           {isKR && (
             <div className="grid grid-cols-3 gap-3">
               <label className="block">

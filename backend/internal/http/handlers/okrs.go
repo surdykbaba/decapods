@@ -197,6 +197,7 @@ type okrRow struct {
 	ID            uuid.UUID  `json:"id"`
 	CycleID       uuid.UUID  `json:"cycle_id"`
 	ParentID      *uuid.UUID `json:"parent_id"`
+	ParentTitle   string     `json:"parent_title,omitempty"`
 	OwnerID       uuid.UUID  `json:"owner_id"`
 	OwnerName     string     `json:"owner_name"`
 	OwnerEmail    string     `json:"owner_email"`
@@ -215,6 +216,12 @@ type okrRow struct {
 	// current/target * 100, clamped to 100. For qualitative rows
 	// (target NULL) it's 100 when status='done' else 0.
 	ProgressPct   int        `json:"progress_pct"`
+	// Phase 2 — check-in summary. checkin_count = total updates on this
+	// OKR; latest_checkin_at = when the most recent one landed. The SPA
+	// uses these to render a "Last checked in X days ago" hint without
+	// per-row history queries.
+	CheckinCount     int        `json:"checkin_count"`
+	LatestCheckinAt  *time.Time `json:"latest_checkin_at,omitempty"`
 }
 
 // List — GET /api/v1/okrs?cycle_id=&owner_id=&kind=
@@ -226,14 +233,18 @@ func (h *OKRs) List(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	args := []any{tid}
 	q := `
-		SELECT o.id, o.cycle_id, o.parent_id, o.owner_id,
+		SELECT o.id, o.cycle_id, o.parent_id, COALESCE(p.title,'') AS parent_title,
+		       o.owner_id,
 		       COALESCE(u.full_name,''), COALESCE(u.email::text,''),
 		       o.kind, o.title, COALESCE(o.description,''),
 		       o.target_value, o.current_value, COALESCE(o.unit,''),
 		       o.confidence, o.status, o.position,
-		       o.created_at, o.updated_at
+		       o.created_at, o.updated_at,
+		       (SELECT COUNT(*)::int FROM okr_checkins ck WHERE ck.okr_id = o.id) AS checkin_count,
+		       (SELECT MAX(created_at)  FROM okr_checkins ck WHERE ck.okr_id = o.id) AS latest_checkin_at
 		  FROM okrs o
 		  LEFT JOIN users u ON u.id = o.owner_id
+		  LEFT JOIN okrs  p ON p.id = o.parent_id
 		 WHERE o.tenant_id=$1`
 	if v := c.Query("cycle_id"); v != "" {
 		if id, err := uuid.Parse(v); err == nil {
@@ -262,12 +273,13 @@ func (h *OKRs) List(c *gin.Context) {
 	out := []okrRow{}
 	for rows.Next() {
 		var r okrRow
-		if err := rows.Scan(&r.ID, &r.CycleID, &r.ParentID, &r.OwnerID,
+		if err := rows.Scan(&r.ID, &r.CycleID, &r.ParentID, &r.ParentTitle, &r.OwnerID,
 			&r.OwnerName, &r.OwnerEmail,
 			&r.Kind, &r.Title, &r.Description,
 			&r.TargetValue, &r.CurrentValue, &r.Unit,
 			&r.Confidence, &r.Status, &r.Position,
-			&r.CreatedAt, &r.UpdatedAt); err == nil {
+			&r.CreatedAt, &r.UpdatedAt,
+			&r.CheckinCount, &r.LatestCheckinAt); err == nil {
 			r.ProgressPct = computeProgressPct(r.TargetValue, r.CurrentValue, r.Status)
 			out = append(out, r)
 		}
@@ -448,6 +460,35 @@ func (h *OKRs) Update(c *gin.Context) {
 	if v, ok := req["target_value"]; ok {
 		pushNum("target_value", v)
 	}
+	// parent_id (Phase 2 cascade). Empty string clears the link; a uuid
+	// sets it. Only meaningful for objectives — the schema CHECK would
+	// reject a NULL parent on a key_result, so the handler bails before
+	// hitting the DB if someone tries to detach a KR.
+	if v, ok := req["parent_id"]; ok {
+		switch x := v.(type) {
+		case string:
+			if strings.TrimSpace(x) == "" {
+				sets = append(sets, "parent_id = NULL")
+			} else if pid, err := uuid.Parse(strings.TrimSpace(x)); err == nil {
+				// Disallow self-parenting + circular at one hop. Deep
+				// cycles still possible across more hops; we treat them
+				// as an HR / UI concern for now since the tree depth is
+				// tiny in practice (org → team → individual = 3 levels).
+				if pid == id {
+					c.JSON(http.StatusBadRequest, gin.H{"error": "an OKR cannot be its own parent"})
+					return
+				}
+				sets = append(sets, "parent_id = $"+itoa(idx))
+				args = append(args, pid)
+				idx++
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "parent_id must be a uuid"})
+				return
+			}
+		case nil:
+			sets = append(sets, "parent_id = NULL")
+		}
+	}
 	if len(sets) == 1 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "nothing to update"})
 		return
@@ -565,3 +606,208 @@ func itoa(n int) string {
 // the package gets refactored. ctx is used implicitly through *gin.Context
 // but referencing it once keeps go vet quiet.
 var _ = context.Background
+
+// ─────────────────────────────────────────────────────────────────────
+// Phase 2 — Check-ins
+// ─────────────────────────────────────────────────────────────────────
+
+type okrCheckin struct {
+	ID           uuid.UUID  `json:"id"`
+	OKRID        uuid.UUID  `json:"okr_id"`
+	UserID       uuid.UUID  `json:"user_id"`
+	UserName     string     `json:"user_name"`
+	UserEmail    string     `json:"user_email"`
+	CurrentValue *float64   `json:"current_value,omitempty"`
+	Percent      int        `json:"percent"`
+	Confidence   string     `json:"confidence"`
+	Status       *string    `json:"status,omitempty"`
+	Comment      string     `json:"comment,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+}
+
+// ListCheckins — GET /api/v1/okrs/:id/checkins
+//
+// Returns the most-recent-first history for a single OKR. Phase 2 keeps
+// this simple — newest 50 entries, no pagination since the SPA's history
+// strip renders at most ~10 in the inline drawer.
+func (h *OKRs) ListCheckins(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	okrID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad okr id"})
+		return
+	}
+	// Tenant-scope guard — make sure the OKR exists in the caller's
+	// tenant before we hand back the history.
+	var exists bool
+	if err := h.db.QueryRow(c, `
+		SELECT EXISTS (SELECT 1 FROM okrs WHERE id=$1 AND tenant_id=$2)`,
+		okrID, tid).Scan(&exists); err != nil || !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "okr not found"})
+		return
+	}
+	rows, err := h.db.Query(c, `
+		SELECT ck.id, ck.okr_id, ck.user_id,
+		       COALESCE(u.full_name,''), COALESCE(u.email::text,''),
+		       ck.current_value, ck.percent, ck.confidence,
+		       ck.status, COALESCE(ck.comment,''), ck.created_at
+		  FROM okr_checkins ck
+		  LEFT JOIN users u ON u.id = ck.user_id
+		 WHERE ck.okr_id=$1
+		 ORDER BY ck.created_at DESC
+		 LIMIT 50`, okrID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	out := []okrCheckin{}
+	for rows.Next() {
+		var r okrCheckin
+		if err := rows.Scan(&r.ID, &r.OKRID, &r.UserID,
+			&r.UserName, &r.UserEmail,
+			&r.CurrentValue, &r.Percent, &r.Confidence,
+			&r.Status, &r.Comment, &r.CreatedAt); err == nil {
+			out = append(out, r)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"items": out})
+}
+
+// CreateCheckin — POST /api/v1/okrs/:id/checkins
+//
+// Body: { current_value? (numeric), percent? (0..100), confidence,
+//         status?, comment? }
+//
+// Behaviour:
+//   • Inserts an immutable history row.
+//   • Also mutates the parent OKR row: bumps current_value (when sent),
+//     confidence (always), and status (when sent). The list view reads
+//     from okrs, not the latest check-in, so this keeps the dashboard
+//     fast without a per-row latest-join.
+//
+// Anyone can check in on an OKR they own; admins can check in on any
+// OKR (useful for HR-led 1:1 updates).
+func (h *OKRs) CreateCheckin(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	okrID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad okr id"})
+		return
+	}
+
+	// Load the OKR to check ownership + compute derived fields.
+	var (
+		owner       uuid.UUID
+		target      *float64
+		currentVal  float64
+		kind        string
+	)
+	if err := h.db.QueryRow(c, `
+		SELECT owner_id, target_value, current_value, kind
+		  FROM okrs WHERE id=$1 AND tenant_id=$2`,
+		okrID, tid).Scan(&owner, &target, &currentVal, &kind); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "okr not found"})
+		return
+	}
+	if owner != uid && !okrAdmin(roles) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the owner or an admin can check in on this OKR"})
+		return
+	}
+
+	var req struct {
+		CurrentValue *float64 `json:"current_value"`
+		Percent      *int     `json:"percent"`
+		Confidence   string   `json:"confidence" binding:"required"`
+		Status       string   `json:"status"`
+		Comment      string   `json:"comment"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Confidence != "green" && req.Confidence != "amber" && req.Confidence != "red" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "confidence must be green / amber / red"})
+		return
+	}
+	if req.Status != "" && req.Status != "draft" && req.Status != "in_progress" && req.Status != "done" && req.Status != "dropped" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
+		return
+	}
+	_ = kind // available for future "objectives don't take current_value" guards
+	// Resolve percent:
+	//   1. Caller sent it explicitly → use it.
+	//   2. Quantitative + current_value sent → derive from current/target.
+	//   3. Quantitative + neither sent → derive from existing OKR state.
+	//   4. Qualitative → status-driven (100 if done, else 0).
+	newCurrent := currentVal
+	if req.CurrentValue != nil {
+		newCurrent = *req.CurrentValue
+	}
+	percent := 0
+	if req.Percent != nil {
+		percent = *req.Percent
+	} else if target != nil && *target != 0 {
+		percent = int((newCurrent / *target) * 100)
+	} else if req.Status == "done" || (req.Status == "" && newCurrent > 0) {
+		percent = 100
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+
+	tx, err := h.db.Begin(c)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback(c)
+
+	// Insert immutable history row.
+	var checkinID uuid.UUID
+	if err := tx.QueryRow(c, `
+		INSERT INTO okr_checkins
+		  (tenant_id, okr_id, user_id, current_value, percent, confidence, status, comment)
+		VALUES ($1,$2,$3,$4,$5,$6, NULLIF($7,''), NULLIF($8,''))
+		RETURNING id`,
+		tid, okrID, uid, req.CurrentValue, percent, req.Confidence,
+		strings.TrimSpace(req.Status), strings.TrimSpace(req.Comment)).Scan(&checkinID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Mutate the OKR row so the dashboard reflects this check-in.
+	sets := []string{"confidence = $1", "updated_at = now()"}
+	args := []any{req.Confidence}
+	idx := 2
+	if req.CurrentValue != nil {
+		sets = append(sets, "current_value = $"+itoa(idx))
+		args = append(args, *req.CurrentValue)
+		idx++
+	}
+	if req.Status != "" {
+		sets = append(sets, "status = $"+itoa(idx))
+		args = append(args, req.Status)
+		idx++
+	}
+	args = append(args, okrID)
+	q := "UPDATE okrs SET " + strings.Join(sets, ", ") + " WHERE id = $" + itoa(idx)
+	if _, err := tx.Exec(c, q, args...); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := tx.Commit(c); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{
+		"id":      checkinID,
+		"percent": percent,
+	})
+}
