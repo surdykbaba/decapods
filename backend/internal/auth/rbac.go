@@ -12,8 +12,15 @@ var DefaultRolePermissions = map[string][]string{
 	"hr":                {"workforce:*", "user:read", "analytics:read"},
 	"hr_manager":        {"workforce:*", "user:*", "governance:write", "analytics:read", "approval:write"},
 	"business_dev":      {"opportunity:*", "client:*", "project:read", "document:write"},
-	"delivery_manager":  {"project:*", "task:*", "milestone:*", "workforce:read", "risk:write"},
-	"project_manager":   {"project:write:self", "task:*:self", "milestone:*:self", "document:write:self"},
+	"delivery_manager":  {"project:*", "task:*", "milestone:*", "workforce:read", "risk:write", "document:write"},
+	// project_manager — full write on projects + tasks + milestones so they
+	// can do the day-to-day: edit project metadata, add/remove members,
+	// assign tasks, set milestones, log risks. Previously had ":self"-scoped
+	// permissions, but the matcher only does prefix-glob so those entries
+	// silently failed every gate and PMs couldn't even add a task. Until
+	// we wire handler-level project-membership scoping, this is the
+	// pragmatic grant — same surface area as delivery_manager.
+	"project_manager":   {"project:*", "task:*", "milestone:*", "workforce:read", "risk:write", "document:write"},
 	"engineer":          {"project:read:self", "task:write:self", "time_entry:write:self"},
 	"designer":          {"project:read:self", "task:write:self", "time_entry:write:self", "document:write:self"},
 	"qa":                {"project:read:self", "task:write:self", "qa:*:self"},
