@@ -61,15 +61,19 @@ jobs:
             ls -lh "$OUT"
 
       - name: Pull dump back to runner
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host:     ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          password: ${{ secrets.SSH_PASSWORD }}
-          port:     ${{ secrets.SSH_PORT }}
-          source:   /tmp/snapshot.sql.gz
-          target:   ./
-          strip_components: 2
+        env:
+          SSH_HOST:     ${{ secrets.SSH_HOST }}
+          SSH_USER:     ${{ secrets.SSH_USER }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          SSH_PORT:     ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq sshpass >/dev/null
+          mkdir -p ~/.ssh && ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          sshpass -p "$SSH_PASSWORD" scp -P "$SSH_PORT" \
+            -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST:/tmp/snapshot.sql.gz" ./snapshot.sql.gz
+          ls -lh snapshot.sql.gz
 
       - name: Wipe the dump on the server
         if: always()
