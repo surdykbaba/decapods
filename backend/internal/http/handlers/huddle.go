@@ -51,6 +51,11 @@ type huddleResp struct {
 	// missed / open" pill row.
 	SlotsDone       []string           `json:"slots_done"`
 	StandupAt       string             `json:"standup_at"`        // HH:MM, tenant-configurable
+	// Standup card "live" window — the SPA uses these to decide whether to
+	// render the nudge + late-status buttons or just a quiet "next standup
+	// at HH:MM" hint. Settable by admins on the Settings → Standup page.
+	StandupWindowBeforeMin int             `json:"standup_window_before_min"`
+	StandupWindowAfterMin  int             `json:"standup_window_after_min"`
 	TasksDueToday   []huddleTask       `json:"tasks_due_today"`
 	TasksOverdue    []huddleTask       `json:"tasks_overdue"`
 	ApprovalsWaiting int                `json:"approvals_waiting"`
@@ -74,13 +79,16 @@ func (h *Huddle) Get(c *gin.Context) {
 	now := time.Now().UTC()
 	today := now.Format("2006-01-02")
 
+	winBefore, winAfter := loadStandupWindows(c, h.db, tid)
 	out := huddleResp{
-		Today:         today,
-		StandupAt:     standupTimeFor(c.Request.Context(), h.db, tid),
-		TasksDueToday: []huddleTask{},
-		TasksOverdue:  []huddleTask{},
-		Attachments:   []huddleAttachment{},
-		SlotsDone:     []string{},
+		Today:                  today,
+		StandupAt:              standupTimeFor(c.Request.Context(), h.db, tid),
+		StandupWindowBeforeMin: winBefore,
+		StandupWindowAfterMin:  winAfter,
+		TasksDueToday:          []huddleTask{},
+		TasksOverdue:           []huddleTask{},
+		Attachments:            []huddleAttachment{},
+		SlotsDone:              []string{},
 	}
 
 	// Existing check-in for today?

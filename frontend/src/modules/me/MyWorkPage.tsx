@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { SmartButton } from "@/components/SmartButton";
 import { Avatar } from "@/components/Avatar";
 import { MeetingsCard } from "@/modules/me/MeetingsCard";
@@ -16,7 +16,7 @@ import {
   Folder, ChevronRight, ChevronDown, ChevronUp, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
   Sparkles, Bell, XCircle, Pencil, Smile,
   Mail as MailIcon, Paperclip, Reply, AtSign, Users as UsersIcon, AlertCircle,
-  RefreshCw, ExternalLink, Flag, Target, AlertOctagon,
+  RefreshCw, ExternalLink, Flag, Target, AlertOctagon, GripVertical,
 } from "lucide-react";
 
 type TaskRow = {

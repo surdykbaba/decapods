@@ -30,6 +30,7 @@ const SECTIONS: Section[] = [
     items: [
       { to: "/settings/workflow",   label: "Approval workflow", icon: GitBranch,    description: "Stages and role gates" },
       { to: "/settings/work-policy", label: "Work hours",       icon: Clock,        description: "Working days, hours, break + away thresholds" },
+      { to: "/settings/standup",    label: "Standup",          icon: Bell,         description: "When standup runs and how long the nudge card stays live" },
       { to: "/settings/team-rates", label: "Team rates",        icon: Wallet,       description: "Internal & external daily rates" },
     ],
   },

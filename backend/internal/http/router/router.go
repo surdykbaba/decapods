@@ -98,6 +98,10 @@ func New(d Deps) http.Handler {
 	authed.GET("/settings/work-policy", workPolicy.Get)
 	authed.PUT("/settings/work-policy", mw.RequirePermission("governance:write"), workPolicy.Put)
 
+	standupAdmin := handlers.NewStandupAdmin(d.DB)
+	authed.GET("/settings/standup", standupAdmin.Get)
+	authed.PUT("/settings/standup", mw.RequirePermission("governance:write"), standupAdmin.Put)
+
 	teamsIntegration := handlers.NewTeamsIntegration(d.DB)
 	authed.GET("/settings/teams",            mw.RequirePermission("governance:write"), teamsIntegration.Get)
 	authed.PUT("/settings/teams",            mw.RequirePermission("governance:write"), teamsIntegration.Put)
