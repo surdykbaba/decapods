@@ -41,7 +41,11 @@ type OKR = {
   kind: "objective" | "key_result";
   title: string;
   description: string;
-  target_value: number | null;
+  // target_value may arrive as null OR be absent from the JSON entirely
+  // (the Go encoder uses omitempty on nil *float pointers). Accept both
+  // — every render path uses `!= null` so the loose-equality catches
+  // undefined alongside null.
+  target_value: number | null | undefined;
   current_value: number;
   unit: string;
   confidence: "green" | "amber" | "red";
@@ -811,7 +815,7 @@ function KRRow({
           )}
         </div>
         <div className="shrink-0 flex items-center gap-2 text-[12px]">
-          {kr.target_value !== null ? (
+          {kr.target_value != null ? (
             <span className="text-text">
               <span className="font-bold">{formatNum(kr.current_value)}</span>
               <span className="text-muted"> / {formatNum(kr.target_value)}</span>
@@ -902,7 +906,8 @@ function CheckinStatus({
   );
 }
 
-function formatNum(n: number): string {
+function formatNum(n: number | null | undefined): string {
+  if (n == null) return "—";
   if (Number.isInteger(n)) return n.toString();
   return n.toFixed(1);
 }
@@ -1287,7 +1292,7 @@ function CreateOKRDialog({
 // rows just collect confidence + comment + optional status change.
 function CheckinDialog({ okr, onClose }: { okr: OKR; onClose: () => void }) {
   const qc = useQueryClient();
-  const isQuantitative = okr.target_value !== null;
+  const isQuantitative = okr.target_value != null;
   const [current, setCurrent] = useState(String(okr.current_value));
   const [percent, setPercent] = useState(okr.progress_pct);
   const [confidence, setConfidence] = useState<OKR["confidence"]>(okr.confidence);
@@ -1295,8 +1300,9 @@ function CheckinDialog({ okr, onClose }: { okr: OKR; onClose: () => void }) {
   const [comment, setComment] = useState("");
   // Auto-recompute percent from current when quantitative.
   const derivedPct = useMemo(() => {
-    if (!isQuantitative || okr.target_value === null || okr.target_value === 0) return percent;
-    const p = Math.round((parseFloat(current) / okr.target_value) * 100);
+    const tv = okr.target_value;
+    if (!isQuantitative || tv == null || tv === 0) return percent;
+    const p = Math.round((parseFloat(current) / tv) * 100);
     return Math.max(0, Math.min(100, p));
   }, [current, isQuantitative, okr.target_value, percent]);
 
