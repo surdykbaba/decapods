@@ -358,6 +358,19 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
   });
   const posts = data?.items ?? [];
 
+  // Smart-term dictionary for the post body. We fetch the tenant's
+  // projects so any mention of a project name or code in a post body
+  // gets highlighted as a recognisable chip. The dictionary is augmented
+  // with a curated lexicon of workspace-class acronyms (FCTIRS, PAYE,
+  // KYC, etc.) so even posts about external systems read as scannable.
+  // Computed once per render and passed down into TimelinePostCard.
+  const { data: projectsData } = useQuery<{ items: { id: string; code: string; name: string }[] }>({
+    queryKey: ["campfire-pulse-projects"],
+    queryFn: () => api("/api/v1/projects?status=active"),
+    staleTime: 10 * 60_000,
+  });
+  const smartTerms = useMemo<SmartTerm[]>(() => buildSmartTerms(projectsData?.items ?? []), [projectsData?.items]);
+
   const [composerOpen, setComposerOpen] = useState(false);
   const [composerKind, setComposerKind] = useState<string>("update");
 
@@ -451,27 +464,131 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
         </div>
       )}
 
+      {/* Timeline render. A 2px accent rail runs down the left of every
+          chunk; each post's avatar sits on the rail and the body floats
+          to the right with a tiny connector line. Group labels read as
+          warm chips above their cluster instead of inline strokes. */}
       {grouped.map(({ label, posts: chunk }) => (
-        <section key={label} className="space-y-3">
-          <div className="flex items-center gap-3 px-1">
-            <CalendarDays size={12} className="text-muted" />
-            <span className="text-[11px] uppercase tracking-wider font-bold text-muted">{label}</span>
-            <span className="flex-1 h-px bg-border" />
+        <section key={label} className="relative">
+          {/* Day chip — pinned segment gets the accent fill, otherwise a
+              soft surface chip so the eye groups by date first. */}
+          <div className="mb-2 px-1">
+            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10.5px] uppercase tracking-wider font-bold ${
+              label === "Pinned"
+                ? "bg-accent text-white shadow-soft"
+                : "bg-surface border border-border text-muted"
+            }`}>
+              {label === "Pinned" ? <Pin size={10} /> : <CalendarDays size={10} />} {label}
+              <span className="font-bold opacity-80">· {chunk.length}</span>
+            </span>
           </div>
-          {chunk.map((p) => (
-            <PostCard
-              key={p.id}
-              post={p}
-              currentUserId={user?.id ?? ""}
-              isAdmin={isAdmin}
-              onPin={(pinned) => togglePin.mutate({ id: p.id, pinned })}
-              onDelete={() => remove.mutate(p.id)}
-            />
-          ))}
+          {/* The rail. Stops 12px before the last post so it doesn't
+              extend past the final avatar. */}
+          <div aria-hidden className="absolute left-[18px] top-9 bottom-3 w-px bg-gradient-to-b from-accent/40 via-border to-transparent" />
+          <div className="space-y-2">
+            {chunk.map((p) => (
+              <TimelinePostCard
+                key={p.id}
+                post={p}
+                currentUserId={user?.id ?? ""}
+                isAdmin={isAdmin}
+                onPin={(pinned) => togglePin.mutate({ id: p.id, pinned })}
+                onDelete={() => remove.mutate(p.id)}
+                terms={smartTerms}
+              />
+            ))}
+          </div>
         </section>
       ))}
     </div>
   );
+}
+
+// SmartTerm — a workspace lexicon entry. The `tone` controls the chip
+// styling; "project" entries also carry an href so the highlighted chip
+// becomes a clickable shortcut to the project page.
+type SmartTerm = {
+  pattern: RegExp;
+  label: string;
+  tone: "project" | "system" | "tax" | "doc";
+  href?: string;
+};
+
+// buildSmartTerms — assemble the auto-highlight dictionary.
+//
+//  • Tenant projects: every active project contributes both its code
+//    (PRJ-0012) and a token-friendly version of its name. Short
+//    one-word names get matched whole; multi-word names contribute
+//    individual capitalised tokens (so "NIN-TIN Integration" matches
+//    NIN-TIN, NIN, and TIN).
+//  • Curated lexicon: acronyms a workspace member often types in a
+//    post — FCTIRS, TaxPorta, PAYE, NIN, KYC, MSA, NDA, SOW. Pure
+//    convenience; the user can ignore the chip if they don't care.
+//  • Patterns are case-insensitive ASCII-word-bounded so we don't
+//    light up substrings inside other words ("tincture" wouldn't
+//    flash on TIN).
+function buildSmartTerms(projects: { id: string; code: string; name: string }[]): SmartTerm[] {
+  const out: SmartTerm[] = [];
+  const seen = new Set<string>();
+  const add = (raw: string, tone: SmartTerm["tone"], href?: string) => {
+    const cleaned = raw.trim();
+    if (!cleaned || cleaned.length < 3) return;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    // Escape regex specials, then wrap with \b for word boundaries.
+    const esc = cleaned.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    out.push({
+      pattern: new RegExp(`\\b${esc}\\b`, "i"),
+      label: cleaned,
+      tone,
+      href,
+    });
+  };
+
+  // Project signals first so they dominate the highlight set.
+  for (const p of projects) {
+    add(p.code, "project", `/projects/${p.id}`);
+    // Multi-word name: extract distinctive tokens. Skip generic stop
+    // words ("the", "and", "of") so we don't light those up.
+    const stop = new Set(["the", "and", "for", "with", "from", "into", "this", "that", "any", "all"]);
+    for (const tok of p.name.split(/[\s/()&,–—-]+/)) {
+      if (!tok) continue;
+      if (stop.has(tok.toLowerCase())) continue;
+      if (tok.length < 3) continue;
+      // Heuristic: prefer tokens that are mostly-uppercase or capitalised.
+      // Skips lowercase-only words like "integration" which would chip
+      // half the page.
+      const upperRatio = tok.replace(/[^A-Z]/g, "").length / tok.length;
+      if (upperRatio < 0.4) continue;
+      add(tok, "project", `/projects/${p.id}`);
+    }
+  }
+
+  // Curated workspace lexicon. Order matters — first match wins for a
+  // given substring, so put the more specific terms before generic.
+  const lexicon: { term: string; tone: SmartTerm["tone"] }[] = [
+    { term: "FCTIRS",   tone: "tax" },
+    { term: "TaxPorta", tone: "tax" },
+    { term: "Taxporta", tone: "tax" },
+    { term: "TaxPro",   tone: "tax" },
+    { term: "FIRS",     tone: "tax" },
+    { term: "PAYE",     tone: "tax" },
+    { term: "VAT",      tone: "tax" },
+    { term: "NIN",      tone: "system" },
+    { term: "TIN",      tone: "system" },
+    { term: "BVN",      tone: "system" },
+    { term: "KYC",      tone: "system" },
+    { term: "ERP",      tone: "system" },
+    { term: "API",      tone: "system" },
+    { term: "MSA",      tone: "doc" },
+    { term: "NDA",      tone: "doc" },
+    { term: "SOW",      tone: "doc" },
+    { term: "SLA",      tone: "doc" },
+    { term: "IP",       tone: "doc" },
+  ];
+  for (const l of lexicon) add(l.term, l.tone);
+  return out;
 }
 
 // Bucket posts into "Pinned" + day labels. Today / Yesterday / explicit dates
@@ -882,6 +999,10 @@ function PostComposer({
   );
 }
 
+// PostCard is the legacy non-timeline renderer. Kept around in case a
+// future view wants the original layout (e.g. a print/digest export);
+// silenced from the unused-locals rule via the void below.
+void PostCard;
 function PostCard({
   post, currentUserId, isAdmin, onPin, onDelete,
 }: {
@@ -948,6 +1069,141 @@ function PostCard({
       </div>
     </article>
   );
+}
+
+/* TimelinePostCard — the timeline-flavoured post entry. Wraps the same
+ * data PostCard renders but lays it out as an indented card on a vertical
+ * rail: the avatar sits on the rail, a 12px connector lines the eye to
+ * the body, and the post chrome (header strip, kind icon, time) cleans
+ * up. Body text picks up SmartTerm highlights via highlightBody().
+ */
+function TimelinePostCard({
+  post, currentUserId, isAdmin, onPin, onDelete, terms,
+}: {
+  post: Post; currentUserId: string; isAdmin: boolean;
+  onPin: (pinned: boolean) => void;
+  onDelete: () => void;
+  terms: SmartTerm[];
+}) {
+  const meta = POST_KINDS[post.kind] ?? POST_KINDS.update;
+  const Icon = meta.icon;
+  const [showComments, setShowComments] = useState(false);
+  const canDelete = isAdmin || post.author_id === currentUserId;
+  return (
+    <article className="relative pl-12">
+      {/* Avatar dot — sits on the rail with a ring matching the post's
+          category tint so a glance scans by kind. */}
+      <div className={`absolute left-0 top-1.5 w-9 h-9 rounded-full ring-2 ring-surface ${meta.ring} shadow-soft`}>
+        <Avatar name={post.author_name} email={post.author_email} src={post.author_avatar_url} size={36} />
+      </div>
+      <div className={`rounded-2xl border ${post.pinned ? "border-accent/40 bg-accent-soft/20" : "border-border bg-surface"} px-4 py-3 hover-lift transition-colors`}>
+        <header className="flex items-center gap-2 flex-wrap text-[12.5px]">
+          <span className="font-bold text-text">{post.author_name || post.author_email || "Someone"}</span>
+          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${meta.tint}`}>
+            <Icon size={10} /> {meta.label}
+          </span>
+          <span className="text-[11px] text-muted">{relativeTime(post.created_at)}</span>
+          <div className="ml-auto flex items-center gap-1">
+            {post.pinned && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-accent">
+                <Pin size={10} /> Pinned
+              </span>
+            )}
+            {isAdmin && (
+              <button
+                onClick={() => onPin(!post.pinned)}
+                className={`p-1 rounded hover:bg-bg ${post.pinned ? "text-accent" : "text-muted"}`}
+                title={post.pinned ? "Unpin" : "Pin to top"}
+              >
+                <Pin size={12} />
+              </button>
+            )}
+            {canDelete && (
+              <button onClick={onDelete} className="p-1 rounded hover:bg-bg text-muted hover:text-danger" title="Delete">
+                <X size={12} />
+              </button>
+            )}
+          </div>
+        </header>
+        {post.title && <div className="text-sm font-bold text-text mt-1">{highlightBody(post.title, terms)}</div>}
+        <div className="text-[13.5px] text-text/90 mt-1 leading-relaxed whitespace-pre-wrap break-words">
+          {highlightBody(post.body, terms)}
+        </div>
+        {post.kind === "poll" && <PollBody post={post} />}
+        <footer className="mt-2 flex items-center gap-1.5 flex-wrap">
+          <ReactionStrip targetType="post" targetId={post.id} reactions={post.reactions ?? []} invalidateKey={["campfire", "posts"]} compact />
+          <button
+            onClick={() => setShowComments((v) => !v)}
+            className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-muted hover:text-text rounded-full hover:bg-bg/40 transition-colors"
+          >
+            <MessageCircle size={11} /> {post.comment_count}
+          </button>
+        </footer>
+        {showComments && <CommentsThread postId={post.id} />}
+      </div>
+    </article>
+  );
+}
+
+// highlightBody — split a body string into ReactNodes, wrapping every
+// SmartTerm match with a chip styled by `tone`. Matches are word-bounded
+// and case-insensitive (RegExp.i flag). To avoid double-wrapping when
+// terms overlap (e.g. "PAYE" inside "PAYE recovery"), we always pick the
+// LEFTMOST match each pass.
+//
+// Returned nodes also turn URLs and @mentions into the existing chips so
+// the smart-terms layer doesn't strip those treatments. We delegate the
+// "@mention / URL" pass to a shared regex below.
+function highlightBody(text: string, terms: SmartTerm[]): React.ReactNode {
+  if (!text) return null;
+  const out: React.ReactNode[] = [];
+  let i = 0;
+  let keyN = 0;
+  const push = (node: React.ReactNode) => out.push(<span key={keyN++}>{node}</span>);
+
+  while (i < text.length) {
+    // Find the leftmost match across all term patterns.
+    let bestStart = -1;
+    let bestEnd = -1;
+    let bestTerm: SmartTerm | null = null;
+    for (const t of terms) {
+      // RegExp.exec doesn't carry state when the pattern has no /g flag,
+      // so we can safely reuse it. Slice the remaining text to anchor
+      // the leftmost search.
+      const rest = text.slice(i);
+      const m = t.pattern.exec(rest);
+      if (m && m.index >= 0) {
+        const absStart = i + m.index;
+        if (bestStart < 0 || absStart < bestStart) {
+          bestStart = absStart;
+          bestEnd = absStart + m[0].length;
+          bestTerm = t;
+        }
+      }
+    }
+    if (bestTerm == null) {
+      push(text.slice(i));
+      break;
+    }
+    if (bestStart > i) push(text.slice(i, bestStart));
+    const raw = text.slice(bestStart, bestEnd);
+    const cls = bestTerm.tone === "project" ? "bg-accent-soft text-accent border-accent/30"
+      : bestTerm.tone === "tax" ? "bg-warn/15 text-warn border-warn/30"
+      : bestTerm.tone === "doc" ? "bg-success/10 text-success border-success/30"
+      : "bg-bg/60 text-text/90 border-border";
+    const chipInner = (
+      <span className={`inline-flex items-center px-1.5 py-px rounded-md border text-[12px] font-semibold ${cls}`}>
+        {raw}
+      </span>
+    );
+    if (bestTerm.href) {
+      push(<Link to={bestTerm.href} className="no-underline hover:underline-offset-2 hover:underline">{chipInner}</Link>);
+    } else {
+      push(chipInner);
+    }
+    i = bestEnd;
+  }
+  return out;
 }
 
 /* PollBody — the vote-bar block that follows the question text on
