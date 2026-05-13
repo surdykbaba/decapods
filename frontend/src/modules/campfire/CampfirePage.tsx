@@ -19,7 +19,7 @@ import {
   Flame, Megaphone, Trophy, PartyPopper, UserPlus, Cake, Sparkles,
   StickyNote, Newspaper, MessageCircle, Pin, X, Send, Heart, ThumbsUp,
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
-  Wrench, Briefcase, Hash, Activity, Plus, Loader2, CalendarDays, Calendar,
+  Wrench, Briefcase, Hash, Plus, Loader2, CalendarDays, Calendar,
   Lock, Users as UsersIcon, X as XIcon, UserPlus as UserPlusIcon, Search as SearchIcon, Check,
 } from "lucide-react";
 
@@ -191,7 +191,7 @@ function Avatar({ name, email, size = 32 }: { name: string; email: string; size?
  * Page shell
  * ───────────────────────────────────────────────────────────────────────── */
 
-type Tab = "feed" | "kudos" | "mood" | "help" | "rooms" | "insights";
+type Tab = "feed" | "kudos" | "mood" | "help" | "rooms";
 
 export function CampfirePage() {
   const { user } = useAuth();
@@ -209,13 +209,17 @@ export function CampfirePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // "Insights" used to be a separate admin-only tab. Its tiles were a
+  // workspace-pulse snapshot that overlapped with the Mood-check trend
+  // chart — same audience (admins), adjacent signal. Merged into "Mood
+  // & insights" so the tab strip stays short and admins see all the
+  // pulse data in one place.
   const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; admin?: boolean }[] = [
-    { key: "feed",   label: "Pulse feed",  icon: Newspaper },
-    { key: "kudos",  label: "Recognition", icon: Trophy },
-    { key: "mood",   label: "Mood check",  icon: Smile },
-    { key: "help",   label: "Help wall",   icon: HelpCircle },
-    { key: "rooms",  label: "Channels",    icon: Hash },
-    { key: "insights", label: "Insights",  icon: Activity, admin: true },
+    { key: "feed",   label: "Pulse feed",        icon: Newspaper },
+    { key: "kudos",  label: "Recognition",       icon: Trophy },
+    { key: "mood",   label: isAdmin ? "Mood & insights" : "Mood check", icon: Smile },
+    { key: "help",   label: "Help wall",         icon: HelpCircle },
+    { key: "rooms",  label: "Channels",          icon: Hash },
   ];
 
   return (
@@ -270,7 +274,6 @@ export function CampfirePage() {
           {tab === "mood"     && <MoodCheck isAdmin={isAdmin} />}
           {tab === "help"     && <HelpWall currentUserId={user?.id ?? ""} />}
           {tab === "rooms"    && <TeamRooms />}
-          {tab === "insights" && isAdmin && <Insights />}
         </div>
       </div>
       </div>{/* close: relative z-10 content layer */}
@@ -1154,7 +1157,15 @@ function MoodCheck({ isAdmin }: { isAdmin: boolean }) {
         />
       </div>
 
-      {isAdmin && <MoodTrendCard />}
+      {isAdmin && (
+        <>
+          <div>
+            <h3 className="text-sm font-bold text-text mb-2 px-1">Workspace insights</h3>
+            <Insights />
+          </div>
+          <MoodTrendCard />
+        </>
+      )}
     </div>
   );
 }
