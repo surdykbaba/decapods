@@ -165,7 +165,14 @@ var Catalog = map[EventKind]EventMeta{
 	"relations.high_risk":           {Category: CatRelations, DefaultTier: TierImmediate, Severity: "critical", SubjectTpl: "High-risk relationship — {{.Agent}}",        HeadlineTpl: "{{.Agent}} flagged high risk",        Description: "A relationship was flagged high risk"},
 	"relations.commission_approval": {Category: CatRelations, DefaultTier: TierImmediate, Severity: "warn",     SubjectTpl: "Commission approval — {{.Agent}}",           HeadlineTpl: "Commission on {{.Agent}}",            Description: "A commission needs approval"},
 
-	// 10. Executive digest events — always tier=DigestWeekly
+	// 11. Campfire — social pulse interactions. Fired when someone touches
+	// content you authored: comments on your post, reactions on your post
+	// or comment, kudos sent to you.
+	"campfire.comment_received":  {Category: CatCampfire, DefaultTier: TierImmediate,   Severity: "info", SubjectTpl: "{{.Author}} commented on your post",   HeadlineTpl: "{{.Author}} commented on your Campfire post", Description: "Someone commented on your Campfire post", DefaultLink: "/campfire"},
+	"campfire.reaction_received": {Category: CatCampfire, DefaultTier: TierDigestDaily, Severity: "info", SubjectTpl: "{{.Author}} reacted {{.Emoji}}",         HeadlineTpl: "{{.Author}} reacted {{.Emoji}} on your {{.Where}}", Description: "Someone reacted to your Campfire post or comment", DefaultLink: "/campfire"},
+	"campfire.kudos_received":    {Category: CatCampfire, DefaultTier: TierImmediate,   Severity: "info", SubjectTpl: "{{.Author}} sent you kudos",             HeadlineTpl: "{{.Author}} sent kudos — {{.Badge}}",       Description: "Someone sent you kudos on Campfire", DefaultLink: "/campfire"},
+
+	// 12. Executive digest events — always tier=DigestWeekly
 	"exec.daily_risk":          {Category: CatExecDigest, DefaultTier: TierDigestDaily,  Severity: "info", SubjectTpl: "Daily project risk summary",          HeadlineTpl: "Daily risk summary",         Description: "Daily roll-up of project risks"},
 	"exec.weekly_delivery":     {Category: CatExecDigest, DefaultTier: TierDigestWeekly, Severity: "info", SubjectTpl: "Weekly delivery portfolio",           HeadlineTpl: "Weekly delivery report",     Description: "Weekly delivery portfolio digest"},
 	"exec.weekly_finance":      {Category: CatExecDigest, DefaultTier: TierDigestWeekly, Severity: "info", SubjectTpl: "Weekly finance exposure",             HeadlineTpl: "Weekly finance digest",      Description: "Weekly finance exposure digest"},

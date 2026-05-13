@@ -177,11 +177,25 @@ void 0;
 
 function relativeTime(iso: string | null): string {
   if (!iso) return "";
-  const diff = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+  const d = new Date(iso);
+  const diff = Math.round((Date.now() - d.getTime()) / 1000);
   if (diff < 60) return "just now";
   if (diff < 3600) return `${Math.round(diff / 60)}m`;
   if (diff < 86400) return `${Math.round(diff / 3600)}h`;
-  return `${Math.round(diff / 86400)}d`;
+  // ≥ 1 day: include the wall-clock time so people stop wondering
+  // whether a "2d" stamp was 2am or 2pm. Goes from compact "2d" → "Mon 14:23",
+  // then to "14 May 14:23" once we're more than a week out.
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (diff < 7 * 86400) return `${d.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  return `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
+}
+
+// fullDateTime — used as the `title` (hover tooltip) wherever relativeTime
+// renders, so the exact instant is one hover away even on short relative
+// labels like "just now" or "5m".
+function fullDateTime(iso: string | null): string {
+  if (!iso) return "";
+  return new Date(iso).toLocaleString();
 }
 
 function initials(name: string, email: string): string {
@@ -1038,7 +1052,7 @@ function PostCard({
               <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10.5px] font-semibold ${meta.tint}`}>
                 <Icon size={11} /> {meta.label}
               </span>
-              <span className="text-[11px] text-muted">{relativeTime(post.created_at)}</span>
+              <span className="text-[11px] text-muted" title={fullDateTime(post.created_at)}>{relativeTime(post.created_at)}</span>
             </div>
             {post.title && <div className="text-base font-bold text-text mt-1">{post.title}</div>}
             <SmartBody className="text-sm text-text mt-1" text={post.body} />
@@ -1109,7 +1123,7 @@ function TimelinePostCard({
           <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${meta.tint}`}>
             <Icon size={10} /> {meta.label}
           </span>
-          <span className="text-[11px] text-muted">{relativeTime(post.created_at)}</span>
+          <span className="text-[11px] text-muted" title={fullDateTime(post.created_at)}>{relativeTime(post.created_at)}</span>
           <div className="ml-auto flex items-center gap-1">
             {post.pinned && (
               <span className="inline-flex items-center gap-1 text-[10px] font-bold text-accent">
@@ -1401,7 +1415,7 @@ function CommentRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[12px] font-bold text-text">{c.author_name || c.author_email}</span>
-          <span className="text-[10.5px] text-muted">{relativeTime(c.created_at)}</span>
+          <span className="text-[10.5px] text-muted" title={fullDateTime(c.created_at)}>{relativeTime(c.created_at)}</span>
           {canEdit && !editing && !confirmDel && (
             <span className="ml-auto inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
@@ -1760,7 +1774,7 @@ function KudoCard({ kudo }: { kudo: Kudo }) {
             compact
           />
         </div>
-        <div className="text-[10.5px] text-muted mt-1">{relativeTime(kudo.created_at)} ago</div>
+        <div className="text-[10.5px] text-muted mt-1" title={fullDateTime(kudo.created_at)}>{relativeTime(kudo.created_at)} ago</div>
       </div>
     </div>
   );
@@ -3013,7 +3027,7 @@ function RoomView({
             <div className="flex-1 min-w-0">
               <div className="flex items-baseline gap-2">
                 <span className="text-[13px] font-bold text-text">{m.author_name || m.author_email}</span>
-                <span className="text-[10.5px] text-muted">{relativeTime(m.created_at)}</span>
+                <span className="text-[10.5px] text-muted" title={fullDateTime(m.created_at)}>{relativeTime(m.created_at)}</span>
               </div>
               <SmartBody className="text-[13.5px] text-text" text={m.body} />
               <ReactionStrip

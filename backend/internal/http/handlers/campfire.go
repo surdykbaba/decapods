@@ -538,7 +538,65 @@ func (h *Campfire) AddComment(c *gin.Context) {
 		return
 	}
 	go h.dispatchMentions(context.Background(), tid, uid, req.Body, "Campfire comment", "/campfire")
+	go h.notifyCommentReceived(context.Background(), tid, uid, postID, req.Body)
 	c.JSON(201, gin.H{"id": id})
+}
+
+// notifyCommentReceived pings the post author (and anyone else who has
+// already commented on the thread) when a new comment lands. Skips the
+// caller — you don't need a ping for your own activity. Mention-based
+// pings have already fired via dispatchMentions; we exclude any user the
+// new body @mentions so they don't get two notifications about the same
+// comment.
+func (h *Campfire) notifyCommentReceived(ctx context.Context, tid, authorID, postID uuid.UUID, body string) {
+	if h.notify == nil || h.db == nil {
+		return
+	}
+	var postAuthorID uuid.UUID
+	if err := h.db.QueryRow(ctx, `SELECT author_id FROM campfire_posts WHERE id=$1 AND tenant_id=$2`, postID, tid).Scan(&postAuthorID); err != nil {
+		return
+	}
+	// Build the recipient set: post author + earlier commenters, minus the
+	// caller. De-duped by user_id.
+	wanted := map[uuid.UUID]bool{}
+	if postAuthorID != authorID {
+		wanted[postAuthorID] = true
+	}
+	rows, err := h.db.Query(ctx, `
+		SELECT DISTINCT author_id FROM campfire_comments
+		WHERE tenant_id=$1 AND post_id=$2 AND author_id <> $3`, tid, postID, authorID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id uuid.UUID
+			if err := rows.Scan(&id); err == nil {
+				wanted[id] = true
+			}
+		}
+	}
+	if len(wanted) == 0 {
+		return
+	}
+	var authorName string
+	_ = h.db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(full_name,''), email::text) FROM users WHERE id=$1`, authorID,
+	).Scan(&authorName)
+	recipients := make([]notifications.Recipient, 0, len(wanted))
+	for id := range wanted {
+		id := id
+		recipients = append(recipients, notifications.Recipient{UserID: &id})
+	}
+	h.notify.Notify(ctx, notifications.Event{
+		Kind:       "campfire.comment_received",
+		TenantID:   tid,
+		Recipients: recipients,
+		Payload: map[string]any{
+			"Author": authorName,
+			"Body":   truncate(body, 240),
+		},
+		DedupeKey: "campfire.comment:" + postID.String() + ":" + authorID.String(),
+		Link:      "/campfire",
+	})
 }
 
 // UpdateComment lets the author edit their own comment body. Admins
@@ -658,7 +716,59 @@ func (h *Campfire) ToggleReaction(c *gin.Context) {
 			return
 		}
 	}
+	if added {
+		go h.notifyReactionReceived(context.Background(), tid, uid, targetType, targetID, req.Emoji)
+	}
 	c.JSON(200, gin.H{"added": added})
+}
+
+// notifyReactionReceived pings the author of the post/comment/kudo/message
+// that just got a reaction. Tier is Daily-digest in the catalog so a
+// flurry of reactions doesn't spam the user — they'll see "🎉 ❤️ 👍 from
+// 3 people on your post" in the daily roll-up.
+func (h *Campfire) notifyReactionReceived(ctx context.Context, tid, reactorID uuid.UUID, targetType string, targetID uuid.UUID, emoji string) {
+	if h.notify == nil || h.db == nil {
+		return
+	}
+	var (
+		authorID uuid.UUID
+		where    string
+	)
+	switch targetType {
+	case "post":
+		_ = h.db.QueryRow(ctx, `SELECT author_id FROM campfire_posts WHERE id=$1 AND tenant_id=$2`, targetID, tid).Scan(&authorID)
+		where = "post"
+	case "comment":
+		_ = h.db.QueryRow(ctx, `SELECT author_id FROM campfire_comments WHERE id=$1 AND tenant_id=$2`, targetID, tid).Scan(&authorID)
+		where = "comment"
+	case "kudo":
+		_ = h.db.QueryRow(ctx, `SELECT to_user_id FROM campfire_kudos WHERE id=$1 AND tenant_id=$2`, targetID, tid).Scan(&authorID)
+		where = "kudos"
+	case "message":
+		_ = h.db.QueryRow(ctx, `SELECT author_id FROM campfire_messages WHERE id=$1 AND tenant_id=$2`, targetID, tid).Scan(&authorID)
+		where = "message"
+	}
+	if authorID == uuid.Nil || authorID == reactorID {
+		return
+	}
+	var reactorName string
+	_ = h.db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(full_name,''), email::text) FROM users WHERE id=$1`, reactorID,
+	).Scan(&reactorName)
+	h.notify.Notify(ctx, notifications.Event{
+		Kind:       "campfire.reaction_received",
+		TenantID:   tid,
+		Recipients: []notifications.Recipient{{UserID: &authorID}},
+		Payload: map[string]any{
+			"Author": reactorName,
+			"Emoji":  emoji,
+			"Where":  where,
+		},
+		// Collapse rapid-fire reactions from the same person on the same
+		// target into one notification.
+		DedupeKey: "campfire.reaction:" + targetType + ":" + targetID.String() + ":" + reactorID.String(),
+		Link:      "/campfire",
+	})
 }
 
 type reactionSummary struct {
@@ -805,7 +915,29 @@ func (h *Campfire) GiveKudo(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	go h.notifyKudosReceived(context.Background(), tid, uid, to, req.Badge, req.Message)
 	c.JSON(201, gin.H{"id": id})
+}
+
+func (h *Campfire) notifyKudosReceived(ctx context.Context, tid, fromUserID, toUserID uuid.UUID, badge, message string) {
+	if h.notify == nil || h.db == nil {
+		return
+	}
+	var fromName string
+	_ = h.db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(full_name,''), email::text) FROM users WHERE id=$1`, fromUserID,
+	).Scan(&fromName)
+	h.notify.Notify(ctx, notifications.Event{
+		Kind:       "campfire.kudos_received",
+		TenantID:   tid,
+		Recipients: []notifications.Recipient{{UserID: &toUserID}},
+		Payload: map[string]any{
+			"Author": fromName,
+			"Badge":  badge,
+			"Body":   truncate(message, 240),
+		},
+		Link: "/campfire",
+	})
 }
 
 // ──────────────────────────────────────────────────────────────────────────
