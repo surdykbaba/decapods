@@ -286,17 +286,82 @@ function useCollapsible(id: string) {
 }
 
 // CollapseChevron — the standard "click me to hide/show this card" button.
-// Shared so the affordance reads identically across every widget.
-function CollapseChevron({ collapsed, onClick }: { collapsed: boolean; onClick: () => void }) {
+// Shared so the affordance reads identically across every widget. Also
+// renders the WidgetResizer alongside when the parent passed size + onResize
+// — the two controls cluster on the top-right of every card.
+function CollapseChevron({
+  collapsed, onClick, size, onResize,
+}: {
+  collapsed: boolean;
+  onClick: () => void;
+  size?: WidgetSize;
+  onResize?: (next: WidgetSize) => void;
+}) {
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      {size && onResize && <WidgetResizer size={size} onChange={onResize} />}
+      <button
+        type="button"
+        onClick={onClick}
+        className="inline-flex items-center justify-center w-7 h-7 rounded-full text-muted hover:text-text hover:bg-bg/40 transition-colors"
+        aria-label={collapsed ? "Expand" : "Collapse"}
+        title={collapsed ? "Expand" : "Hide"}
+      >
+        {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+      </button>
+    </span>
+  );
+}
+
+// Widget sizing — 4 named breakpoints that map onto a 12-column grid. We
+// keep the vocabulary tiny so the user picks via a clear cycler rather
+// than dragging an edge (which mobile would hate anyway).
+//
+//   small  = 4 cols  ≈ a third of the row
+//   medium = 6 cols  ≈ half the row
+//   large  = 8 cols  ≈ two-thirds
+//   full   = 12 cols ≈ entire row (the legacy default)
+//
+// At narrow widths every widget falls back to full-width so the size
+// cycler is a no-op on phones — the column rule only kicks in at md+.
+export type WidgetSize = "small" | "medium" | "large" | "full";
+const SIZE_COLS: Record<WidgetSize, string> = {
+  small:  "md:col-span-4",
+  medium: "md:col-span-6",
+  large:  "md:col-span-8",
+  full:   "md:col-span-12",
+};
+const SIZE_ORDER: readonly WidgetSize[] = ["small", "medium", "large", "full"] as const;
+const SIZE_ICON: Record<WidgetSize, React.ComponentType<any>> = {
+  small:  Rows3,
+  medium: LayoutGrid,
+  large:  LayoutGrid,
+  full:   LayoutGrid,
+};
+const SIZE_LABEL: Record<WidgetSize, string> = {
+  small:  "Compact",
+  medium: "Half",
+  large:  "Wide",
+  full:   "Full width",
+};
+
+// WidgetResizer — small cycler that bumps the widget between the four
+// breakpoints. Click cycles forward; the title surfaces both the
+// current size and the next one so the affordance is discoverable
+// without a tooltip-explainer.
+function WidgetResizer({ size, onChange }: { size: WidgetSize; onChange: (next: WidgetSize) => void }) {
+  const idx = SIZE_ORDER.indexOf(size);
+  const nextSize = SIZE_ORDER[(idx + 1) % SIZE_ORDER.length];
+  const Icon = SIZE_ICON[size];
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => onChange(nextSize)}
       className="inline-flex items-center justify-center w-7 h-7 rounded-full text-muted hover:text-text hover:bg-bg/40 transition-colors"
-      aria-label={collapsed ? "Expand" : "Collapse"}
-      title={collapsed ? "Expand" : "Hide"}
+      aria-label={`Resize · ${SIZE_LABEL[size]}, click for ${SIZE_LABEL[nextSize]}`}
+      title={`${SIZE_LABEL[size]} · click for ${SIZE_LABEL[nextSize]}`}
     >
-      {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+      <Icon size={13} />
     </button>
   );
 }
@@ -343,6 +408,25 @@ const ALL_WIDGETS: WidgetKey[] = [
 ];
 
 const LAYOUT_KEY = "me-today-layout";
+const SIZES_KEY  = "me-today-sizes";
+
+// Per-widget default sizes. Hero / heads-up / triage / projects stay
+// full-width to match the historic look; smaller cards that read fine
+// in a narrower column come pre-sized so a brand-new dashboard is
+// already denser than the legacy single-column stack.
+const DEFAULT_SIZES: Partial<Record<WidgetKey, WidgetSize>> = {
+  hero:            "full",
+  standup:         "full",
+  heads_up:        "full",
+  meetings:        "medium",
+  needs_now:       "full",
+  projects:        "full",
+  next_moves:      "full",
+  kudos_received:  "medium",
+  birthdays_today: "small",
+  mood_pulse:      "small",
+  overtime:        "medium",
+};
 
 function DashboardTab() {
   const { user } = useAuth();
@@ -380,6 +464,31 @@ function DashboardTab() {
   function saveLayout(next: WidgetKey[]) {
     setLayout(next);
     localStorage.setItem(LAYOUT_KEY, JSON.stringify(next));
+  }
+  // Sizes state — per-widget column span on md+. Persisted alongside the
+  // layout order so a user's hand-tuned dashboard survives reloads.
+  const [sizes, setSizes] = useState<Record<WidgetKey, WidgetSize>>(() => {
+    try {
+      const raw = localStorage.getItem(SIZES_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      const out = {} as Record<WidgetKey, WidgetSize>;
+      ALL_WIDGETS.forEach((k) => {
+        const v = parsed[k];
+        out[k] = (SIZE_ORDER as readonly string[]).includes(v) ? v : (DEFAULT_SIZES[k] ?? "full");
+      });
+      return out;
+    } catch {
+      const out = {} as Record<WidgetKey, WidgetSize>;
+      ALL_WIDGETS.forEach((k) => { out[k] = DEFAULT_SIZES[k] ?? "full"; });
+      return out;
+    }
+  });
+  function setSize(k: WidgetKey, next: WidgetSize) {
+    setSizes((cur) => {
+      const merged = { ...cur, [k]: next };
+      localStorage.setItem(SIZES_KEY, JSON.stringify(merged));
+      return merged;
+    });
   }
   const [customising, setCustomising] = useState(false);
 
@@ -552,7 +661,28 @@ function DashboardTab() {
         </button>
       </div>
 
-      {layout.map((key) => renderWidget(key))}
+      {/* 12-col grid wraps every widget. Each widget chooses its own
+          column span via the SIZE_COLS mapping, and a tiny resize cycler
+          floats in the top-right of the wrapper so the user can flip
+          a card between Compact / Half / Wide / Full without diving
+          into the customise dialog. On phones (< md) every widget spans
+          all 12 cols so the cycler is a visual hint, not a layout
+          surprise. */}
+      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-5">
+        {layout.map((key) => {
+          const node = renderWidget(key);
+          if (!node) return null;
+          const size = sizes[key];
+          return (
+            <div key={key} className={`relative ${SIZE_COLS[size]} group`}>
+              <div className="absolute top-3 right-12 z-10 opacity-0 group-hover:opacity-100 transition-opacity hidden md:block">
+                <WidgetResizer size={size} onChange={(next) => setSize(key, next)} />
+              </div>
+              {node}
+            </div>
+          );
+        })}
+      </div>
 
       {customising && (
         <CustomiseLayoutDialog
@@ -1118,7 +1248,12 @@ function OvertimeCard({ hoursThisWeek }: { hoursThisWeek: number }) {
 // team is already looking.
 function StandupCard() {
   const [collapsed, toggle] = useCollapsible("standup");
-  const { data: huddle } = useQuery<{ standup_at?: string; slots_done?: string[] }>({
+  const { data: huddle } = useQuery<{
+    standup_at?: string;
+    slots_done?: string[];
+    standup_window_before_min?: number;
+    standup_window_after_min?: number;
+  }>({
     queryKey: ["me-huddle"],
     queryFn: () => api("/api/v1/me/huddle"),
     refetchInterval: 60_000,
@@ -1126,19 +1261,26 @@ function StandupCard() {
   });
   // Parse "HH:MM" into a "minutes from start of day" int. Tenants without
   // a configured value fall back to 09:30 (matches the backend default).
+  const standupAtRaw = huddle?.standup_at ?? "09:30";
   const standupMin = (() => {
-    const raw = huddle?.standup_at ?? "09:30";
-    const m = /^(\d{1,2}):(\d{2})$/.exec(raw);
+    const m = /^(\d{1,2}):(\d{2})$/.exec(standupAtRaw);
     if (!m) return 9 * 60 + 30;
     return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
   })();
+  // Window — admin-configurable per tenant in Settings → Standup. Fallbacks
+  // match the backend defaults so a freshly-seeded tenant still works.
+  const windowBefore = huddle?.standup_window_before_min ?? 30;
+  const windowAfter  = huddle?.standup_window_after_min  ?? 60;
+
   const now = new Date();
   const nowMin = now.getHours() * 60 + now.getMinutes();
-  const minutesToStandup = standupMin - nowMin; // negative = past standup
-  // Window: 30 min before through 60 min after.
-  const inWindow = minutesToStandup <= 30 && minutesToStandup >= -60;
+  // minutesToStandup: positive = before standup, negative = past standup.
+  // If "today's" standup has already passed (>>windowAfter ago), pre-compute
+  // tomorrow's countdown so the hint stays useful in the evening.
+  let minutesToStandup = standupMin - nowMin;
+  if (minutesToStandup < -windowAfter) minutesToStandup += 24 * 60;
+  const inWindow = minutesToStandup <= windowBefore && minutesToStandup >= -windowAfter;
   const morningDone = (huddle?.slots_done ?? []).includes("morning");
-  if (!inWindow) return null;
 
   const phase: "pre" | "now" | "post" =
     minutesToStandup > 5 ? "pre"
@@ -1162,6 +1304,34 @@ function StandupCard() {
     },
     onError: (e: any) => toast.error("Couldn't post status", e?.message),
   });
+
+  // Outside the configured window, the card renders as a quiet "next
+  // standup" hint instead of hiding. Keeps the widget discoverable for
+  // anyone visiting Today at, say, 2pm and wondering when the team meets.
+  // The hint is intentionally minimal — title + the time-until phrase + a
+  // chevron — and never carries the late-status buttons since they'd be
+  // useless that far out of window.
+  if (!inWindow) {
+    // Friendly time-until — "Next standup at 09:30 (in 4h 30m)".
+    const h = Math.floor(minutesToStandup / 60);
+    const m = minutesToStandup % 60;
+    const fromNow =
+      minutesToStandup < 60 ? `in ${minutesToStandup}m`
+      : h < 24             ? `in ${h}h ${m ? m + "m" : ""}`.trim()
+      : "tomorrow";
+    return (
+      <section className="bg-bg/40 border border-border rounded-2xl px-5 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="h2 flex items-center gap-2">
+            <Bell size={16} className="text-muted" />
+            <span>Next standup at {standupAtRaw}</span>
+            <span className="text-[12px] font-medium text-muted">· {fromNow}</span>
+          </h2>
+          <CollapseChevron collapsed={collapsed} onClick={toggle} />
+        </div>
+      </section>
+    );
+  }
 
   const tone =
     phase === "pre" && !morningDone ? "bg-warn/10 border-warn/30 text-warn"
