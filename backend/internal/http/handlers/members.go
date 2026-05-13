@@ -55,6 +55,7 @@ func (h *Members) List(c *gin.Context) {
 		       u.manual_status, u.manual_status_until,
 		       COALESCE(u.avatar_url, ''),
 		       COALESCE(u.birthday, '') AS birthday,
+		       COALESCE(u.job_title, '') AS job_title,
 		       COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles,
 		       -- Today's check-in flags. We surface both whether the
 		       -- daily_checkins row exists for today AND whether it
@@ -98,17 +99,17 @@ func (h *Members) List(c *gin.Context) {
 	out := []gin.H{}
 	for rows.Next() {
 		var (
-			id                                  uuid.UUID
-			email, name, status, avatar, birthday string
-			mfa, mfaRequired, checkedInToday    bool
-			lastLogin, lastSeen                 *time.Time
-			manual                              *string
-			manualUntil                         *time.Time
-			created                             time.Time
-			roles                               []string
+			id                                            uuid.UUID
+			email, name, status, avatar, birthday, jobTitle string
+			mfa, mfaRequired, checkedInToday              bool
+			lastLogin, lastSeen                           *time.Time
+			manual                                        *string
+			manualUntil                                   *time.Time
+			created                                       time.Time
+			roles                                         []string
 		)
 		if err := rows.Scan(&id, &email, &name, &status, &mfa, &mfaRequired, &lastLogin, &created, &lastSeen,
-			&manual, &manualUntil, &avatar, &birthday, &roles, &checkedInToday); err == nil {
+			&manual, &manualUntil, &avatar, &birthday, &jobTitle, &roles, &checkedInToday); err == nil {
 			// Single source of truth for presence — see derivePresence in me.go.
 			presence := derivePresence(manual, manualUntil, lastSeen)
 			var sinceSec int64 = -1
@@ -128,6 +129,7 @@ func (h *Members) List(c *gin.Context) {
 				"mfa_required": mfaRequired,
 				"last_login_at": lastLogin, "created_at": created,
 				"roles": roles,
+				"job_title":    jobTitle,
 				"last_seen_at": lastSeen,
 				"presence":     presence,
 				"seconds_since": sinceSec,
@@ -248,9 +250,10 @@ func (h *Members) Update(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
 	var req struct {
-		Name   *string   `json:"name"`
-		Status *string   `json:"status"` // active | disabled | invited
-		Roles  *[]string `json:"roles"`
+		Name     *string   `json:"name"`
+		Status   *string   `json:"status"` // active | disabled | invited
+		Roles    *[]string `json:"roles"`
+		JobTitle *string   `json:"job_title"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil { c.JSON(400, gin.H{"error": err.Error()}); return }
 
@@ -258,7 +261,7 @@ func (h *Members) Update(c *gin.Context) {
 	if err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }
 	defer tx.Rollback(c)
 
-	if req.Name != nil || req.Status != nil {
+	if req.Name != nil || req.Status != nil || req.JobTitle != nil {
 		sets := []string{"updated_at=now()"}
 		args := []any{}
 		add := func(col string, v any) { args = append(args, v); sets = append(sets, col+"=$"+strconv.Itoa(len(args))) }
@@ -270,6 +273,7 @@ func (h *Members) Update(c *gin.Context) {
 			}
 			add("status", *req.Status)
 		}
+		if req.JobTitle != nil { add("job_title", strings.TrimSpace(*req.JobTitle)) }
 		args = append(args, id, tid)
 		q := "UPDATE users SET " + strings.Join(sets, ", ") +
 			" WHERE id=$" + strconv.Itoa(len(args)-1) + " AND tenant_id=$" + strconv.Itoa(len(args)) + " AND deleted_at IS NULL"

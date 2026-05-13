@@ -45,6 +45,10 @@ type Colleague = {
   // alternative is a muted "No check-in" pill so admins can spot quiet
   // teammates without opening the HR Check-ins page.
   checked_in_today?: boolean;
+  // Free-text "what they do here" — distinct from `roles`, which are RBAC
+  // bundles. The directory shows this in place of role pills so non-admins
+  // see a recognisable position label.
+  job_title?: string;
 };
 
 type Resp = { items: Colleague[] };
@@ -464,17 +468,12 @@ function ColleagueCard({ c, onOpen }: { c: Colleague; onOpen: () => void }) {
         <div className="min-w-0 flex-1">
           <div className="text-sm font-bold text-text truncate">{c.name || c.email.split("@")[0]}</div>
           <div className="text-[11.5px] text-muted truncate">{c.email}</div>
-          {c.roles.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              {c.roles.slice(0, 2).map((r) => (
-                <span key={r} className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-bg/60 text-muted border border-border">
-                  {labelRole(r)}
-                </span>
-              ))}
-              {c.roles.length > 2 && (
-                <span className="text-[10px] font-semibold text-muted/70">+{c.roles.length - 2}</span>
-              )}
+          {c.job_title ? (
+            <div className="mt-1.5 text-[11.5px] font-semibold text-text truncate" title={c.job_title}>
+              {c.job_title}
             </div>
+          ) : (
+            <div className="mt-1.5 text-[11px] italic text-muted/70">No position set</div>
           )}
         </div>
       </div>
@@ -526,14 +525,13 @@ function ColleagueRow({ c, onOpen }: { c: Colleague; onOpen: () => void }) {
           </div>
           <div className="text-[11.5px] text-muted truncate">{c.email}</div>
         </div>
-        <div className="hidden md:flex items-center gap-1 shrink-0 max-w-[200px] overflow-hidden">
-          {c.roles.slice(0, 2).map((r) => (
-            <span key={r} className="text-[10.5px] font-semibold px-1.5 py-0.5 rounded-full bg-bg/60 text-muted border border-border whitespace-nowrap">
-              {labelRole(r)}
+        <div className="hidden md:flex items-center justify-end shrink-0 max-w-[240px]">
+          {c.job_title ? (
+            <span className="text-[12px] font-semibold text-text truncate" title={c.job_title}>
+              {c.job_title}
             </span>
-          ))}
-          {c.roles.length > 2 && (
-            <span className="text-[10.5px] font-semibold text-muted/70">+{c.roles.length - 2}</span>
+          ) : (
+            <span className="text-[11px] italic text-muted/70">No position set</span>
           )}
         </div>
         {/* Today's check-in pill. Replaces the old "Offline" presence
@@ -816,9 +814,15 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
               <Hash size={11} /> Profile
             </div>
             <ul className="text-[12.5px] text-text space-y-1">
+              {c.job_title && (
+                <li>
+                  <span className="text-muted font-semibold">Position · </span>
+                  {c.job_title}
+                </li>
+              )}
               {c.roles.length > 0 && (
                 <li>
-                  <span className="text-muted font-semibold">Roles · </span>
+                  <span className="text-muted font-semibold">Access · </span>
                   {c.roles.map(labelRole).join(", ")}
                 </li>
               )}

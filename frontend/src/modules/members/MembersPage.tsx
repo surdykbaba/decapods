@@ -26,6 +26,7 @@ type Member = {
   last_login_at: string | null;
   created_at: string;
   roles: string[];
+  job_title?: string;
   last_seen_at: string | null;
   presence: Presence;
   seconds_since: number;
@@ -1049,11 +1050,12 @@ function EditMemberDialog({
   roles: Role[];
   submitting: boolean;
   onClose: () => void;
-  onSave: (patch: { name?: string; status?: MemberStatus; roles?: string[] }) => void;
+  onSave: (patch: { name?: string; status?: MemberStatus; roles?: string[]; job_title?: string }) => void;
 }) {
   const [name, setName]   = useState(member.name);
   const [status, setStatus] = useState<MemberStatus>(member.status);
   const [picked, setPicked] = useState<string[]>([...member.roles]);
+  const [jobTitle, setJobTitle] = useState(member.job_title ?? "");
   const toggle = (r: string) =>
     setPicked((p) => p.includes(r) ? p.filter((x) => x !== r) : [...p, r]);
   return (
@@ -1070,6 +1072,16 @@ function EditMemberDialog({
           <label className="block">
             <div className="label">Full name</div>
             <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+          </label>
+          <label className="block">
+            <div className="label">Position</div>
+            <input
+              className="input"
+              value={jobTitle}
+              onChange={(e) => setJobTitle(e.target.value)}
+              placeholder="e.g. Senior Product Engineer"
+            />
+            <div className="text-[11px] text-muted mt-1">What the team sees in the directory. Distinct from access roles below.</div>
           </label>
           <label className="block">
             <div className="label">Status</div>
@@ -1104,7 +1116,7 @@ function EditMemberDialog({
         <footer className="flex items-center justify-end gap-2 p-4 border-t border-border bg-bg">
           <button onClick={onClose} className="btn-ghost">Cancel</button>
           <SmartButton variant="primary" loading={submitting}
-            onClick={() => onSave({ name: name.trim(), status, roles: picked })}>
+            onClick={() => onSave({ name: name.trim(), status, roles: picked, job_title: jobTitle.trim() })}>
             Save changes
           </SmartButton>
         </footer>
