@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Sun, Flame, Clock, AlertCircle, X, Send, Plane, ChevronRight, Link2, Paperclip, Trash2 } from "lucide-react";
+import { Sun, Flame, Clock, AlertCircle, X, Send, Plane, ChevronRight, Link2, Paperclip, Trash2, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toast } from "@/lib/toast";
@@ -24,6 +24,11 @@ type HuddleResp = {
   mood?: string;
   focus_note?: string;
   yesterday_note?: string;
+  // Backend pre-loads the most recent prior focus_note so we never ask
+  // "what did you do yesterday?" when we already know the plan they
+  // committed to. May skip weekends — yesterday_plan_day is the source.
+  yesterday_plan?: string;
+  yesterday_plan_day?: string;
   attachments?: HuddleAttachment[];
   standup_at: string;
   tasks_due_today: HuddleTask[];
@@ -91,12 +96,21 @@ export function MorningHuddle() {
 
   // Hydrate the form if the user has already started a check-in today (e.g.
   // they reopen the sheet from the manual trigger after submitting).
+  //
+  // For "Yesterday" we prefer in this order:
+  //   1. what they've already typed today (yesterday_note)
+  //   2. the most recent prior focus_note the backend surfaced
+  //      (yesterday_plan) — so we never re-ask what they committed to
+  // The user can still type over the prefill.
   useEffect(() => {
     if (data?.mood)            setMood(data.mood);
     if (data?.focus_note)      setFocus(data.focus_note);
-    if (data?.yesterday_note)  setYesterday(data.yesterday_note);
+    if (data?.yesterday_note)        setYesterday(data.yesterday_note);
+    else if (data?.yesterday_plan)   setYesterday(data.yesterday_plan);
     if (data?.attachments)     setAttachments(data.attachments);
-  }, [data?.mood, data?.focus_note, data?.yesterday_note, data?.attachments]);
+  }, [data?.mood, data?.focus_note, data?.yesterday_note, data?.yesterday_plan, data?.attachments]);
+
+  const yesterdayPrefilled = !data?.yesterday_note && !!data?.yesterday_plan && yesterday === data.yesterday_plan;
 
   const save = useMutation({
     mutationFn: (body: {
@@ -261,7 +275,14 @@ export function MorningHuddle() {
             </div>
 
             <div>
-              <div className="text-sm font-semibold text-text mb-2">{checkinPhrasing().recapLabel}</div>
+              <div className="text-sm font-semibold text-text mb-2 flex items-center justify-between gap-2">
+                <span>{checkinPhrasing().recapLabel}</span>
+                {yesterdayPrefilled && (
+                  <span className="inline-flex items-center gap-1 text-[10.5px] font-semibold text-accent" title={`Pulled from your check-in on ${data?.yesterday_plan_day}`}>
+                    <Sparkles size={9} /> Auto-filled from your last plan
+                  </span>
+                )}
+              </div>
               <textarea
                 value={yesterday}
                 onChange={(e) => setYesterday(e.target.value)}

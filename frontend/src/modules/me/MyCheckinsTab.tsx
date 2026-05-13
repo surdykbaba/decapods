@@ -774,15 +774,14 @@ export function MyCheckinsTab() {
       </section>
 
       {editingDay && (() => {
-        // Smart prior-day hint — when a user starts a check-in, the most
-        // common "Yesterday — what shipped" answer is literally yesterday's
-        // "Today — what's on". We look that up by day and pass it through so
-        // the wizard can offer a "Use yesterday's plan" one-tap prefill.
-        const prevISO = (() => {
-          const t = new Date(editingDay.day + "T00:00:00").getTime();
-          return new Date(t - 86_400_000).toISOString().slice(0, 10);
-        })();
-        const prior = items.find((r) => r.day === prevISO) ?? null;
+        // Smart prior-day source — we don't ask "what did you do yesterday?"
+        // when we already know what they committed to. Pick the most recent
+        // prior check-in (within the loaded window) that actually has a
+        // focus_note, so Monday pulls from Friday instead of leaving the
+        // field blank on the weekend.
+        const prior = items
+          .filter((r) => r.day < editingDay.day && (r.focus_note ?? "").trim() !== "")
+          .sort((a, b) => b.day.localeCompare(a.day))[0] ?? null;
         // Slot stamping — only today's check-in is slot-aware. Back-fills
         // (any day other than today) save without a slot so the "one per
         // slot" rule doesn't accidentally bite recall-mode edits.
@@ -832,7 +831,13 @@ function CheckinEditor({
   const phrasing = checkinPhrasing();
   const [step, setStep] = useState<WizardStep>(0);
   const [mood, setMood] = useState(row.mood ?? "");
-  const [yesterday, setYesterday] = useState(row.yesterday_note ?? "");
+  // The "Yesterday" textarea starts auto-filled from the user's most recent
+  // prior plan when they haven't already saved a yesterday-note. We don't
+  // want to ask "what did you do yesterday?" when we already know what they
+  // committed to — they can still edit the prefilled text before saving.
+  const priorPlan = (priorRow?.focus_note ?? "").trim();
+  const [yesterday, setYesterday] = useState(row.yesterday_note ?? priorPlan ?? "");
+  const [prefilledFromPrior, setPrefilledFromPrior] = useState<boolean>(!row.yesterday_note && !!priorPlan);
   const [focus, setFocus] = useState(row.focus_note ?? "");
   const [attachments, setAttachments] = useState<Attachment[]>(row.attachments ?? []);
   const [linkDraft, setLinkDraft] = useState("");
@@ -840,17 +845,12 @@ function CheckinEditor({
   // Defensive: if the parent re-renders the same day, sync local state.
   useEffect(() => {
     setMood(row.mood ?? "");
-    setYesterday(row.yesterday_note ?? "");
+    setYesterday(row.yesterday_note ?? priorPlan ?? "");
+    setPrefilledFromPrior(!row.yesterday_note && !!priorPlan);
     setFocus(row.focus_note ?? "");
     setAttachments(row.attachments ?? []);
     setStep(0);
   }, [row.day]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Smart prefill — yesterday's "Today" is, more often than not, the right
-  // first draft of today's "Yesterday". We don't auto-write it (clobbering is
-  // hostile) but we expose a one-tap "Use yesterday's plan" inside the wizard.
-  const priorPlan = (priorRow?.focus_note ?? "").trim();
-  const canUsePriorPlan = !!priorPlan && yesterday.trim() === "";
 
   // Smart draft from tasks — fetch the user's open priorities and offer a
   // one-tap "Draft from my tasks" button on the Today field. Only fires for
@@ -1042,20 +1042,26 @@ function CheckinEditor({
               <div>
                 <div className="text-sm font-semibold text-text mb-1 flex items-center justify-between gap-2">
                   <span>{isToday ? phrasing.recapLabel : "Yesterday — what shipped"}</span>
-                  {canUsePriorPlan && (
-                    <button
-                      type="button"
-                      onClick={() => setYesterday(priorPlan)}
-                      className="text-[11px] font-semibold text-accent hover:underline inline-flex items-center gap-1"
-                      title={`Copy yesterday's plan: ${priorPlan.slice(0, 80)}${priorPlan.length > 80 ? "…" : ""}`}
+                  {prefilledFromPrior && (
+                    <span
+                      className="inline-flex items-center gap-1 text-[10.5px] font-semibold text-accent"
+                      title={priorRow?.day ? `Pulled from your check-in on ${priorRow.day}` : "Pulled from your last plan"}
                     >
-                      <Sparkles size={10} /> Use yesterday's plan
-                    </button>
+                      <Sparkles size={10} /> Auto-filled from your last plan
+                      <button
+                        type="button"
+                        onClick={() => { setYesterday(""); setPrefilledFromPrior(false); }}
+                        className="ml-1 text-muted hover:text-text"
+                        title="Clear and write from scratch"
+                      >
+                        ↶
+                      </button>
+                    </span>
                   )}
                 </div>
                 <textarea
                   value={yesterday}
-                  onChange={(e) => setYesterday(e.target.value)}
+                  onChange={(e) => { setYesterday(e.target.value); if (prefilledFromPrior) setPrefilledFromPrior(false); }}
                   rows={3}
                   className="input w-full resize-none"
                   placeholder={isToday ? phrasing.recapPlaceholder : "What did you finish, hand off, or get stuck on?"}

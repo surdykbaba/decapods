@@ -44,6 +44,15 @@ type huddleResp struct {
 	Mood            string             `json:"mood,omitempty"`
 	FocusNote       string             `json:"focus_note,omitempty"`
 	YesterdayNote   string             `json:"yesterday_note,omitempty"`
+	// YesterdayPlan — the user's most-recent *prior* check-in focus_note.
+	// Today's "Yesterday" textarea pre-fills with this so we don't ask
+	// "what did you do yesterday?" when we already know the plan they
+	// committed to. The user can still edit it before saving.
+	YesterdayPlan   string             `json:"yesterday_plan,omitempty"`
+	// YesterdayPlanDay — the source day for YesterdayPlan (YYYY-MM-DD).
+	// May not literally be "yesterday" — Monday's check-in often pulls
+	// from Friday because there's no weekend check-in to read.
+	YesterdayPlanDay string            `json:"yesterday_plan_day,omitempty"`
 	Attachments     []huddleAttachment `json:"attachments"`
 	// SlotsDone — which of the three daily check-in slots (morning,
 	// afternoon, evening) the caller has filled today. The SPA uses this
@@ -126,6 +135,25 @@ func (h *Huddle) Get(c *gin.Context) {
 		if len(slotTimes) > 0 {
 			_ = json.Unmarshal(slotTimes, &out.SlotTimes)
 		}
+	}
+
+	// Pull the most recent prior focus_note within the last 14 days so the
+	// SPA can pre-fill the "Yesterday" field instead of asking the user to
+	// retype what they already committed to. Skips weekend gaps automatically
+	// because we order by day DESC and look for any prior row with content.
+	var (
+		priorPlan *string
+		priorDay  *time.Time
+	)
+	_ = h.db.QueryRow(c, `
+		SELECT focus_note, day FROM daily_checkins
+		 WHERE user_id=$1 AND day < $2::date AND day >= ($2::date - INTERVAL '14 days')
+		   AND focus_note IS NOT NULL AND length(trim(focus_note)) > 0
+		 ORDER BY day DESC
+		 LIMIT 1`, uid, today).Scan(&priorPlan, &priorDay)
+	if priorPlan != nil && priorDay != nil {
+		out.YesterdayPlan = *priorPlan
+		out.YesterdayPlanDay = priorDay.Format("2006-01-02")
 	}
 
 	// On approved leave today?
