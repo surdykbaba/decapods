@@ -326,6 +326,10 @@ func (h *CheckinRollup) Self(c *gin.Context) {
 	from := time.Now().UTC().AddDate(0, 0, -days+1).Truncate(24 * time.Hour)
 	fromStr := from.Format("2006-01-02")
 
+	// Tenant + user double-filter on the LEFT JOIN. The earlier version
+	// passed $1 (tid) but never referenced it in the SQL, which made
+	// Postgres throw "could not determine data type of parameter $1"
+	// and return 500 — leaving the timeline UI permanently empty.
 	rows, err := h.db.Query(c, `
 		WITH days AS (
 		  SELECT d::date AS day
@@ -341,7 +345,8 @@ func (h *CheckinRollup) Self(c *gin.Context) {
 		           AND t.updated_at::date = days.day
 		       ) AS tasks_done
 		FROM days
-		LEFT JOIN daily_checkins dc ON dc.user_id = $2 AND dc.day = days.day
+		LEFT JOIN daily_checkins dc
+		       ON dc.tenant_id = $1 AND dc.user_id = $2 AND dc.day = days.day
 		ORDER BY days.day DESC`, tid, uid, fromStr)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

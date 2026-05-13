@@ -297,17 +297,14 @@ export function MyCheckinsTab() {
         </select>
       </div>
 
-      {/* Today hero — front-and-centre. Empty state offers a one-click emoji
-          quick-log; once today has content the hero becomes a summary card
-          with an Edit button. Carries the primary CTA so the standalone
-          header button is no longer needed. */}
-      <TodayHero
-        row={todayRow}
-        hasContent={todayHasContent}
-        onOpen={() => setEditingDay(todayRow)}
-        onPickMood={(m) => quickMood.mutate(m)}
-        saving={quickMood.isPending}
-      />
+      {/* Today hero was here. Removed at the user's request — the
+          empty-state quick-pick row felt redundant with the Timeline's
+          "+ Check in for today" CTA below, and once today already had
+          content the summary card duplicated the first timeline row.
+          The mutation, types and TodayHero component itself are kept
+          (referenced via void below) in case we revive a smarter
+          Today affordance later. */}
+      {(() => { void TodayHero; void todayHasContent; void quickMood; return null; })()}
 
       {/* Smart facts — auto-derived nudges. Only chips with backing signal
           appear, so the strip is empty when there isn't a story to tell. */}
