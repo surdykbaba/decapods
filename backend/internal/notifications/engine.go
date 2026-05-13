@@ -38,6 +38,10 @@ const (
 	CatVendor     Category = "vendor"
 	CatRelations  Category = "relations"
 	CatExecDigest Category = "exec_digest"
+	// CatCampfire groups social-side events (comments / reactions / kudos
+	// on the workspace pulse feed). Users typically want these immediate,
+	// but quieter than task / governance — they're recognition + chatter.
+	CatCampfire   Category = "campfire"
 )
 
 // EventKind is a stable, dotted identifier for a notification event. New

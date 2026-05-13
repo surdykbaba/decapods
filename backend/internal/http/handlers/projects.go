@@ -31,7 +31,25 @@ func (h *Projects) WithEngine(engine *notifications.Engine) *Projects {
 
 func (h *Projects) List(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
-	items, err := h.svc.List(c, tid, c.Query("status"))
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	// Either the caller has the broad project:read scope (HR / leadership /
+	// project_manager / etc) and sees every project in the tenant, OR
+	// they have the narrower project:read:self grant (engineer / designer
+	// / qa / intern / client_viewer) and we narrow the list to projects
+	// they're an active member of.
+	//
+	// The middleware doesn't gate this route any more — both scopes pass.
+	// A caller with neither still gets a 403 by virtue of having no read
+	// at all, which we check here so the empty case stays honest.
+	canReadAll  := auth.HasPermission(roles, "project:read")
+	canReadSelf := auth.HasPermission(roles, "project:read:self")
+	if !canReadAll && !canReadSelf {
+		c.JSON(http.StatusForbidden, gin.H{"error": "no project:read access"})
+		return
+	}
+	items, err := h.svc.List(c, tid, uid, c.Query("status"), !canReadAll)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return

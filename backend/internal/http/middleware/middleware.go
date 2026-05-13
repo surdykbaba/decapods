@@ -59,11 +59,20 @@ func RequireAuth(secret []byte) gin.HandlerFunc {
 	}
 }
 
+// RequirePermission gates a route on either the exact perm OR its
+// :self-scoped sibling. The :self check is the convention this app
+// uses for "you can do this for your own row but not anyone else's"
+// — engineer / designer / qa / intern / client_viewer all carry
+// scopes like project:read:self and time_entry:write:self. Letting
+// :self past the middleware leaves the handler free to apply the
+// per-row narrowing (which most of them already do because every
+// write defaults UserID = caller).
 func RequirePermission(perm string) gin.HandlerFunc {
+	selfPerm := perm + ":self"
 	return func(c *gin.Context) {
 		roles, _ := c.Get(CtxRoles)
 		rs, _ := roles.([]string)
-		if !auth.HasPermission(rs, perm) {
+		if !auth.HasPermission(rs, perm) && !auth.HasPermission(rs, selfPerm) {
 			// The user-facing copy stays human; `required` is kept as a hidden
 			// hint for admins debugging from the network panel.
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{

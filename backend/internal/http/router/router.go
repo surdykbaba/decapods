@@ -257,7 +257,11 @@ func New(d Deps) http.Handler {
 	authed.DELETE("/stakeholders/:id", mw.RequirePermission("opportunity:write"), stakeholders.Delete)
 
 	proj := handlers.NewProjects(d.DB).WithEngine(earlyEngine)
-	authed.GET("/projects", mw.RequirePermission("project:read"), proj.List)
+	// /projects list — middleware gate dropped because the handler now
+	// accepts both project:read (broad) AND project:read:self (member-
+	// only) and narrows the result accordingly. The handler returns 403
+	// if the caller has neither scope.
+	authed.GET("/projects", proj.List)
 	authed.POST("/projects", mw.RequirePermission("project:write"), proj.Create)
 	authed.GET("/projects/:id", mw.RequirePermission("project:read"), proj.Get)
 	authed.GET("/projects/:id/board", mw.RequirePermission("project:read"), proj.Board)

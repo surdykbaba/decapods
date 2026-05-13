@@ -50,6 +50,11 @@ type huddleResp struct {
 	// to disable the slot button once used and to render the "did /
 	// missed / open" pill row.
 	SlotsDone       []string           `json:"slots_done"`
+	// SlotTimes is a {slot_key: iso8601-timestamp} map so the SPA can
+	// render "Checked in at 09:32" / "Checked out at 18:11" instead of
+	// just "Checked in". Empty until the user logs at least one slot
+	// post-migration 000059.
+	SlotTimes       map[string]any     `json:"slot_times"`
 	StandupAt       string             `json:"standup_at"`        // HH:MM, tenant-configurable
 	// Standup card "live" window — the SPA uses these to decide whether to
 	// render the nudge + late-status buttons or just a quiet "next standup
@@ -89,6 +94,7 @@ func (h *Huddle) Get(c *gin.Context) {
 		TasksOverdue:           []huddleTask{},
 		Attachments:            []huddleAttachment{},
 		SlotsDone:              []string{},
+		SlotTimes:              map[string]any{},
 	}
 
 	// Existing check-in for today?
@@ -96,12 +102,13 @@ func (h *Huddle) Get(c *gin.Context) {
 		mood, focus, yesterday *string
 		attachments            []byte
 		slotsDone              []string
+		slotTimes              []byte
 	)
 	if err := h.db.QueryRow(c, `
 		SELECT mood, focus_note, yesterday_note, COALESCE(attachments, '[]'::jsonb),
-		       COALESCE(slots_done, '{}')
+		       COALESCE(slots_done, '{}'), COALESCE(slot_times, '{}'::jsonb)
 		  FROM daily_checkins
-		 WHERE user_id=$1 AND day=$2::date`, uid, today).Scan(&mood, &focus, &yesterday, &attachments, &slotsDone); err == nil {
+		 WHERE user_id=$1 AND day=$2::date`, uid, today).Scan(&mood, &focus, &yesterday, &attachments, &slotsDone, &slotTimes); err == nil {
 		out.DoneToday = true
 		if mood != nil {
 			out.Mood = *mood
@@ -115,6 +122,9 @@ func (h *Huddle) Get(c *gin.Context) {
 		_ = json.Unmarshal(attachments, &out.Attachments)
 		if slotsDone != nil {
 			out.SlotsDone = slotsDone
+		}
+		if len(slotTimes) > 0 {
+			_ = json.Unmarshal(slotTimes, &out.SlotTimes)
 		}
 	}
 
@@ -292,15 +302,21 @@ func (h *Huddle) Save(c *gin.Context) {
 	// case was rejected above, so by the time we get here the slot is
 	// guaranteed to be additive.
 	slotsSeed := "{}"
+	slotTimesSeed := "{}"
 	if req.Slot != "" {
 		slotsSeed = "{" + req.Slot + "}"
+		// jsonb_build_object('morning', now()) at SQL level would be
+		// cleaner but the surrounding query bundles slot_times as a
+		// parameter so the existing pattern stays intact.
+		nowISO := time.Now().UTC().Format(time.RFC3339)
+		slotTimesSeed = `{"` + req.Slot + `":"` + nowISO + `"}`
 	}
 	if _, err := h.db.Exec(c, `
 		INSERT INTO daily_checkins (tenant_id, user_id, day, mood, focus_note,
 		                            yesterday_note, attachments,
-		                            posted_to_campfire, campfire_post_id, slots_done)
+		                            posted_to_campfire, campfire_post_id, slots_done, slot_times)
 		VALUES ($1,$2,$3::date, NULLIF($4,''), NULLIF($5,''),
-		        NULLIF($6,''), $7::jsonb, $8, $9, $10::text[])
+		        NULLIF($6,''), $7::jsonb, $8, $9, $10::text[], $11::jsonb)
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		  mood              = COALESCE(NULLIF(EXCLUDED.mood, ''), daily_checkins.mood),
 		  focus_note        = COALESCE(NULLIF(EXCLUDED.focus_note, ''), daily_checkins.focus_note),
@@ -315,9 +331,13 @@ func (h *Huddle) Save(c *gin.Context) {
 		                          THEN (SELECT ARRAY(SELECT DISTINCT unnest(daily_checkins.slots_done || EXCLUDED.slots_done)))
 		                        ELSE daily_checkins.slots_done
 		                      END,
+		  -- Merge slot_times: existing entries kept (so an early
+		  -- re-save of the same slot doesn't overwrite the original
+		  -- stamp), new slot key added with its timestamp.
+		  slot_times        = COALESCE(daily_checkins.slot_times, '{}'::jsonb) || EXCLUDED.slot_times,
 		  posted_to_campfire = daily_checkins.posted_to_campfire OR EXCLUDED.posted_to_campfire,
 		  campfire_post_id  = COALESCE(daily_checkins.campfire_post_id, EXCLUDED.campfire_post_id)`,
-		tid, uid, day, req.Mood, req.FocusNote, req.YesterdayNote, string(attachJSON), posted, campfirePostID, slotsSeed); err != nil {
+		tid, uid, day, req.Mood, req.FocusNote, req.YesterdayNote, string(attachJSON), posted, campfirePostID, slotsSeed, slotTimesSeed); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

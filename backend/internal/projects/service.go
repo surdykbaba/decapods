@@ -5,11 +5,16 @@ package projects
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// itoa — tiny shim so the dynamic SQL builder in List reads as one
+// expression per bound arg without dragging fmt into the package.
+func itoa(n int) string { return strconv.Itoa(n) }
 
 type Service struct{ db *pgxpool.Pool }
 
@@ -84,7 +89,13 @@ type ListItem struct {
 	Milestones    int        `json:"milestones"`
 }
 
-func (s *Service) List(ctx context.Context, tenantID uuid.UUID, status string) ([]ListItem, error) {
+// List returns the projects visible to the caller. When selfOnly is true,
+// the result is narrowed to projects where the caller is a current member
+// (project_members row, not removed). This is how engineer / designer /
+// qa / intern / client_viewer — roles whose RBAC grant is
+// project:read:self — see only what they're allocated to instead of
+// either nothing (403) or the whole tenant.
+func (s *Service) List(ctx context.Context, tenantID, userID uuid.UUID, status string, selfOnly bool) ([]ListItem, error) {
 	q := `
 		SELECT
 		  p.id, p.code, p.name, p.status, p.health, p.risk_score,
@@ -103,8 +114,17 @@ func (s *Service) List(ctx context.Context, tenantID uuid.UUID, status string) (
 		  AND p.status IN ('planning','in_progress','qa_review','client_acceptance','invoiced','paid','closed')`
 	args := []any{tenantID}
 	if status != "" {
-		q += ` AND p.status = $2`
 		args = append(args, status)
+		q += ` AND p.status = $` + itoa(len(args))
+	}
+	if selfOnly {
+		args = append(args, userID)
+		q += ` AND EXISTS (
+		         SELECT 1 FROM project_members pm
+		          WHERE pm.project_id = p.id
+		            AND pm.user_id    = $` + itoa(len(args)) + `
+		            AND pm.removed_at IS NULL
+		       )`
 	}
 	q += ` ORDER BY p.updated_at DESC LIMIT 200`
 

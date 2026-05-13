@@ -1320,6 +1320,7 @@ function MoodPulseCard() {
 // over-work doesn't hide behind a green pill.
 function OvertimeCard({ hoursThisWeek }: { hoursThisWeek: number }) {
   const [collapsed, toggle] = useCollapsible("overtime");
+  const [logOpen, setLogOpen] = useState(false);
   const STANDARD_WEEK = 40;
   const delta = hoursThisWeek - STANDARD_WEEK;
   const pct = Math.min(150, (hoursThisWeek / STANDARD_WEEK) * 100);
@@ -1357,13 +1358,122 @@ function OvertimeCard({ hoursThisWeek }: { hoursThisWeek: number }) {
             <span>40h · standard</span>
             <span>50h+</span>
           </div>
-          <p className="text-[11.5px] text-muted mt-2 leading-snug">
-            Based on a 40h Mon-Fri baseline. Hours come from your logged time entries — if you've worked but
-            haven't logged, the number won't reflect it.
-          </p>
+          <div className="flex items-center justify-between gap-2 mt-2">
+            <p className="text-[11.5px] text-muted leading-snug flex-1">
+              Based on a 40h Mon-Fri baseline. Hours come from your logged time entries — if you've worked but
+              haven't logged, the number won't reflect it.
+            </p>
+            <button
+              type="button"
+              onClick={() => setLogOpen(true)}
+              className="shrink-0 inline-flex items-center gap-1 text-[11.5px] font-bold bg-accent text-white px-3 py-1.5 rounded-full hover:bg-[rgb(var(--accent-hover))] press-fx"
+            >
+              <Plus size={11} /> Log hours
+            </button>
+          </div>
         </>
       )}
+      {logOpen && <LogHoursDialog onClose={() => setLogOpen(false)} />}
     </section>
+  );
+}
+
+// LogHoursDialog — quick "I worked X hours on Y project today" form.
+// Posts to /workforce/time-entries which the middleware now accepts for
+// :self-scoped roles too. Keeps the user from juggling a separate
+// timesheet UI when they just want to record overtime.
+function LogHoursDialog({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const today = new Date().toISOString().slice(0, 10);
+  const [date, setDate] = useState(today);
+  const [hours, setHours] = useState("");
+  const [projectId, setProjectId] = useState("");
+  const [note, setNote] = useState("");
+  const [billable, setBillable] = useState(false);
+
+  const { data: projectsData } = useQuery<{ items: { id: string; name: string; code: string }[] }>({
+    queryKey: ["my-projects-picker"],
+    queryFn: () => api("/api/v1/projects?status=active"),
+    staleTime: 5 * 60_000,
+  });
+
+  const save = useMutation({
+    mutationFn: () =>
+      api("/api/v1/workforce/time-entries", {
+        method: "POST",
+        body: JSON.stringify({
+          // Backend names: project_id (required), date (YYYY-MM-DD,
+          // required), hours, notes. The billable flag isn't on the
+          // schema yet — we stash it inline in the notes for now so
+          // the record carries the user's intent.
+          project_id: projectId,
+          date: date,
+          hours: parseFloat(hours) || 0,
+          notes: (billable ? "[billable] " : "") + note.trim(),
+        }),
+      }),
+    onSuccess: () => {
+      toast.success("Hours logged", "Overtime watch will update on the next refresh.");
+      qc.invalidateQueries({ queryKey: ["me", "work"] });
+      onClose();
+    },
+    onError: (e: any) => toast.error("Couldn't log hours", e?.message),
+  });
+
+  const ready = !!date && !!projectId && parseFloat(hours) > 0 && !save.isPending;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md">
+        <header className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider text-accent font-bold">Time entry</div>
+            <h2 className="text-base font-bold text-text mt-0.5 inline-flex items-center gap-2"><Clock size={14} className="text-accent" /> Log hours</h2>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-text"><X size={16} /></button>
+        </header>
+        <div className="p-5 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <div className="label">Date</div>
+              <input type="date" className="input" value={date} max={today} onChange={(e) => setDate(e.target.value)} />
+            </label>
+            <label className="block">
+              <div className="label">Hours</div>
+              <input type="number" step="0.25" min="0" className="input" value={hours} onChange={(e) => setHours(e.target.value)} placeholder="2.5" autoFocus />
+              <div className="text-[10.5px] text-muted mt-1">Quarter-hour increments work fine.</div>
+            </label>
+          </div>
+          <label className="block">
+            <div className="label">Project</div>
+            <select className="input" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+              <option value="">— pick the project these hours went to</option>
+              {(projectsData?.items ?? []).map((p) => (
+                <option key={p.id} value={p.id}>{p.code} · {p.name}</option>
+              ))}
+            </select>
+          </label>
+          <label className="inline-flex items-center gap-2 text-[12px]">
+            <input type="checkbox" checked={billable} onChange={(e) => setBillable(e.target.checked)} />
+            Billable hours
+          </label>
+          <label className="block">
+            <div className="label">Note <span className="text-muted font-normal">(optional)</span></div>
+            <input className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="What did you work on?" />
+          </label>
+        </div>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
+          <button onClick={onClose} className="text-[12.5px] font-semibold text-muted hover:text-text px-3 py-1.5 rounded-lg">Cancel</button>
+          <button
+            disabled={!ready}
+            onClick={() => save.mutate()}
+            className="text-[12.5px] font-bold bg-accent text-white px-4 py-1.5 rounded-full hover:bg-[rgb(var(--accent-hover))] disabled:opacity-60 press-fx"
+          >
+            {save.isPending ? "Saving…" : `Log ${hours || "0"}h`}
+          </button>
+        </footer>
+      </div>
+    </div>
   );
 }
 

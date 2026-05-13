@@ -119,7 +119,7 @@ export function MyCheckinsTab() {
   // the "three per day, no repeats" rule and render slot status pills.
   // Separate from the daily-checkins list (which only knows about mood +
   // notes for the day, not which slots were used).
-  const { data: huddleData } = useQuery<{ slots_done?: string[] }>({
+  const { data: huddleData } = useQuery<{ slots_done?: string[]; slot_times?: Record<string, string> }>({
     queryKey: ["me-huddle"],
     queryFn: () => api("/api/v1/me/huddle"),
     refetchInterval: 60_000,
@@ -402,6 +402,17 @@ export function MyCheckinsTab() {
                        : isCurrent ? "bg-accent-soft text-accent border-accent"
                        : missed ? "bg-bg text-muted/60 border-border"
                        : "bg-bg text-muted border-border";
+            // Verb vocabulary — morning + afternoon are check-INS, evening
+            // is a check-OUT for the day. Same UI shape, different word so
+            // the slot reads correctly in everyday language.
+            const isCheckout = s === "evening";
+            const verbDone   = isCheckout ? "Checked out" : "Checked in";
+            const verbOpen   = isCheckout ? "Check out now" : "Check in now";
+            // Per-slot timestamp surfaced from the new slot_times field
+            // on /me/huddle. Renders local clock time so "08:32" lines
+            // up with what the user sees on their own machine.
+            const stampISO = huddleData?.slot_times?.[s];
+            const stamp = stampISO ? new Date(stampISO).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : null;
             return (
               <div key={s} className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 ${tone}`}>
                 <div className="min-w-0">
@@ -409,7 +420,13 @@ export function MyCheckinsTab() {
                     <span>{SLOT_EMOJI[s]}</span> {SLOT_LABEL[s]}
                   </div>
                   <div className="text-[10.5px] opacity-80 mt-0.5">
-                    {done ? "Checked in" : missed ? "Missed" : isCurrent ? "Open now" : "Not yet"}
+                    {done
+                      ? (stamp ? `${verbDone} at ${stamp}` : verbDone)
+                      : missed
+                        ? "Missed"
+                        : isCurrent
+                          ? verbOpen
+                          : "Not yet"}
                   </div>
                 </div>
                 {done && <CheckCircle2 size={14} />}
@@ -444,9 +461,17 @@ export function MyCheckinsTab() {
           return (
             <div className="flex items-center gap-2 flex-wrap pt-1">
               <span className="text-[11px] text-muted">
-                {currentSlotDone
-                  ? <>✅ {SLOT_LABEL[currentSlot]} check-in logged · next window <span className="font-semibold text-text">{nextSlotName}</span> {nextWhen === "tomorrow morning" ? "tomorrow morning" : `at ${nextWhen}`}</>
-                  : `Tap a mood to log your ${SLOT_LABEL[currentSlot].toLowerCase()} check-in:`}
+                {(() => {
+                  // Evening is a check-out for the day; morning/afternoon
+                  // are check-ins. The verb threads through every helper
+                  // copy so the slot reads honestly in everyday language.
+                  const isOut = currentSlot === "evening";
+                  const verb = isOut ? "check-out" : "check-in";
+                  if (currentSlotDone) {
+                    return <>✅ {SLOT_LABEL[currentSlot]} {verb} logged · next window <span className="font-semibold text-text">{nextSlotName}</span> {nextWhen === "tomorrow morning" ? "tomorrow morning" : `at ${nextWhen}`}</>;
+                  }
+                  return `Tap a mood to log your ${SLOT_LABEL[currentSlot].toLowerCase()} ${verb}:`;
+                })()}
               </span>
               {!currentSlotDone && MOODS.map((m) => (
                 <button
@@ -477,7 +502,7 @@ export function MyCheckinsTab() {
                 <Sparkles size={12} />
                 {currentSlotDone
                   ? `Locked until ${nextWhen === "tomorrow morning" ? "tomorrow" : nextWhen}`
-                  : "Check in now"}
+                  : currentSlot === "evening" ? "Check out now" : "Check in now"}
               </button>
             </div>
           );
