@@ -1,0 +1,85 @@
+name: force-migrate
+
+# Manual workflow to force-run migrations on the production server.
+# The CD pipeline already runs migrations on every deploy, but if a
+# previous run got stuck (dirty flag, partial apply, version drift) the
+# automatic step can silently skip pending migrations and only log "ok".
+# This workflow bypasses the auto-rollout and:
+#   1. Prints current version + dirty flag
+#   2. Force-clears dirty if requested (sets dirty=false at the input
+#      version so `up` can proceed without re-running)
+#   3. Runs `up` and re-prints the final version
+#
+# Trigger from Actions → force-migrate → Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_clear_dirty:
+        description: "If the version is marked dirty, force-clear before running up"
+        type: boolean
+        default: false
+      clear_to_version:
+        description: "Version to force the dirty flag to (only used when force_clear_dirty is true). Defaults to current version - 1."
+        type: string
+        required: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - name: SSH + run migrate up
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          FORCE_CLEAR:        ${{ inputs.force_clear_dirty }}
+          CLEAR_TO_VERSION:   ${{ inputs.clear_to_version }}
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          password: ${{ secrets.SSH_PASSWORD }}
+          port:     ${{ secrets.SSH_PORT }}
+          envs: FORCE_CLEAR,CLEAR_TO_VERSION
+          script: |
+            set -euo pipefail
+            DEPLOY_PATH="${DEPLOY_PATH:-/opt/pgdp}"
+            REL="$DEPLOY_PATH/current"
+            cd "$REL"
+            set -a; . "$REL/.env"; set +a
+
+            echo "==> Pre-run version"
+            "$REL/bin/pgdp-migrate" -dir "$REL/migrations" -cmd version || true
+
+            # Quick schema probe — list the rightmost few applied versions
+            # straight from schema_migrations so we can see drift vs the
+            # migration binary's reading.
+            echo "==> schema_migrations table"
+            psql "$DATABASE_URL" -c "SELECT version, dirty FROM schema_migrations;" || true
+
+            echo "==> daily_checkins.slots_done present?"
+            psql "$DATABASE_URL" -c "SELECT column_name FROM information_schema.columns WHERE table_name='daily_checkins' AND column_name='slots_done';" || true
+
+            if [ "$FORCE_CLEAR" = "true" ]; then
+              TARGET="$CLEAR_TO_VERSION"
+              if [ -z "$TARGET" ]; then
+                # No explicit target — pick the row in schema_migrations and
+                # subtract one so migrate re-applies whatever is dirty.
+                CUR=$(psql -At "$DATABASE_URL" -c "SELECT COALESCE(MAX(version),0) FROM schema_migrations;")
+                TARGET=$((CUR - 1))
+              fi
+              echo "==> Forcing schema_migrations to version=$TARGET dirty=false"
+              psql "$DATABASE_URL" -c "DELETE FROM schema_migrations; INSERT INTO schema_migrations (version, dirty) VALUES ($TARGET, false);"
+            fi
+
+            echo "==> Running migrate up"
+            "$REL/bin/pgdp-migrate" -dir "$REL/migrations" -cmd up
+
+            echo "==> Post-run version"
+            "$REL/bin/pgdp-migrate" -dir "$REL/migrations" -cmd version || true
+
+            echo "==> schema_migrations after"
+            psql "$DATABASE_URL" -c "SELECT version, dirty FROM schema_migrations;" || true
+
+            echo "==> daily_checkins.slots_done after"
+            psql "$DATABASE_URL" -c "SELECT column_name FROM information_schema.columns WHERE table_name='daily_checkins' AND column_name='slots_done';" || true
