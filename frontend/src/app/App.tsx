@@ -34,6 +34,7 @@ import { DailyCheckinsPage } from "@/modules/admin/DailyCheckinsPage";
 import { WorkflowPage } from "@/modules/settings/WorkflowPage";
 import { WorkPolicyPage } from "@/modules/settings/WorkPolicyPage";
 import { StandupSettingsPage } from "@/modules/settings/StandupSettingsPage";
+import { OKRsPage } from "@/modules/okrs/OKRsPage";
 import { TeamRatesPage } from "@/modules/settings/TeamRatesPage";
 import { RolesPermissionsPage } from "@/modules/settings/RolesPermissionsPage";
 import { MyWorkPage } from "@/modules/me/MyWorkPage";
@@ -82,6 +83,7 @@ export function App() {
         <Route path="/my-work" element={<MyWorkPage />} />
         <Route path="/files"   element={<FilesPage />} />
         <Route path="/leave"   element={<LeavePage />} />
+        <Route path="/okrs"    element={<OKRsPage />} />
         <Route path="/campfire" element={<CampfirePage />} />
         <Route path="/campfire/join/:token" element={<CampfireJoinPage />} />
         <Route path="/colleagues" element={<ColleaguesPage />} />

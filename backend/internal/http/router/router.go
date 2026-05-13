@@ -103,6 +103,17 @@ func New(d Deps) http.Handler {
 	authed.GET("/settings/standup", standupAdmin.Get)
 	authed.PUT("/settings/standup", mw.RequirePermission("governance:write"), standupAdmin.Put)
 
+	// OKRs — Phase 1: cycles (admin-managed) + objectives/key-results
+	// (owner or admin writes). Read is open to anyone authenticated.
+	okrs := handlers.NewOKRs(d.DB)
+	authed.GET("/okrs/cycles",         mw.RequirePermission("okr:read"),  okrs.ListCycles)
+	authed.POST("/okrs/cycles",        mw.RequirePermission("governance:write"), okrs.CreateCycle)
+	authed.PATCH("/okrs/cycles/:id",   mw.RequirePermission("governance:write"), okrs.UpdateCycle)
+	authed.GET("/okrs",                mw.RequirePermission("okr:read"),  okrs.List)
+	authed.POST("/okrs",               mw.RequirePermission("okr:write"), okrs.Create)
+	authed.PATCH("/okrs/:id",          mw.RequirePermission("okr:write"), okrs.Update)
+	authed.DELETE("/okrs/:id",         mw.RequirePermission("okr:write"), okrs.Delete)
+
 	teamsIntegration := handlers.NewTeamsIntegration(d.DB)
 	authed.GET("/settings/teams",            mw.RequirePermission("governance:write"), teamsIntegration.Get)
 	authed.PUT("/settings/teams",            mw.RequirePermission("governance:write"), teamsIntegration.Put)
@@ -350,8 +361,10 @@ func New(d Deps) http.Handler {
 	authed.POST("/campfire/posts",        cf.CreatePost)
 	authed.DELETE("/campfire/posts/:id",  cf.DeletePost)
 	authed.POST("/campfire/posts/:id/pin", mw.RequirePermission("governance:write"), cf.PinPost)
-	authed.GET("/campfire/posts/:id/comments",  cf.ListComments)
-	authed.POST("/campfire/posts/:id/comments", cf.AddComment)
+	authed.GET("/campfire/posts/:id/comments",                cf.ListComments)
+	authed.POST("/campfire/posts/:id/comments",               cf.AddComment)
+	authed.PATCH("/campfire/posts/:id/comments/:commentID",   cf.UpdateComment)
+	authed.DELETE("/campfire/posts/:id/comments/:commentID",  cf.DeleteComment)
 	// Poll voting — toggles the caller's vote on a single option. The
 	// handler enforces single-vs-multi from the post's meta.
 	authed.POST("/campfire/posts/:id/vote", cf.VotePoll)

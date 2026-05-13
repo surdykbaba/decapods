@@ -5,7 +5,7 @@ import {
   Sun, Moon, LogOut, ChevronDown,
   Handshake, UserCog, Folder, Plane,
   ShieldCheck, Menu, X, ClipboardCheck, Lock,
-  Smile, Scale,
+  Smile, Scale, Target,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useMemo, useState } from "react";
@@ -35,6 +35,9 @@ const navTop: NavItem[] = [
   { section: "colleagues",   to: "/colleagues",   label: "Colleagues",   icon: Smile },
   { section: "pipeline",     to: "/pipeline",     label: "Pipeline",     icon: Briefcase },
   { section: "projects",     to: "/projects",     label: "Projects",     icon: FolderKanban },
+  // OKRs — quarterly objectives + key results. Every signed-in member
+  // sees their own; PMs / admins can edit others'.
+  { section: "okrs",         to: "/okrs",         label: "OKRs",         icon: Target },
   { section: "workforce",    to: "/workforce",    label: "Workforce",    icon: Users },
   { section: "members",      to: "/members",      label: "Members",      icon: UserCog },
   // Stakeholders + Vendors + PR & Agents merged into one Relationships
