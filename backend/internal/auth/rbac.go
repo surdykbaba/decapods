@@ -32,6 +32,13 @@ var DefaultRolePermissions = map[string][]string{
 	"auditor":           {"*:read", "audit:read", "okr:read"},
 	"compliance_officer":{"governance:*", "policy:*", "audit:read", "okr:read"},
 	"client_viewer":     {"project:read:self", "milestone:read:self"},
+	// intern — most restrictive IC grant in the matrix. Can read projects
+	// they're added to and update their own tasks/time, but explicitly no
+	// finance, opportunity (BD pipeline), workforce, analytics, document
+	// writes, or OKR writes — those gates simply fail for them. Tighter
+	// than engineer/designer/qa: read-only on OKRs (interns don't set
+	// workspace goals) and no document:write.
+	"intern":            {"project:read:self", "task:write:self", "time_entry:write:self", "okr:read"},
 }
 
 func HasPermission(roles []string, required string) bool {
