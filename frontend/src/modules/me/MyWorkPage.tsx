@@ -16,7 +16,7 @@ import {
   Folder, ChevronRight, ChevronDown, ChevronUp, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
   Sparkles, Bell, XCircle, Pencil, Smile,
   Mail as MailIcon, Paperclip, Reply, AtSign, Users as UsersIcon, AlertCircle,
-  RefreshCw, ExternalLink,
+  RefreshCw, ExternalLink, Flag, Target, AlertOctagon,
 } from "lucide-react";
 
 type TaskRow = {
@@ -36,6 +36,13 @@ type TaskRow = {
 type ProjectRow = {
   id: string; code: string; name: string;
   status: string; health: "green" | "amber" | "red"; role: string; allocation: number;
+  // Per-caller hydration from /me/work — drives the smart badges on the
+  // Your-projects card (open + overdue task counts, next milestone).
+  my_open_tasks?: number;
+  my_overdue_tasks?: number;
+  next_milestone_name?: string;
+  next_milestone_due?: string;
+  updated_at?: string;
 };
 
 type WorkResponse = {
@@ -673,9 +680,31 @@ function NeedsNowCard({
   );
 }
 
-// ProjectsCard — quick links to allocated projects with health pill.
+// ProjectsCard — denser, smarter view of allocated projects.
+//
+// What changed: the previous card showed name · health pill · role · allocation %
+// and that was it. Every row read "green / 100%" — pretty but uninformative.
+// Now each row surfaces the signals the user actually cares about at a glance:
+//
+//   • Status badge (Planning / Active / On hold / etc.) drawn from p.status,
+//     so the health pill is no longer the only signal.
+//   • Per-caller open + overdue task counts (red if any overdue).
+//   • Next upcoming milestone with its due date — clickable through to the
+//     project. "On track" when nothing's pending, "Wraps up" when no
+//     milestone but project still active.
+//   • Allocation bar — visual progress instead of a bare percentage.
+//   • Hover-lift for the press-and-go affordance.
 function ProjectsCard({ projects }: { projects: WorkResponse["projects"] }) {
   const [collapsed, toggle] = useCollapsible("projects");
+
+  // Smart summary above the grid — counts overdues across the whole
+  // portfolio and warns when something needs attention. Quiet (a single
+  // "all healthy" chip) when nothing is on fire.
+  const totalOpen = projects.reduce((a, p) => a + (p.my_open_tasks ?? 0), 0);
+  const totalOverdue = projects.reduce((a, p) => a + (p.my_overdue_tasks ?? 0), 0);
+  const reds = projects.filter((p) => p.health === "red").length;
+  const ambers = projects.filter((p) => p.health === "amber").length;
+
   return (
     <section className={`bg-surface border border-border rounded-2xl ${collapsed ? "px-5 py-3" : "p-5"}`}>
       <div className={`flex items-center justify-between gap-2 ${collapsed ? "" : "mb-3"}`}>
@@ -692,31 +721,163 @@ function ProjectsCard({ projects }: { projects: WorkResponse["projects"] }) {
           body="A project manager will assign you when there's work to ship."
         />
       ) : (
-        <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {projects.map((p) => (
-            <li key={p.id}>
-              <Link
-                to={`/projects/${p.id}`}
-                className="block bg-bg/60 border border-border rounded-xl px-3 py-2.5 hover:border-accent transition-colors"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[13px] font-bold text-text truncate">{p.name}</span>
-                  <span className={`pill ${
-                    p.health === "green" ? "bg-success/15 text-success"
-                    : p.health === "amber" ? "bg-warn/15 text-warn"
-                    : "bg-danger/15 text-danger"
-                  }`}>{p.health}</span>
-                </div>
-                <div className="flex items-center justify-between text-[11px] text-muted mt-0.5">
-                  <span className="truncate">{p.role || "Member"} · {p.code}</span>
-                  <span>{Math.round(p.allocation * 100)}%</span>
-                </div>
-              </Link>
-            </li>
-          ))}
-        </ul>
+        <>
+          {/* Portfolio-level chips. Only render the ones with a number
+              behind them so a healthy view doesn't get cluttered. */}
+          {(totalOverdue > 0 || reds > 0 || ambers > 0 || totalOpen > 0) && (
+            <div className="flex flex-wrap items-center gap-1.5 mb-3 text-[11px] font-semibold">
+              {totalOverdue > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-danger/10 text-danger border border-danger/30">
+                  <AlertOctagon size={11} /> {totalOverdue} overdue
+                </span>
+              )}
+              {reds > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-danger/10 text-danger border border-danger/30">
+                  <Flag size={11} /> {reds} red
+                </span>
+              )}
+              {ambers > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-warn/10 text-warn border border-warn/30">
+                  <Flag size={11} /> {ambers} amber
+                </span>
+              )}
+              {totalOpen > 0 && totalOverdue === 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-soft text-accent border border-accent/30">
+                  <ListChecks size={11} /> {totalOpen} open task{totalOpen === 1 ? "" : "s"}
+                </span>
+              )}
+              {totalOpen === 0 && reds === 0 && ambers === 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-success/10 text-success border border-success/30">
+                  <CheckCircle2 size={11} /> All clear · zero open
+                </span>
+              )}
+            </div>
+          )}
+
+          <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2 animate-stagger">
+            {projects.map((p) => (
+              <ProjectRowCard key={p.id} p={p} />
+            ))}
+          </ul>
+        </>
       )}
     </section>
+  );
+}
+
+// ProjectRowCard — single allocated-project entry. Pulled out for
+// readability and so the press-fx + hover-lift micro-interactions can
+// own their own component.
+function ProjectRowCard({ p }: { p: ProjectRow }) {
+  const overdue = (p.my_overdue_tasks ?? 0) > 0;
+  const healthTone =
+    p.health === "green" ? "bg-success/15 text-success border-success/25"
+    : p.health === "amber" ? "bg-warn/15 text-warn border-warn/30"
+    : "bg-danger/15 text-danger border-danger/30";
+
+  const statusLabel = (() => {
+    switch (p.status) {
+      case "planning":   return "Planning";
+      case "in_progress":
+      case "active":     return "Active";
+      case "on_hold":    return "On hold";
+      case "review":     return "In review";
+      case "delivered":  return "Delivered";
+      case "paid":       return "Paid";
+      case "closed":     return "Closed";
+      default:           return p.status.charAt(0).toUpperCase() + p.status.slice(1);
+    }
+  })();
+
+  // Next-milestone date formatting — show day-of-week + d/m for soon
+  // dates, full date for further out. Past/today get a danger tint.
+  const milestone = p.next_milestone_name;
+  const milestoneISO = p.next_milestone_due;
+  const milestoneDate = milestoneISO ? new Date(milestoneISO + "T00:00:00") : null;
+  const daysToMilestone = milestoneDate
+    ? Math.round((milestoneDate.getTime() - new Date().setHours(0, 0, 0, 0)) / 86_400_000)
+    : null;
+  const milestoneLabel = (() => {
+    if (!milestoneDate || daysToMilestone == null) return null;
+    if (daysToMilestone === 0) return "today";
+    if (daysToMilestone === 1) return "tomorrow";
+    if (daysToMilestone < 7) return `in ${daysToMilestone}d`;
+    if (daysToMilestone < 30) return milestoneDate.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+    return milestoneDate.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  })();
+  const milestoneTone = daysToMilestone != null && daysToMilestone <= 3 ? "text-warn" : "text-muted";
+
+  return (
+    <li>
+      <Link
+        to={`/projects/${p.id}`}
+        className="block bg-bg/40 border border-border rounded-xl px-3.5 py-3 hover-lift hover:border-accent/50 focus:outline-none focus:ring-2 focus:ring-accent/30 transition-colors"
+      >
+        {/* Top row: name + health */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-[13.5px] font-bold text-text truncate">{p.name}</div>
+            <div className="text-[10.5px] text-muted/80 font-mono mt-0.5">{p.code}</div>
+          </div>
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10.5px] font-bold uppercase tracking-wider border ${healthTone}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${
+              p.health === "green" ? "bg-success"
+              : p.health === "amber" ? "bg-warn" : "bg-danger"
+            }`} />
+            {p.health}
+          </span>
+        </div>
+
+        {/* Status + role row */}
+        <div className="mt-2 flex items-center gap-1.5 text-[11px]">
+          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-surface border border-border text-muted font-semibold">
+            {statusLabel}
+          </span>
+          <span className="text-muted/70">·</span>
+          <span className="text-muted font-semibold truncate">{p.role || "Member"}</span>
+        </div>
+
+        {/* Signal row: open + overdue tasks, next milestone. Each chip
+            hides itself if there's nothing to say. */}
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+          {(p.my_open_tasks ?? 0) > 0 ? (
+            <span className={`inline-flex items-center gap-1 font-semibold ${overdue ? "text-danger" : "text-text/80"}`}>
+              {overdue ? <AlertOctagon size={11} /> : <ListChecks size={11} />}
+              {p.my_open_tasks} task{p.my_open_tasks === 1 ? "" : "s"}
+              {overdue && <span className="text-[10px] font-bold text-danger/90">· {p.my_overdue_tasks} overdue</span>}
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 font-semibold text-success/90">
+              <CheckCircle2 size={11} /> No open tasks
+            </span>
+          )}
+          {milestone && milestoneLabel ? (
+            <span className={`inline-flex items-center gap-1 truncate ${milestoneTone}`}>
+              <Target size={11} />
+              <span className="truncate">{milestone}</span>
+              <span className="text-[10.5px] font-semibold">· {milestoneLabel}</span>
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-muted/70">
+              <Target size={11} /> No milestone scheduled
+            </span>
+          )}
+        </div>
+
+        {/* Allocation bar. Visual cue for how much of the user's week
+            this project owns. The number stays for precision. */}
+        <div className="mt-2.5 flex items-center gap-2">
+          <div className="flex-1 h-1.5 bg-bg/80 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-accent rounded-full transition-[width] duration-300"
+              style={{ width: `${Math.round(p.allocation * 100)}%` }}
+              aria-label={`Allocation ${Math.round(p.allocation * 100)}%`}
+            />
+          </div>
+          <span className="text-[10.5px] font-bold text-muted shrink-0 tabular-nums">{Math.round(p.allocation * 100)}%</span>
+        </div>
+      </Link>
+    </li>
   );
 }
 

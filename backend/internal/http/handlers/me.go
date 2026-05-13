@@ -123,10 +123,37 @@ func (h *Me) Work(c *gin.Context) {
 	}
 	out["priorities"] = priorities
 
-	// Active projects with role + allocation
+	// Active projects with role + allocation. Each row is hydrated with
+	// the caller-specific signals the My Work card actually needs to be
+	// useful at a glance:
+	//
+	//   • my_open_tasks      — tasks assigned to the caller, not done
+	//   • my_overdue_tasks   — subset of the above past their due date
+	//   • next_milestone_*   — soonest upcoming milestone (any assignee)
+	//                          so the user can see "what's next" on the
+	//                          project they're allocated to.
+	//
+	// All five values are computed in one query via correlated sub-
+	// selects so the list stays a single round-trip even at 8+ rows.
 	projs := []gin.H{}
 	prows, _ := h.db.Query(c, `
-		SELECT p.id, p.code, p.name, p.status, p.health, pm.role, pm.allocation
+		SELECT p.id, p.code, p.name, p.status, p.health, pm.role, pm.allocation,
+		       (SELECT COUNT(*) FROM tasks t
+		         WHERE t.project_id = p.id AND t.assignee_id = $2
+		           AND t.deleted_at IS NULL AND t.status <> 'done')                            AS my_open_tasks,
+		       (SELECT COUNT(*) FROM tasks t
+		         WHERE t.project_id = p.id AND t.assignee_id = $2
+		           AND t.deleted_at IS NULL AND t.status <> 'done'
+		           AND t.due_on IS NOT NULL AND t.due_on < CURRENT_DATE)                       AS my_overdue_tasks,
+		       (SELECT m.title FROM milestones m
+		         WHERE m.project_id = p.id AND m.status <> 'done'
+		           AND m.due_on IS NOT NULL AND m.due_on >= CURRENT_DATE
+		         ORDER BY m.due_on ASC LIMIT 1)                                                AS next_milestone_name,
+		       (SELECT m.due_on FROM milestones m
+		         WHERE m.project_id = p.id AND m.status <> 'done'
+		           AND m.due_on IS NOT NULL AND m.due_on >= CURRENT_DATE
+		         ORDER BY m.due_on ASC LIMIT 1)                                                AS next_milestone_due,
+		       p.updated_at
 		FROM project_members pm JOIN projects p ON p.id = pm.project_id
 		WHERE p.tenant_id=$1 AND pm.user_id=$2 AND pm.removed_at IS NULL
 		      AND p.deleted_at IS NULL AND p.status NOT IN ('paid','closed')
@@ -135,15 +162,30 @@ func (h *Me) Work(c *gin.Context) {
 		defer prows.Close()
 		for prows.Next() {
 			var (
-				pid uuid.UUID
+				pid                              uuid.UUID
 				code, name, status, health, role string
-				alloc float64
+				alloc                            float64
+				myOpen, myOverdue                int64
+				milestoneName                    *string
+				milestoneDue                     *time.Time
+				updatedAt                        time.Time
 			)
-			if err := prows.Scan(&pid, &code, &name, &status, &health, &role, &alloc); err == nil {
-				projs = append(projs, gin.H{
+			if err := prows.Scan(&pid, &code, &name, &status, &health, &role, &alloc,
+				&myOpen, &myOverdue, &milestoneName, &milestoneDue, &updatedAt); err == nil {
+				row := gin.H{
 					"id": pid, "code": code, "name": name,
 					"status": status, "health": health, "role": role, "allocation": alloc,
-				})
+					"my_open_tasks":    myOpen,
+					"my_overdue_tasks": myOverdue,
+					"updated_at":       updatedAt,
+				}
+				if milestoneName != nil {
+					row["next_milestone_name"] = *milestoneName
+				}
+				if milestoneDue != nil {
+					row["next_milestone_due"] = milestoneDue.Format("2006-01-02")
+				}
+				projs = append(projs, row)
 			}
 		}
 	}
