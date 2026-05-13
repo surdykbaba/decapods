@@ -84,6 +84,43 @@ const STATUS_META: Record<OKR["status"], { label: string; cls: string }> = {
   dropped:     { label: "Dropped",     cls: "bg-bg text-muted border-border" },
 };
 
+// Mechanical pace — compares an OKR's progress against how far the cycle has
+// elapsed. Complements (not replaces) the owner-reported confidence pill:
+// confidence is "how I feel"; pace is "where the math says you are."
+type Pace = "complete" | "ahead" | "on_track" | "behind" | "at_risk" | "not_started";
+const PACE_META: Record<Pace, { label: string; cls: string }> = {
+  complete:    { label: "Complete",    cls: "bg-success/15 text-success border-success/30" },
+  ahead:       { label: "Ahead",       cls: "bg-success/10 text-success border-success/25" },
+  on_track:    { label: "On track",    cls: "bg-accent-soft text-accent border-accent/30" },
+  behind:      { label: "Behind",      cls: "bg-warn/15 text-warn border-warn/30" },
+  at_risk:     { label: "At risk",     cls: "bg-danger/15 text-danger border-danger/30" },
+  not_started: { label: "Not started", cls: "bg-bg text-muted border-border" },
+};
+function paceFor(progressPct: number, elapsedPct: number, status: OKR["status"]): Pace {
+  if (status === "done" || progressPct >= 100) return "complete";
+  if (elapsedPct <= 0) return "not_started";
+  const delta = progressPct - elapsedPct;
+  if (delta >= 10)  return "ahead";
+  if (delta >= -10) return "on_track";
+  if (delta >= -25) return "behind";
+  return "at_risk";
+}
+
+// cycleProgress — how much of the cycle's calendar window has elapsed and
+// how many days are left. Days remaining is signed so the band can read
+// "ended 2d ago" once a closed cycle is selected.
+function cycleProgress(cycle: Cycle | undefined): { elapsedPct: number; daysRemaining: number; daysTotal: number } {
+  if (!cycle) return { elapsedPct: 0, daysRemaining: 0, daysTotal: 0 };
+  const start = new Date(cycle.starts_on + "T00:00:00").getTime();
+  const end   = new Date(cycle.ends_on   + "T23:59:59").getTime();
+  const now   = Date.now();
+  const total = Math.max(1, end - start);
+  const elapsedPct = Math.max(0, Math.min(100, Math.round(((now - start) / total) * 100)));
+  const daysRemaining = Math.ceil((end - now) / 86_400_000);
+  const daysTotal     = Math.ceil(total / 86_400_000);
+  return { elapsedPct, daysRemaining, daysTotal };
+}
+
 export function OKRsPage() {
   const { user } = useAuth();
   // Admin = anyone who has the governance:write surface (CEO / COO / HR / super_admin).
@@ -227,20 +264,24 @@ export function OKRsPage() {
               onSwitchToMine={() => setTab("mine")}
             />
           ) : (
-            <ul className="space-y-3">
-              {grouped.objs.map((obj) => (
-                <ObjectiveCard
-                  key={obj.id}
-                  objective={obj}
-                  keyResults={grouped.krsByParent.get(obj.id) ?? []}
-                  canEdit={tab === "mine" || obj.owner_id === user?.id}
-                  onEdit={(o) => setEditing(o)}
-                  onAddKR={() => setCreating({ cycleId: cycle.id, kind: "key_result", parentId: obj.id })}
-                  onCheckin={(o) => setCheckingIn(o)}
-                  onHistory={(o) => setHistoryFor(o)}
-                />
-              ))}
-            </ul>
+            <div className="space-y-4">
+              <SummaryBand cycle={cycle} objs={grouped.objs} krsByParent={grouped.krsByParent} />
+              <ul className="space-y-3">
+                {grouped.objs.map((obj) => (
+                  <ObjectiveCard
+                    key={obj.id}
+                    objective={obj}
+                    keyResults={grouped.krsByParent.get(obj.id) ?? []}
+                    canEdit={tab === "mine" || obj.owner_id === user?.id}
+                    elapsedPct={cycleProgress(cycle).elapsedPct}
+                    onEdit={(o) => setEditing(o)}
+                    onAddKR={() => setCreating({ cycleId: cycle.id, kind: "key_result", parentId: obj.id })}
+                    onCheckin={(o) => setCheckingIn(o)}
+                    onHistory={(o) => setHistoryFor(o)}
+                  />
+                ))}
+              </ul>
+            </div>
           )}
         </>
       )}
@@ -283,6 +324,112 @@ export function OKRsPage() {
 // OKRsEmptyState — the "no cycles yet" surface. Designed to actually
 // teach the concept (a 3-row mini example showing how Objective + Key
 // Results compose) and put the next action one click away.
+// SummaryBand — top-of-page rollup. The two donuts deliver the page's most
+// useful insight at a glance: contrast Overall achievement against Time
+// elapsed. If the time donut races ahead of the achievement donut, the
+// team is behind regardless of what the confidence pills claim.
+//
+// Achievement averages progress_pct across every key result in scope; if
+// there are no KRs we fall back to objectives. KR counts use the
+// status field (done counts as completed; dropped is excluded; everything
+// else is "open").
+function SummaryBand({ cycle, objs, krsByParent }: { cycle: Cycle; objs: OKR[]; krsByParent: Map<string, OKR[]> }) {
+  const krs: OKR[] = [];
+  objs.forEach((o) => { (krsByParent.get(o.id) ?? []).forEach((k) => krs.push(k)); });
+  const denom = krs.length > 0 ? krs : objs;
+  const avg = denom.length > 0
+    ? Math.round(denom.reduce((s, x) => s + (x.progress_pct ?? 0), 0) / denom.length)
+    : 0;
+  const completedKRs = krs.filter((k) => k.status === "done").length;
+  const openKRs      = krs.filter((k) => k.status === "draft" || k.status === "in_progress").length;
+  const { elapsedPct, daysRemaining } = cycleProgress(cycle);
+  // Pace headline — the punchline of the band. Tells the user what the two
+  // donuts together mean ("on pace", "behind by 14 points", "ended").
+  const delta = avg - elapsedPct;
+  const ended = daysRemaining < 0;
+  const pace: { tone: "good" | "warn" | "danger" | "muted"; line: string } =
+    ended                            ? { tone: "muted",  line: `Cycle ended ${Math.abs(daysRemaining)}d ago` } :
+    krs.length + objs.length === 0   ? { tone: "muted",  line: "Nothing tracked yet — add your first objective." } :
+    elapsedPct === 0                 ? { tone: "muted",  line: `Cycle begins in ${Math.abs(daysRemaining)}d` } :
+    delta >= 10                      ? { tone: "good",   line: `Ahead by ${delta} pts with ${daysRemaining}d left` } :
+    delta >= -10                     ? { tone: "good",   line: `On pace with ${daysRemaining}d left` } :
+    delta >= -25                     ? { tone: "warn",   line: `Behind by ${Math.abs(delta)} pts with ${daysRemaining}d left` } :
+                                       { tone: "danger", line: `At risk — ${Math.abs(delta)} pts off pace with ${daysRemaining}d left` };
+  const paceCls = {
+    good:   "bg-success/10 text-success border-success/25",
+    warn:   "bg-warn/15 text-warn border-warn/30",
+    danger: "bg-danger/15 text-danger border-danger/30",
+    muted:  "bg-bg text-muted border-border",
+  }[pace.tone];
+  return (
+    <div className="bg-surface border border-border rounded-2xl p-5">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-center">
+        <DonutStat
+          label="Overall achievement"
+          value={avg}
+          sub={krs.length > 0 ? "Average of your key results" : "Average across objectives"}
+          tone={avg >= elapsedPct ? "accent" : avg >= elapsedPct - 15 ? "warn" : "danger"}
+        />
+        <DonutStat
+          label="Time elapsed"
+          value={elapsedPct}
+          sub={ended
+            ? `Ended ${cycle.ends_on}`
+            : daysRemaining > 0 ? `${daysRemaining}d remaining` : "Ending today"}
+          tone="accent"
+        />
+        <div className="space-y-2.5">
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <CountStat value={krs.length}    label="Total KRs" />
+            <CountStat value={openKRs}       label="Open" />
+            <CountStat value={completedKRs}  label="Completed" tone="good" />
+          </div>
+          <div className="text-[11px] text-muted flex items-center justify-between gap-2">
+            <span><span className="text-success font-semibold">Start</span> {cycle.starts_on}</span>
+            <span><span className="text-accent font-semibold">End</span> {cycle.ends_on}</span>
+          </div>
+        </div>
+      </div>
+      <div className={`mt-4 text-[12px] font-semibold rounded-xl px-3 py-2 inline-flex items-center gap-2 border ${paceCls}`}>
+        <TrendingUp size={12} /> {pace.line}
+      </div>
+    </div>
+  );
+}
+
+function DonutStat({ label, value, sub, tone }: { label: string; value: number; sub: string; tone: "accent" | "warn" | "danger" }) {
+  const r = 26;
+  const c = 2 * Math.PI * r;
+  const pct = Math.max(0, Math.min(100, value));
+  const dash = (pct / 100) * c;
+  const stroke = tone === "danger" ? "var(--danger, #dc2626)" : tone === "warn" ? "var(--warn, #d97706)" : "var(--accent, #2563eb)";
+  return (
+    <div className="flex items-center gap-3">
+      <div className="relative w-[68px] h-[68px] shrink-0">
+        <svg viewBox="0 0 64 64" className="w-full h-full -rotate-90">
+          <circle cx="32" cy="32" r={r} stroke="currentColor" strokeWidth="6" fill="none" className="text-border" />
+          <circle cx="32" cy="32" r={r} stroke={stroke} strokeWidth="6" strokeLinecap="round" fill="none"
+                  strokeDasharray={`${dash} ${c - dash}`} />
+        </svg>
+        <div className="absolute inset-0 grid place-items-center text-[14px] font-extrabold text-text">{pct}%</div>
+      </div>
+      <div className="min-w-0">
+        <div className="text-[12.5px] font-bold text-text leading-tight">{label}</div>
+        <div className="text-[11px] text-muted leading-snug mt-0.5">{sub}</div>
+      </div>
+    </div>
+  );
+}
+
+function CountStat({ value, label, tone }: { value: number; label: string; tone?: "good" }) {
+  return (
+    <div className="bg-bg/40 border border-border rounded-xl py-2">
+      <div className={`text-xl font-extrabold leading-none ${tone === "good" ? "text-success" : "text-text"}`}>{value}</div>
+      <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mt-1">{label}</div>
+    </div>
+  );
+}
+
 function OKRsEmptyState({ isAdmin, onCreateCycle }: { isAdmin: boolean; onCreateCycle: () => void }) {
   // Surface the workspace admins so a non-admin reader knows exactly who
   // to ping. We only pull the picker list when we actually need it (i.e.
@@ -676,11 +823,12 @@ function CycleDialog({ onClose }: { onClose: () => void }) {
 }
 
 function ObjectiveCard({
-  objective, keyResults, canEdit, onEdit, onAddKR, onCheckin, onHistory,
+  objective, keyResults, canEdit, elapsedPct, onEdit, onAddKR, onCheckin, onHistory,
 }: {
   objective: OKR;
   keyResults: OKR[];
   canEdit: boolean;
+  elapsedPct: number;
   onEdit: (o: OKR) => void;
   onAddKR: () => void;
   onCheckin: (o: OKR) => void;
@@ -702,7 +850,13 @@ function ObjectiveCard({
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[13px] font-bold text-text">{objective.title}</span>
-              <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${conf.cls}`}>{conf.label}</span>
+              {(() => {
+                const p = paceFor(avgPct, elapsedPct, objective.status);
+                if (p === "not_started") return null;
+                const meta = PACE_META[p];
+                return <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${meta.cls}`} title="Pace = progress vs cycle elapsed">{meta.label}</span>;
+              })()}
+              <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${conf.cls}`} title="Owner confidence">{conf.label}</span>
               <span className="text-[11px] text-muted">{objective.owner_name || objective.owner_email}</span>
               {/* Parent-alignment chip — only when this objective is
                   aligned upward (cascaded from a team/org objective). */}
@@ -774,6 +928,7 @@ function ObjectiveCard({
               key={kr.id}
               kr={kr}
               canEdit={canEdit}
+              elapsedPct={elapsedPct}
               onEdit={() => onEdit(kr)}
               onCheckin={() => onCheckin(kr)}
               onHistory={() => onHistory(kr)}
@@ -788,16 +943,18 @@ function ObjectiveCard({
 // KRRow — one key result. Shows the title, current/target, a slim
 // progress bar, and a confidence pill.
 function KRRow({
-  kr, canEdit, onEdit, onCheckin, onHistory,
+  kr, canEdit, elapsedPct, onEdit, onCheckin, onHistory,
 }: {
   kr: OKR;
   canEdit: boolean;
+  elapsedPct: number;
   onEdit: () => void;
   onCheckin: () => void;
   onHistory: () => void;
 }) {
   const conf = CONFIDENCE_META[kr.confidence];
   const status = STATUS_META[kr.status];
+  const pace = paceFor(kr.progress_pct, elapsedPct, kr.status);
   return (
     <li className="bg-bg/40 border border-border rounded-xl px-3 py-2.5">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -805,7 +962,12 @@ function KRRow({
           <div className="flex items-center gap-2 flex-wrap">
             <Flag size={11} className="text-muted shrink-0" />
             <span className="text-[12.5px] font-semibold text-text">{kr.title}</span>
-            <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${conf.cls}`}>{conf.label}</span>
+            {pace !== "not_started" && (
+              <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${PACE_META[pace].cls}`} title="Pace = progress vs cycle elapsed">
+                {PACE_META[pace].label}
+              </span>
+            )}
+            <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${conf.cls}`} title="Owner confidence">{conf.label}</span>
             {kr.status !== "in_progress" && (
               <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${status.cls}`}>{status.label}</span>
             )}
