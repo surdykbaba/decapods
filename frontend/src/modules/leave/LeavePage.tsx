@@ -250,17 +250,11 @@ function DashboardTab({ canApprove }: { canApprove: boolean }) {
         </Section>
 
         {canApprove && (
-          <Section title="Pending approvals" className="lg:col-span-2">
-            {data.pending_approvals.length === 0 ? (
-              <Empty>Inbox clear. No requests waiting.</Empty>
-            ) : (
-              <ul className="divide-y divide-border">
-                {data.pending_approvals.map((r) => (
-                  <PendingRow key={r.id} req={r} authority={authority} />
-                ))}
-              </ul>
-            )}
-          </Section>
+          <PendingApprovalsSection
+            authority={authority}
+            onLeaveToday={data.on_leave_today}
+            upcoming={data.upcoming}
+          />
         )}
 
         <Section title="Upcoming public holidays" className={canApprove ? "lg:col-span-2" : ""}>
@@ -281,11 +275,105 @@ function DashboardTab({ canApprove }: { canApprove: boolean }) {
   );
 }
 
-function PendingRow({ req, authority }: {
-  req: Dashboard["pending_approvals"][number];
+type OverlapPerson = { id: string; user_name: string; user_email: string; type_name: string; start_date: string; end_date: string };
+
+function PendingApprovalsSection({
+  authority, onLeaveToday, upcoming,
+}: {
   authority: { can_approve_manager: boolean; can_approve_hr: boolean };
+  onLeaveToday: OverlapPerson[];
+  upcoming: OverlapPerson[];
+}) {
+  const { data, isLoading } = useQuery<{ items: LeaveRequest[] }>({
+    queryKey: ["leave-requests", "team", "pending"],
+    queryFn: () => api(`/api/v1/leave/requests?scope=team&status=pending`),
+    refetchInterval: 60_000,
+  });
+  const items = data?.items ?? [];
+  // Sort: things I can act on first, then by start_date asc (closest first).
+  const sorted = useMemo(() => {
+    const canActOn = (r: LeaveRequest) =>
+      r.approval_stage === "hr_pending" ? authority.can_approve_hr : authority.can_approve_manager;
+    return [...items].sort((a, b) => {
+      const ax = canActOn(a) ? 0 : 1;
+      const bx = canActOn(b) ? 0 : 1;
+      if (ax !== bx) return ax - bx;
+      return a.start_date.localeCompare(b.start_date);
+    });
+  }, [items, authority]);
+
+  const [filter, setFilter] = useState<"actionable" | "all">("actionable");
+  const actionable = sorted.filter((r) =>
+    (r.approval_stage === "hr_pending" ? authority.can_approve_hr : authority.can_approve_manager),
+  );
+  const visible = filter === "actionable" ? actionable : sorted;
+
+  const overlapPool: OverlapPerson[] = [...onLeaveToday, ...upcoming];
+
+  return (
+    <Section title={`Pending approvals${sorted.length ? ` · ${sorted.length}` : ""}`} className="lg:col-span-2">
+      {sorted.length > 0 && (
+        <div className="flex flex-wrap gap-1 mb-3">
+          <FilterChip active={filter === "actionable"} onClick={() => setFilter("actionable")}>
+            Awaiting me · {actionable.length}
+          </FilterChip>
+          <FilterChip active={filter === "all"} onClick={() => setFilter("all")}>
+            All pending · {sorted.length}
+          </FilterChip>
+        </div>
+      )}
+      {isLoading ? (
+        <div className="text-sm text-muted">Loading…</div>
+      ) : sorted.length === 0 ? (
+        <Empty>Inbox clear. No requests waiting.</Empty>
+      ) : visible.length === 0 ? (
+        <Empty>Nothing waiting on you right now — switch to “All pending” to peek at the rest.</Empty>
+      ) : (
+        <ul className="space-y-2">
+          {visible.map((r) => (
+            <PendingRow key={r.id} req={r} authority={authority} overlapPool={overlapPool} />
+          ))}
+        </ul>
+      )}
+    </Section>
+  );
+}
+
+function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-[11px] font-semibold px-3 py-1 rounded-full transition-colors ${
+        active ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text border border-border"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ageString(iso: string): string {
+  if (!iso) return "";
+  const ms = Date.now() - new Date(iso).getTime();
+  if (ms < 60_000) return "just now";
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  return `${d}d ago`;
+}
+
+function PendingRow({ req, authority, overlapPool }: {
+  req: LeaveRequest;
+  authority: { can_approve_manager: boolean; can_approve_hr: boolean };
+  overlapPool: OverlapPerson[];
 }) {
   const qc = useQueryClient();
+  const [expanded, setExpanded] = useState(false);
+  const [comment, setComment] = useState("");
+  const [rejectMode, setRejectMode] = useState(false);
+
   const decide = useMutation({
     mutationFn: (body: { decision: "approved" | "rejected"; comment?: string }) =>
       api(`/api/v1/leave/requests/${req.id}/decision`, { method: "POST", body: JSON.stringify(body) }),
@@ -293,47 +381,258 @@ function PendingRow({ req, authority }: {
       qc.invalidateQueries({ queryKey: ["leave-dashboard"] });
       qc.invalidateQueries({ queryKey: ["leave-requests"] });
       toast.success("Decision recorded");
+      setComment("");
+      setRejectMode(false);
     },
     onError: (e: any) => toast.error("Could not save decision", e?.message),
   });
 
-  const stageLabel = req.approval_stage === "hr_pending" ? "HR sign-off" : "line manager";
-  const stageBadgeCls = req.approval_stage === "hr_pending" ? "bg-warn/15 text-warn" : "bg-accent-soft text-accent";
-  const canAct = req.approval_stage === "hr_pending" ? authority.can_approve_hr : authority.can_approve_manager;
+  const isHRStage = req.approval_stage === "hr_pending";
+  const stageLabel = isHRStage ? "HR sign-off" : "line manager";
+  const stageBadgeCls = isHRStage ? "bg-warn/15 text-warn" : "bg-accent-soft text-accent";
+  const canAct = isHRStage ? authority.can_approve_hr : authority.can_approve_manager;
+
+  const win = relWindow(req.start_date, req.end_date);
+  const ageLabel = req.submitted_at ? ageString(req.submitted_at) : "";
+
+  // Urgency: leave starting in <=3 working days = urgent; <=7 = soon.
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const startDt = new Date(req.start_date); startDt.setHours(0, 0, 0, 0);
+  const daysToStart = Math.round((startDt.getTime() - today.getTime()) / 86_400_000);
+  const urgency: { label: string; cls: string } | null =
+    daysToStart < 0 ? { label: "Already started", cls: "bg-danger/15 text-danger" } :
+    daysToStart <= 3 ? { label: `Starts in ${daysToStart}d`, cls: "bg-danger/15 text-danger" } :
+    daysToStart <= 7 ? { label: `Starts in ${daysToStart}d`, cls: "bg-warn/15 text-warn" } :
+    null;
+
+  // Stale: pending for >48h.
+  const submittedAge = req.submitted_at ? Date.now() - new Date(req.submitted_at).getTime() : 0;
+  const isStale = submittedAge > 48 * 3_600_000;
+
+  // Overlapping teammates already on/scheduled for leave in this window.
+  const overlaps = overlapPool.filter((o) =>
+    o.id !== req.id &&
+    o.start_date <= req.end_date &&
+    o.end_date   >= req.start_date,
+  );
+
+  const managerApproval = req.approvals?.find((a) => a.stage === "manager" && a.decision === "approved");
+
+  function submitReject() {
+    if (!comment.trim()) {
+      toast.error("Reason required", "Tell the requester why so they can plan accordingly.");
+      return;
+    }
+    decide.mutate({ decision: "rejected", comment: comment.trim() });
+  }
 
   return (
-    <li className="py-3 flex items-center gap-3">
-      <Avatar name={req.user_name || req.user_email} />
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-semibold text-text flex items-center gap-2">
-          {req.user_name || req.user_email}
-          <span className={`pill ${stageBadgeCls}`}>Awaiting {stageLabel}</span>
+    <li className={`bg-surface border rounded-2xl overflow-hidden ${canAct ? "border-border" : "border-border/60 opacity-80"}`}>
+      <div className="px-4 py-3">
+        <div className="flex items-start gap-3">
+          <Avatar name={req.user_name || req.user_email} />
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center flex-wrap gap-x-2 gap-y-1">
+              <span className="text-sm font-semibold text-text">{req.user_name || req.user_email}</span>
+              <span className={`pill ${stageBadgeCls} text-[11px]`}>Awaiting {stageLabel}</span>
+              {!req.paid && <span className="pill bg-muted/15 text-muted text-[10.5px]">Unpaid</span>}
+              {req.duration && req.duration !== "full_day" && (
+                <span className="pill bg-bg text-muted text-[10.5px] border border-border">
+                  {req.duration === "half_day_am" ? "Half-day AM" : "Half-day PM"}
+                </span>
+              )}
+              {urgency && <span className={`pill ${urgency.cls} text-[10.5px] font-semibold`}>{urgency.label}</span>}
+              {isStale && (
+                <span className="pill bg-danger/10 text-danger text-[10.5px] inline-flex items-center gap-1" title="Submitted more than 48h ago">
+                  <AlertTriangle size={10} /> Stale
+                </span>
+              )}
+            </div>
+
+            <div className="text-[12px] text-muted mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span className="text-text font-semibold">{req.type_name}</span>
+              <span className="inline-flex items-center gap-1">
+                <CalendarIcon size={11} /> {fmtDate(req.start_date)} → {fmtDate(req.end_date)}
+              </span>
+              <span className="font-semibold text-text">{req.days}d</span>
+              <span className={`inline-flex items-center gap-1 ${win.tone}`}>
+                <Clock size={11} /> {win.label}
+              </span>
+              {ageLabel && (
+                <span className="inline-flex items-center gap-1" title={req.submitted_at}>
+                  <Hourglass size={11} /> submitted {ageLabel}
+                </span>
+              )}
+            </div>
+
+            {req.reason && (
+              <div className="text-sm text-text mt-1.5 line-clamp-2" title={req.reason}>
+                "{req.reason}"
+              </div>
+            )}
+
+            {/* Conflict signal — visible without expanding so approvers don't double-book a team */}
+            {overlaps.length > 0 && (
+              <div className="mt-2 inline-flex items-center gap-1.5 text-[11px] text-warn bg-warn/10 border border-warn/20 px-2 py-1 rounded">
+                <AlertTriangle size={11} />
+                <span>
+                  Overlaps with {overlaps.length} other {overlaps.length === 1 ? "person" : "people"}
+                  {": "}
+                  {overlaps.slice(0, 2).map((o) => (o.user_name || o.user_email).split(" ")[0]).join(", ")}
+                  {overlaps.length > 2 && ` +${overlaps.length - 2}`}
+                </span>
+              </div>
+            )}
+
+            <div className="mt-2"><StageStrip r={req} /></div>
+          </div>
+
+          <div className="flex flex-col items-end gap-1.5 shrink-0">
+            <button
+              onClick={() => setExpanded((p) => !p)}
+              className="text-[11px] text-muted hover:text-text inline-flex items-center gap-0.5"
+            >
+              {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              {expanded ? "Less" : "Details"}
+            </button>
+            {canAct ? (
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setRejectMode((p) => { setExpanded(true); return !p; })}
+                  disabled={decide.isPending}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-full bg-danger/10 text-danger hover:bg-danger/20"
+                >
+                  Reject
+                </button>
+                <button
+                  onClick={() => decide.mutate({ decision: "approved", comment: comment.trim() || undefined })}
+                  disabled={decide.isPending}
+                  className="text-xs font-semibold px-3 py-1.5 rounded-full bg-success/10 text-success hover:bg-success/20"
+                >
+                  Approve
+                </button>
+              </div>
+            ) : (
+              <span className="text-[11px] text-muted italic">Waiting on {isHRStage ? "HR" : "line manager"}</span>
+            )}
+          </div>
         </div>
-        <div className="text-[11px] text-muted">
-          {req.type_name} · {fmtDate(req.start_date)} → {fmtDate(req.end_date)} ({req.days}d)
-          {req.reason && ` · "${req.reason}"`}
-        </div>
+
+        {expanded && (
+          <div className="mt-3 pt-3 border-t border-border grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+            <div>
+              <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1">Reason</div>
+              <div className="text-text whitespace-pre-wrap">{req.reason || <span className="italic text-muted">No reason provided.</span>}</div>
+
+              {req.handover_notes && (
+                <>
+                  <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mt-3 mb-1">
+                    <FileText size={11} className="inline mr-1" /> Handover
+                  </div>
+                  <div className="text-text whitespace-pre-wrap">{req.handover_notes}</div>
+                </>
+              )}
+
+              {req.backup_user_name && (
+                <>
+                  <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mt-3 mb-1">Backup</div>
+                  <div className="text-text">{req.backup_user_name}</div>
+                </>
+              )}
+
+              {overlaps.length > 0 && (
+                <>
+                  <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mt-3 mb-1">Calendar overlap</div>
+                  <ul className="space-y-1">
+                    {overlaps.map((o) => (
+                      <li key={o.id} className="text-[12px] text-muted">
+                        <span className="text-text font-semibold">{o.user_name || o.user_email}</span>
+                        {" — "}{o.type_name} · {fmtDate(o.start_date)} → {fmtDate(o.end_date)}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </div>
+
+            <div>
+              <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1">Submitted</div>
+              <div className="text-text">
+                {req.submitted_at
+                  ? new Date(req.submitted_at).toLocaleString()
+                  : "—"}
+              </div>
+
+              <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mt-3 mb-1">Approvals so far</div>
+              {(!req.approvals || req.approvals.length === 0) ? (
+                <div className="text-muted italic text-[12px]">No decisions yet — you're first in line.</div>
+              ) : (
+                <ul className="space-y-1.5">
+                  {req.approvals.map((a, i) => (
+                    <li key={i} className="text-[12px]">
+                      <span className={`pill text-[10.5px] ${a.decision === "approved" ? "bg-success/15 text-success" : "bg-danger/15 text-danger"}`}>
+                        {a.stage === "manager" ? "Manager" : "HR"} {a.decision}
+                      </span>{" "}
+                      <span className="text-muted">by {a.by}</span>
+                      {a.comment && <div className="text-muted italic mt-0.5">"{a.comment}"</div>}
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {isHRStage && managerApproval && (
+                <div className="mt-3 text-[11px] text-muted">
+                  Line manager already approved — you're the final sign-off.
+                </div>
+              )}
+            </div>
+
+            {canAct && (
+              <div className="md:col-span-2">
+                <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1">
+                  {rejectMode ? "Reason for rejection (required)" : "Optional note"}
+                </div>
+                <textarea
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  rows={2}
+                  placeholder={rejectMode
+                    ? "e.g. Conflicts with the QBR week — please reschedule to the following week."
+                    : "Add an optional note the requester will see…"}
+                  className="input resize-none"
+                />
+                <div className="flex justify-end gap-2 mt-2">
+                  {rejectMode ? (
+                    <>
+                      <button
+                        onClick={() => { setRejectMode(false); setComment(""); }}
+                        className="text-xs font-semibold px-3 py-1.5 rounded-full text-muted hover:text-text"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={submitReject}
+                        disabled={decide.isPending}
+                        className="text-xs font-semibold px-3 py-1.5 rounded-full bg-danger text-white hover:bg-danger/90 disabled:opacity-60"
+                      >
+                        Confirm reject
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => decide.mutate({ decision: "approved", comment: comment.trim() || undefined })}
+                      disabled={decide.isPending}
+                      className="text-xs font-semibold px-3 py-1.5 rounded-full bg-success/15 text-success hover:bg-success/25 inline-flex items-center gap-1"
+                    >
+                      <CheckCircle2 size={12} /> Approve with note
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
-      {canAct ? (
-        <>
-          <button
-            onClick={() => decide.mutate({ decision: "rejected" })}
-            disabled={decide.isPending}
-            className="text-xs font-semibold px-3 py-1.5 rounded-full bg-danger/10 text-danger hover:bg-danger/20"
-          >
-            Reject
-          </button>
-          <button
-            onClick={() => decide.mutate({ decision: "approved" })}
-            disabled={decide.isPending}
-            className="text-xs font-semibold px-3 py-1.5 rounded-full bg-success/10 text-success hover:bg-success/20"
-          >
-            Approve
-          </button>
-        </>
-      ) : (
-        <span className="text-[11px] text-muted italic">Waiting on someone else</span>
-      )}
     </li>
   );
 }
