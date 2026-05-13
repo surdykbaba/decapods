@@ -570,28 +570,73 @@ function UpcomingEventsBanner() {
       });
     });
 
-    (data.new_joiners ?? []).forEach((j) => {
-      const joined = new Date(j.joined_at);
-      const days = Math.round((now - joined.getTime()) / day);
+    // New joiners — when there are 3+ within the spotlight window, collapse
+    // them into a single "N new joiners" pill instead of stamping the banner
+    // with four identical-looking welcome rows. Keeps the strip readable on
+    // bigger teams without losing the signal.
+    const joiners = data.new_joiners ?? [];
+    if (joiners.length >= 3) {
+      const first = joiners[0];
       out.push({
-        key: "join-" + j.id,
+        key: "joiners-many",
         emoji: "👋",
-        title: <><span className="font-bold">{j.name || j.email}</span> just joined</>,
-        when: days <= 0 ? "today" : `${days}d ago`,
-        avatar: { name: j.name, email: j.email },
-        whenSort: -1 + days * 0.01, // joiners always pin to the front
+        title: <><span className="font-bold">{joiners.length} new joiners</span> this week</>,
+        when: "tap Members to meet them",
+        avatar: { name: first.name, email: first.email },
+        whenSort: -1, // pinned to the front
       });
-    });
+    } else {
+      joiners.forEach((j) => {
+        const joined = new Date(j.joined_at);
+        const days = Math.round((now - joined.getTime()) / day);
+        out.push({
+          key: "join-" + j.id,
+          emoji: "👋",
+          title: <><span className="font-bold">{j.name || j.email}</span> just joined</>,
+          when: days <= 0 ? "today" : `${days}d ago`,
+          avatar: { name: j.name, email: j.email },
+          whenSort: -1 + days * 0.01, // joiners pin to the front
+        });
+      });
+    }
 
     return out.sort((a, b) => a.whenSort - b.whenSort).slice(0, 4);
   }, [data]);
 
-  if (events.length === 0) return null;
+  // Dismissal — every member can hide the banner. We remember the dismissal
+  // in localStorage keyed by a hash of the *current event set*, so the
+  // banner only stays hidden as long as the contents stay the same. The
+  // moment a new event lands (a new joiner, an anniversary nearing) the
+  // hash changes and the banner re-appears — they're not silenced forever.
+  const eventsKey = useMemo(() => events.map((e) => e.key).sort().join("|"), [events]);
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => {
+    if (!eventsKey) { setHidden(false); return; }
+    setHidden(localStorage.getItem("campfire-upcoming-dismissed") === eventsKey);
+  }, [eventsKey]);
+  function dismiss() {
+    localStorage.setItem("campfire-upcoming-dismissed", eventsKey);
+    setHidden(true);
+  }
+
+  if (events.length === 0 || hidden) return null;
 
   return (
     <div className="relative overflow-hidden rounded-3xl shadow-soft text-white" style={{ background: "#107B97" }}>
       <div aria-hidden className="absolute -top-10 -right-10 w-40 h-40 rounded-full bg-white/10 pointer-events-none" />
       <div aria-hidden className="absolute -bottom-12 -left-8 w-44 h-44 rounded-full bg-white/5 pointer-events-none" />
+
+      {/* Dismiss — visible to every member. Persists until a new event lands
+          in the set, at which point it re-surfaces (see eventsKey above). */}
+      <button
+        type="button"
+        onClick={dismiss}
+        className="absolute top-3 right-3 z-10 w-7 h-7 rounded-full bg-white/10 hover:bg-white/25 text-white/85 hover:text-white inline-flex items-center justify-center transition-colors"
+        aria-label="Hide what's coming up"
+        title="Hide this — it'll come back when something new lands"
+      >
+        <X size={14} />
+      </button>
 
       <div className="relative p-4 sm:p-5">
         <div className="flex items-center gap-2 mb-3">
