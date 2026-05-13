@@ -33,7 +33,14 @@ import {
 
 type Member = { id: string; name: string; email: string; avatar_url?: string };
 
-type Reaction = { emoji: string; count: number; mine: boolean };
+type Reaction = {
+  emoji: string;
+  count: number;
+  mine: boolean;
+  // Names of the people who reacted with this emoji (oldest-first, capped
+  // at 10 server-side). Drives the hover tooltip on the chip.
+  users?: string[];
+};
 
 type Post = {
   id: string;
@@ -1356,6 +1363,68 @@ function CommentsThread({ postId }: { postId: string }) {
   );
 }
 
+// ReactionChip — one emoji + count pill with a hover-revealed tooltip
+// listing the people who reacted. Names come from the server (up to 10);
+// anything beyond renders as "+N more" so popular reactions don't blow
+// the popover height.
+function ReactionChip({
+  reaction, onClick,
+}: {
+  reaction: Reaction;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
+}) {
+  const [hover, setHover] = useState(false);
+  const users = reaction.users ?? [];
+  const overflow = Math.max(0, reaction.count - users.length);
+  return (
+    <span
+      className="relative inline-flex"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onFocus={() => setHover(true)}
+      onBlur={() => setHover(false)}
+    >
+      <button
+        onClick={onClick}
+        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[12px] ${
+          reaction.mine ? "bg-accent-soft border-accent text-accent" : "bg-bg/30 border-border text-text hover:bg-bg/60"
+        }`}
+      >
+        <span>{isStickerCode(reaction.emoji) ? <AnimatedSticker code={reaction.emoji} size={14} /> : reaction.emoji}</span>
+        <span className="font-semibold">{reaction.count}</span>
+      </button>
+      {hover && users.length > 0 && (
+        <div
+          role="tooltip"
+          className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-50 min-w-[140px] max-w-[240px] bg-surface border border-border rounded-xl shadow-card px-3 py-2 text-[12px] pointer-events-none"
+        >
+          <div className="inline-flex items-center gap-1.5 font-bold text-text mb-1">
+            <span className="text-base leading-none">
+              {isStickerCode(reaction.emoji) ? <AnimatedSticker code={reaction.emoji} size={14} /> : reaction.emoji}
+            </span>
+            <span className="text-muted font-medium">
+              {reaction.count} {reaction.count === 1 ? "reaction" : "reactions"}
+            </span>
+          </div>
+          <ul className="space-y-0.5">
+            {users.map((name, i) => (
+              <li key={i} className="text-text truncate">{name}</li>
+            ))}
+            {overflow > 0 && (
+              <li className="text-muted italic">+ {overflow} more</li>
+            )}
+          </ul>
+          {/* Down-arrow notch so the tooltip visibly anchors to the chip */}
+          <span
+            aria-hidden
+            className="absolute top-full left-1/2 -translate-x-1/2 -mt-px w-2 h-2 bg-surface border-r border-b border-border rotate-45"
+          />
+        </div>
+      )}
+    </span>
+  );
+}
+
 function ReactionStrip({
   targetType, targetId, reactions, invalidateKey, compact,
 }: {
@@ -1387,16 +1456,11 @@ function ReactionStrip({
   return (
     <div className="flex items-center gap-1 flex-wrap">
       {reactions.map((r) => (
-        <button
+        <ReactionChip
           key={r.emoji}
+          reaction={r}
           onClick={(e) => react(r.emoji, e.currentTarget)}
-          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[12px] ${
-            r.mine ? "bg-accent-soft border-accent text-accent" : "bg-bg/30 border-border text-text hover:bg-bg/60"
-          }`}
-        >
-          <span>{isStickerCode(r.emoji) ? <AnimatedSticker code={r.emoji} size={14} /> : r.emoji}</span>
-          <span className="font-semibold">{r.count}</span>
-        </button>
+        />
       ))}
       <div className="relative">
         <button

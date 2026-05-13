@@ -588,25 +588,42 @@ func (h *Campfire) ToggleReaction(c *gin.Context) {
 }
 
 type reactionSummary struct {
-	Emoji string `json:"emoji"`
-	Count int    `json:"count"`
-	Mine  bool   `json:"mine"`
+	Emoji string   `json:"emoji"`
+	Count int      `json:"count"`
+	Mine  bool     `json:"mine"`
+	// Names of people who reacted with this emoji, oldest-first. We cap
+	// the array at 10 in the SQL to keep payloads sane on extremely
+	// popular reactions; the count above is the canonical truth.
+	Users []string `json:"users"`
 }
 
 // loadReactions returns a map of target_id → []reactionSummary for the given
-// IDs. Returns an empty map if ids is empty.
+// IDs. Returns an empty map if ids is empty. The summary now includes the
+// names of the reactors (up to 10) so the SPA can render the "who reacted"
+// tooltip without a second round-trip.
 func loadReactions(ctx context.Context, db *pgxpool.Pool, targetType string, ids []uuid.UUID, userID uuid.UUID) map[uuid.UUID][]reactionSummary {
 	out := map[uuid.UUID][]reactionSummary{}
 	if len(ids) == 0 {
 		return out
 	}
 	rows, err := db.Query(ctx, `
-		SELECT target_id, emoji, COUNT(*)::int,
-		       BOOL_OR(user_id = $1) AS mine
-		FROM campfire_reactions
-		WHERE target_type=$2 AND target_id = ANY($3)
-		GROUP BY target_id, emoji
-		ORDER BY target_id, emoji`,
+		WITH grouped AS (
+		  SELECT cr.target_id, cr.emoji,
+		         COUNT(*)::int AS cnt,
+		         BOOL_OR(cr.user_id = $1) AS mine,
+		         array_agg(
+		           COALESCE(NULLIF(u.full_name,''), u.email::text, '')
+		           ORDER BY cr.created_at
+		         ) FILTER (WHERE u.id IS NOT NULL) AS reactors
+		    FROM campfire_reactions cr
+		    LEFT JOIN users u ON u.id = cr.user_id
+		   WHERE cr.target_type=$2 AND cr.target_id = ANY($3)
+		   GROUP BY cr.target_id, cr.emoji
+		)
+		SELECT target_id, emoji, cnt, mine,
+		       COALESCE(reactors[1:10], '{}')
+		  FROM grouped
+		 ORDER BY target_id, emoji`,
 		userID, targetType, ids)
 	if err != nil {
 		return out
@@ -615,7 +632,12 @@ func loadReactions(ctx context.Context, db *pgxpool.Pool, targetType string, ids
 	for rows.Next() {
 		var tid uuid.UUID
 		var r reactionSummary
-		if err := rows.Scan(&tid, &r.Emoji, &r.Count, &r.Mine); err == nil {
+		var reactors []string
+		if err := rows.Scan(&tid, &r.Emoji, &r.Count, &r.Mine, &reactors); err == nil {
+			r.Users = reactors
+			if r.Users == nil {
+				r.Users = []string{}
+			}
 			out[tid] = append(out[tid], r)
 		}
 	}
