@@ -1546,25 +1546,83 @@ function TeamRooms({ isAdmin }: { isAdmin: boolean }) {
     setMobileView("room");
   };
 
+  // Channel sort — three modes. "Smart" is the default and what the
+  // sidebar shows when nothing's been picked.
+  //   smart  — composite score (recency × activity × members). The
+  //            most engaging channels float up regardless of which
+  //            metric is strongest.
+  //   recent — purely by last_message_at desc. Useful when the user
+  //            wants to see what just happened, not what's busy.
+  //   az     — alphabetical fallback for muscle memory.
+  // The default channel always pins to the top of the Workspace group
+  // regardless of mode — it's the org-wide signal so burying it would
+  // hide announcements.
+  type ChannelSort = "smart" | "recent" | "az";
+  const [channelSort, setChannelSort] = useState<ChannelSort>(() => {
+    const v = localStorage.getItem("campfire-channel-sort");
+    return (v === "smart" || v === "recent" || v === "az") ? v : "smart";
+  });
+  function pickChannelSort(s: ChannelSort) {
+    setChannelSort(s);
+    localStorage.setItem("campfire-channel-sort", s);
+  }
+
+  // engagementScore — composite "how lively is this channel" rank. Bigger
+  // is more engaging.
+  //   • recency bucket: <1h = 100, <24h = 60, <7d = 25, <30d = 8, else 0.
+  //     Strong primary signal — a channel with traffic today should beat
+  //     a sleepier popular one.
+  //   • lifetime message count, log-scaled so a single bursty channel
+  //     doesn't dominate forever.
+  //   • member count, log-scaled — bigger rooms get a small tail boost.
+  function engagementScore(r: Room, now: number): number {
+    const last = r.last_message_at ? new Date(r.last_message_at).getTime() : 0;
+    const ageMs = last ? now - last : Infinity;
+    const recency =
+      ageMs < 60 * 60_000           ? 100
+      : ageMs < 24 * 60 * 60_000    ? 60
+      : ageMs < 7 * 24 * 60 * 60_000  ? 25
+      : ageMs < 30 * 24 * 60 * 60_000 ? 8
+      : 0;
+    return recency
+      + Math.log10(r.message_count + 1) * 8
+      + Math.log10((r.member_count ?? 0) + 1) * 2;
+  }
+
   // Group + filter: workspace-wide (public) on top, private below. Search
-  // filters both. Sort each group by most recently active, then name.
+  // filters both. Each group is sorted by the active channelSort, with the
+  // default channel pinned to the top of Workspace.
   const groups = useMemo(() => {
     const q = search.trim().toLowerCase();
     const filtered = rooms.filter((r) => {
       if (!q) return true;
       return (r.name + " " + r.description).toLowerCase().includes(q);
     });
-    const byRecent = (a: Room, b: Room) => {
+    const now = Date.now();
+    const cmpRecent = (a: Room, b: Room) => {
       const at = a.last_message_at ? new Date(a.last_message_at).getTime() : 0;
       const bt = b.last_message_at ? new Date(b.last_message_at).getTime() : 0;
       if (bt !== at) return bt - at;
       return a.name.localeCompare(b.name);
     };
-    return {
-      workspace: filtered.filter((r) => !r.is_private).sort(byRecent),
-      private:   filtered.filter((r) =>  r.is_private).sort(byRecent),
+    const cmpSmart = (a: Room, b: Room) => {
+      const diff = engagementScore(b, now) - engagementScore(a, now);
+      if (diff !== 0) return diff;
+      return cmpRecent(a, b);
     };
-  }, [rooms, search]);
+    const cmpAZ = (a: Room, b: Room) => a.name.localeCompare(b.name);
+    const cmp = channelSort === "recent" ? cmpRecent : channelSort === "az" ? cmpAZ : cmpSmart;
+    // Pin the default channel first within Workspace.
+    const workspace = filtered.filter((r) => !r.is_private).sort((a, b) => {
+      if (a.is_default && !b.is_default) return -1;
+      if (b.is_default && !a.is_default) return 1;
+      return cmp(a, b);
+    });
+    return {
+      workspace,
+      private:   filtered.filter((r) =>  r.is_private).sort(cmp),
+    };
+  }, [rooms, search, channelSort]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const totalShown = groups.workspace.length + groups.private.length;
 
@@ -1578,7 +1636,7 @@ function TeamRooms({ isAdmin }: { isAdmin: boolean }) {
           <Plus size={13} /> New channel
         </button>
 
-        <div className="px-2 pb-2">
+        <div className="px-2 pb-2 space-y-1.5">
           <div className="relative">
             <SearchIcon size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
             <input
@@ -1587,6 +1645,30 @@ function TeamRooms({ isAdmin }: { isAdmin: boolean }) {
               placeholder="Search channels"
               className="w-full pl-7 pr-2 py-1.5 text-[12px] bg-bg/40 border border-border rounded-lg focus:outline-none focus:border-accent/40 no-cap"
             />
+          </div>
+          {/* Sort picker — Smart (engagement × recency, default), Recent
+              (purely last_message_at), or A-Z. Persists across visits. */}
+          <div className="flex items-center justify-end gap-1 text-[10.5px] text-muted">
+            <span className="opacity-70">Sort</span>
+            {(["smart", "recent", "az"] as const).map((s) => (
+              <button
+                key={s}
+                type="button"
+                onClick={() => pickChannelSort(s)}
+                className={`px-1.5 py-0.5 rounded font-semibold transition-colors ${
+                  channelSort === s
+                    ? "bg-accent-soft text-accent"
+                    : "hover:text-text"
+                }`}
+                title={
+                  s === "smart" ? "Most engaging first — recency × activity × members"
+                  : s === "recent" ? "Most recently active first"
+                  : "Alphabetical"
+                }
+              >
+                {s === "smart" ? "Smart" : s === "recent" ? "Recent" : "A-Z"}
+              </button>
+            ))}
           </div>
         </div>
 
