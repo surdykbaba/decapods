@@ -31,29 +31,80 @@ type Colleague = {
   avatar_url: string;
   roles: string[];
   status: string;
-  presence: "online" | "away" | "offline" | "dnd" | "leave" | string;
+  presence: "online" | "away" | "offline" | "dnd" | "leave" | "on_leave" | "focus" | "busy" | string;
   seconds_since: number;
   created_at: string;
   last_seen_at: string | null;
+  // Optional. YYYY-MM-DD. Year is preserved when the user supplies one,
+  // but the matching code only looks at month + day so privacy-conscious
+  // users can pass any sentinel year (1900, 2000) and still get the chime.
+  birthday?: string | null;
 };
 
 type Resp = { items: Colleague[] };
 
 const PRESENCE_LABEL: Record<string, string> = {
-  online:  "Online",
-  away:    "Away",
-  offline: "Offline",
-  dnd:     "Do not disturb",
-  leave:   "On leave",
+  online:   "Online",
+  away:     "Away",
+  offline:  "Offline",
+  dnd:      "Do not disturb",
+  leave:    "On leave",
+  on_leave: "On leave",
+  focus:    "In focus",
+  busy:     "Busy",
 };
 
 const PRESENCE_DOT: Record<string, string> = {
-  online:  "bg-success",
-  away:    "bg-warn",
-  offline: "bg-muted/40",
-  dnd:     "bg-danger",
-  leave:   "bg-accent",
+  online:   "bg-success",
+  away:     "bg-warn",
+  offline:  "bg-muted/40",
+  dnd:      "bg-danger",
+  leave:    "bg-accent",
+  on_leave: "bg-accent",
+  focus:    "bg-warn",
+  busy:     "bg-danger",
 };
+
+// fmtRelative — "5m ago" / "2h ago" / "3d ago". Used in the drawer's
+// presence line so the "Last seen" timestamp reads at a glance.
+function fmtRelative(iso: string): string {
+  const sec = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (sec < 60)    return `${sec}s ago`;
+  if (sec < 3600)  return `${Math.floor(sec / 60)}m ago`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+  return `${Math.floor(sec / 86400)}d ago`;
+}
+
+// birthdayState — figure out whether today is the colleague's birthday,
+// or how many days away the next one is. Only compares month + day so a
+// 1900/2000 sentinel year still gets a celebration.
+function birthdayState(iso?: string | null): { today: boolean; inDays: number; nextDate: Date } | null {
+  if (!iso) return null;
+  // Use UTC parse so DST quirks don't pull the date back a day.
+  const d = new Date(iso + (iso.length === 10 ? "T00:00:00Z" : ""));
+  if (isNaN(d.getTime())) return null;
+  const now = new Date();
+  const thisYear = new Date(now.getFullYear(), d.getUTCMonth(), d.getUTCDate());
+  const today = thisYear.toDateString() === now.toDateString();
+  let next = thisYear;
+  if (next.getTime() < new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() && !today) {
+    next = new Date(now.getFullYear() + 1, d.getUTCMonth(), d.getUTCDate());
+  }
+  const inDays = Math.round((next.getTime() - new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()) / 86_400_000);
+  return { today, inDays, nextDate: next };
+}
+
+// Kudos badge vocabulary — must match the backend's validBadges map in
+// campfire.go GiveKudo. The 'custom' option is the default so the form
+// is always sendable without forcing the user to pick a specific badge.
+const KUDOS_BADGES: { key: string; label: string; emoji: string; tone: string }[] = [
+  { key: "delivery_champion", label: "Delivery champion", emoji: "🏆", tone: "bg-success/15 text-success border-success/30" },
+  { key: "problem_solver",    label: "Problem solver",    emoji: "🧠", tone: "bg-accent-soft text-accent border-accent/30" },
+  { key: "team_player",       label: "Team player",       emoji: "🤝", tone: "bg-warn/15 text-warn border-warn/30" },
+  { key: "fast_responder",    label: "Fast responder",    emoji: "⚡",  tone: "bg-accent-soft text-accent border-accent/30" },
+  { key: "client_hero",       label: "Client hero",       emoji: "🌟", tone: "bg-success/15 text-success border-success/30" },
+  { key: "custom",            label: "Just thanks",       emoji: "🙌", tone: "bg-bg text-muted border-border" },
+];
 
 function relativeDays(iso: string): number {
   const ms = Date.now() - new Date(iso).getTime();
@@ -286,18 +337,26 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
   const qc = useQueryClient();
   const nav = useNavigate();
   const [kudosText, setKudosText] = useState("");
+  const [kudosBadge, setKudosBadge] = useState<string>("custom");
   const [sendingKudos, setSendingKudos] = useState(false);
 
   const presenceCls = PRESENCE_DOT[c.presence] ?? "bg-muted/40";
+  const onLeave = c.presence === "leave" || c.presence === "on_leave";
+  const bday = birthdayState(c.birthday);
 
-  // Send kudos — reuses the existing Campfire kudos endpoint so the
-  // recognition lands in the Recognition tab + triggers the notification
-  // outbox the same way as in-Campfire kudos.
+  // Send kudos — fixed payload (badge + message, not body) so the backend
+  // accepts it instead of rejecting on the required-badge tag. Reuses the
+  // existing Campfire kudos endpoint so the recognition lands in the
+  // Recognition tab + triggers the notification outbox the same way.
   const sendKudos = useMutation({
     mutationFn: () =>
       api("/api/v1/campfire/kudos", {
         method: "POST",
-        body: JSON.stringify({ to_user_id: c.id, body: kudosText.trim() || "Appreciating you 🙌" }),
+        body: JSON.stringify({
+          to_user_id: c.id,
+          badge:      kudosBadge,
+          message:    kudosText.trim() || "Appreciating you 🙌",
+        }),
       }),
     onMutate: () => setSendingKudos(true),
     onSettled: () => setSendingKudos(false),
@@ -305,8 +364,16 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
       qc.invalidateQueries({ queryKey: ["campfire", "kudos"] });
       toast.success("Kudos sent");
       setKudosText("");
+      setKudosBadge("custom");
     },
-    onError: (e: any) => toast.error("Couldn't send kudos", e?.message),
+    onError: (e: any) => {
+      const body = e?.body as { code?: string; error?: string } | undefined;
+      if (body?.code === "self_kudo") {
+        toast.error("Can't kudo yourself", "Recognition is for others — pick another colleague.");
+        return;
+      }
+      toast.error("Couldn't send kudos", body?.error ?? e?.message);
+    },
   });
 
   // Start a 1:1 channel — creates a private channel just between caller
@@ -346,11 +413,30 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
                 <span className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full ring-2 ring-surface ${presenceCls}`} />
               </div>
               <div className="min-w-0">
-                <div className="text-base font-extrabold text-text truncate">{c.name || c.email.split("@")[0]}</div>
+                <div className="text-base font-extrabold text-text truncate inline-flex items-center gap-2">
+                  {c.name || c.email.split("@")[0]}
+                  {/* Birthday chip — only renders today. Click takes you
+                      to the colleague drawer's kudos field with a
+                      birthday seed prefilled (handled in the section
+                      below). Always visible on the header so you
+                      don't miss it. */}
+                  {bday?.today && (
+                    <span className="pill bg-warn/15 text-warn border border-warn/30 text-[10px] uppercase tracking-wide font-bold inline-flex items-center gap-1">
+                      🎂 Birthday today
+                    </span>
+                  )}
+                </div>
                 <div className="text-[12px] text-muted truncate">{c.email}</div>
-                <div className="text-[11px] mt-1 inline-flex items-center gap-1.5">
-                  <span className={`w-2 h-2 rounded-full ${presenceCls}`} />
-                  <span className="font-semibold text-muted">{PRESENCE_LABEL[c.presence] ?? c.presence}</span>
+                <div className="text-[11px] mt-1 inline-flex items-center gap-2 flex-wrap">
+                  <span className="inline-flex items-center gap-1.5">
+                    <span className={`w-2 h-2 rounded-full ${presenceCls}`} />
+                    <span className="font-semibold text-muted">{PRESENCE_LABEL[c.presence] ?? c.presence}</span>
+                  </span>
+                  {/* "Active 5m ago" — only when offline/away, otherwise the
+                      presence dot already carries the live status. */}
+                  {c.last_seen_at && c.presence !== "online" && (
+                    <span className="text-muted/80">· last seen {fmtRelative(c.last_seen_at)}</span>
+                  )}
                 </div>
               </div>
             </div>
@@ -358,6 +444,32 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
               <XIcon size={14} />
             </button>
           </div>
+          {/* On-leave callout — gentle blue strip when the colleague is
+              away. Discourages "starting a channel" expecting an instant
+              reply without blocking the action. */}
+          {onLeave && (
+            <div className="mt-3 flex items-start gap-2 bg-accent-soft/40 border border-accent/30 rounded-xl px-3 py-2 text-[12px] text-text">
+              <span aria-hidden>✈️</span>
+              <span>
+                <span className="font-semibold">On approved leave.</span>{" "}
+                <span className="text-muted">Replies may be delayed — try the next person on the project, or email if it's urgent.</span>
+              </span>
+            </div>
+          )}
+          {/* Upcoming birthday — show within the next 14 days so it's
+              actionable ("plan a card") without being noise the rest of
+              the year. */}
+          {bday && !bday.today && bday.inDays <= 14 && (
+            <div className="mt-3 flex items-start gap-2 bg-warn/10 border border-warn/30 rounded-xl px-3 py-2 text-[12px] text-text">
+              <span aria-hidden>🎂</span>
+              <span>
+                <span className="font-semibold">
+                  Birthday {bday.inDays === 1 ? "tomorrow" : `in ${bday.inDays} days`}
+                </span>
+                <span className="text-muted"> · {bday.nextDate.toLocaleDateString(undefined, { day: "numeric", month: "long" })}</span>
+              </span>
+            </div>
+          )}
         </header>
 
         {/* Quick actions */}
@@ -377,15 +489,40 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
           </a>
         </div>
 
-        {/* Kudos */}
+        {/* Kudos — badge picker + message. The backend requires a badge
+            tag; "Just thanks" is the no-specific-badge default that's
+            always sendable. */}
         <div className="px-5 py-4 flex-1 overflow-y-auto">
           <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-2 inline-flex items-center gap-1.5">
             <Award size={11} /> Send kudos
           </div>
+          <div className="grid grid-cols-3 gap-1.5 mb-2">
+            {KUDOS_BADGES.map((b) => {
+              const active = kudosBadge === b.key;
+              return (
+                <button
+                  key={b.key}
+                  type="button"
+                  onClick={() => setKudosBadge(b.key)}
+                  className={`inline-flex items-center justify-center gap-1 text-[10.5px] font-bold uppercase tracking-wide px-2 py-1.5 rounded-lg border transition-all ${
+                    active ? b.tone + " scale-[1.02]" : "border-border text-muted hover:text-text bg-bg/40"
+                  }`}
+                  title={b.label}
+                >
+                  <span className="text-[12px] leading-none">{b.emoji}</span>
+                  <span className="truncate">{b.label}</span>
+                </button>
+              );
+            })}
+          </div>
           <textarea
             value={kudosText}
             onChange={(e) => setKudosText(e.target.value)}
-            placeholder={`Tell ${(c.name || c.email).split(" ")[0]} what they crushed lately…`}
+            placeholder={
+              bday?.today
+                ? `Happy birthday ${(c.name || c.email).split(" ")[0]}! 🎂`
+                : `Tell ${(c.name || c.email).split(" ")[0]} what they crushed lately…`
+            }
             className="input min-h-[70px] text-[13px]"
           />
           <button
@@ -410,6 +547,16 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
               <li><span className="text-muted font-semibold">{fmtJoined(c.created_at)}</span></li>
               {c.last_seen_at && (
                 <li><span className="text-muted font-semibold">Last seen · </span>{new Date(c.last_seen_at).toLocaleString()}</li>
+              )}
+              {/* Birthday line — only renders when the user has shared one.
+                  Privacy-friendly: never shown year unless the source
+                  string includes a non-sentinel year. */}
+              {bday && (
+                <li>
+                  <span className="text-muted font-semibold">Birthday · </span>
+                  {bday.nextDate.toLocaleDateString(undefined, { day: "numeric", month: "long" })}
+                  {bday.today && <span className="ml-1.5 text-warn font-semibold">· today 🎂</span>}
+                </li>
               )}
             </ul>
           </div>

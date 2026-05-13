@@ -54,6 +54,7 @@ func (h *Members) List(c *gin.Context) {
 		       u.last_login_at, u.created_at, u.last_seen_at,
 		       u.manual_status, u.manual_status_until,
 		       COALESCE(u.avatar_url, ''),
+		       COALESCE(u.birthday, '') AS birthday,
 		       COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles
 		FROM users u
 		LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -83,22 +84,29 @@ func (h *Members) List(c *gin.Context) {
 	out := []gin.H{}
 	for rows.Next() {
 		var (
-			id                          uuid.UUID
-			email, name, status, avatar string
-			mfa, mfaRequired            bool
-			lastLogin, lastSeen         *time.Time
-			manual                      *string
-			manualUntil                 *time.Time
-			created                     time.Time
-			roles                       []string
+			id                                  uuid.UUID
+			email, name, status, avatar, birthday string
+			mfa, mfaRequired                    bool
+			lastLogin, lastSeen                 *time.Time
+			manual                              *string
+			manualUntil                         *time.Time
+			created                             time.Time
+			roles                               []string
 		)
 		if err := rows.Scan(&id, &email, &name, &status, &mfa, &mfaRequired, &lastLogin, &created, &lastSeen,
-			&manual, &manualUntil, &avatar, &roles); err == nil {
+			&manual, &manualUntil, &avatar, &birthday, &roles); err == nil {
 			// Single source of truth for presence — see derivePresence in me.go.
 			presence := derivePresence(manual, manualUntil, lastSeen)
 			var sinceSec int64 = -1
 			if lastSeen != nil {
 				sinceSec = int64(time.Since(*lastSeen).Seconds())
+			}
+			// Birthday is text (YYYY-MM-DD or empty). We return nil when
+			// unset so the SPA can treat "missing" as "opt-out" rather
+			// than rendering a stray "Birthday · " line for everyone.
+			var bday any = nil
+			if birthday != "" {
+				bday = birthday
 			}
 			out = append(out, gin.H{
 				"id": id, "email": email, "name": name, "status": status,
@@ -110,6 +118,7 @@ func (h *Members) List(c *gin.Context) {
 				"presence":     presence,
 				"seconds_since": sinceSec,
 				"avatar_url":    avatar,
+				"birthday":      bday,
 			})
 		}
 	}
