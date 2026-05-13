@@ -5,6 +5,7 @@ import {
   Sun, Moon, LogOut, ChevronDown,
   Handshake, UserCog, Folder, Plane,
   ShieldCheck, Menu, X, ClipboardCheck, Lock,
+  Smile,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useMemo, useState } from "react";
@@ -28,6 +29,10 @@ type NavItem = {
 
 const navTop: NavItem[] = [
   { section: "my_work",      to: "/my-work",      label: "My Accubin",   icon: UserCheck },
+  // Colleagues — the social-side directory. Every member sees this;
+  // Members (UserCog, below) is the HR-side admin tool gated by
+  // governance:write. Same data source, different lens.
+  { section: "colleagues",   to: "/colleagues",   label: "Colleagues",   icon: Smile },
   { section: "pipeline",     to: "/pipeline",     label: "Pipeline",     icon: Briefcase },
   { section: "projects",     to: "/projects",     label: "Projects",     icon: FolderKanban },
   { section: "workforce",    to: "/workforce",    label: "Workforce",    icon: Users },

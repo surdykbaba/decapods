@@ -26,6 +26,7 @@ var NavSections = []struct {
 	Label string `json:"label"`
 }{
 	{"my_work",       "My Accubin"},
+	{"colleagues",    "Colleagues"},
 	{"pipeline",      "Pipeline"},
 	{"projects",      "Projects"},
 	{"workforce",     "Workforce"},
@@ -49,6 +50,11 @@ var NavSections = []struct {
 // workspace is usable without visiting Settings first.
 var DefaultRoleVisibility = map[string][]string{
 	"my_work":      {"*"}, // everyone
+	// Colleagues — the social directory. Visible to every member; the
+	// handler returns the same dataset as /api/v1/members so admins can
+	// continue using the HR-side Members page for governance work while
+	// non-admins get a friendlier surface.
+	"colleagues":   {"*"},
 	"pipeline":     {"super_admin", "ceo", "coo", "business_dev", "delivery_manager", "project_manager", "finance"},
 	"projects":     {"super_admin", "ceo", "coo", "delivery_manager", "project_manager", "engineer", "designer", "qa", "finance", "auditor", "business_dev"},
 	"workforce":    {"super_admin", "ceo", "coo", "hr", "hr_manager", "delivery_manager", "project_manager", "finance"},

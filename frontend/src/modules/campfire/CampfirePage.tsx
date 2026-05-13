@@ -5,6 +5,7 @@
 // real complexity (e.g. rooms become a full chat client with threads), it can
 // migrate to its own file without touching the public surface (CampfirePage).
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -519,6 +520,10 @@ type UpcomingEvent = {
   when: string;
   avatar: { name: string; email: string };
   whenSort: number; // days from today; smaller = sooner
+  // Optional click target. When set, the pill renders as a link so the
+  // user can drill into the relevant section (e.g. "5 new joiners" →
+  // /colleagues?filter=new).
+  href?: string;
 };
 
 function fmtWhenDays(days: number): string {
@@ -581,9 +586,10 @@ function UpcomingEventsBanner() {
         key: "joiners-many",
         emoji: "👋",
         title: <><span className="font-bold">{joiners.length} new joiners</span> this week</>,
-        when: "tap Members to meet them",
+        when: "meet them on Colleagues",
         avatar: { name: first.name, email: first.email },
         whenSort: -1, // pinned to the front
+        href: "/colleagues?filter=new",
       });
     } else {
       joiners.forEach((j) => {
@@ -596,6 +602,7 @@ function UpcomingEventsBanner() {
           when: days <= 0 ? "today" : `${days}d ago`,
           avatar: { name: j.name, email: j.email },
           whenSort: -1 + days * 0.01, // joiners pin to the front
+          href: "/colleagues?filter=new",
         });
       });
     }
@@ -656,22 +663,31 @@ function UpcomingEventsBanner() {
 
         {!collapsed && (
           <div className="flex flex-wrap gap-2">
-            {events.map((e) => (
-              <div
-                key={e.key}
-                className="inline-flex items-center gap-2 bg-white/12 hover:bg-white/20 transition-colors border border-white/20 rounded-2xl pl-1.5 pr-3 py-1.5 min-w-0"
-                title={`${typeof e.title === "string" ? e.title : ""} · ${e.when}`}
-              >
-                <span className="ring-2 ring-white/30 rounded-full block shrink-0">
-                  <Avatar name={e.avatar.name} email={e.avatar.email} size={24} />
-                </span>
-                <span className="text-[13px] leading-tight truncate max-w-[260px]">
-                  <span className="mr-1">{e.emoji}</span>
-                  {e.title}
-                </span>
-                <span className="text-[11px] font-semibold text-white/80 shrink-0">· {e.when}</span>
-              </div>
-            ))}
+            {events.map((e) => {
+              const Inner = (
+                <>
+                  <span className="ring-2 ring-white/30 rounded-full block shrink-0">
+                    <Avatar name={e.avatar.name} email={e.avatar.email} size={24} />
+                  </span>
+                  <span className="text-[13px] leading-tight truncate max-w-[260px]">
+                    <span className="mr-1">{e.emoji}</span>
+                    {e.title}
+                  </span>
+                  <span className="text-[11px] font-semibold text-white/80 shrink-0">· {e.when}</span>
+                </>
+              );
+              const cls = "inline-flex items-center gap-2 bg-white/12 hover:bg-white/20 transition-colors border border-white/20 rounded-2xl pl-1.5 pr-3 py-1.5 min-w-0";
+              const titleStr = `${typeof e.title === "string" ? e.title : ""} · ${e.when}`;
+              return e.href ? (
+                <Link key={e.key} to={e.href} className={cls + " hover:border-white/40 press-fx"} title={titleStr}>
+                  {Inner}
+                </Link>
+              ) : (
+                <div key={e.key} className={cls} title={titleStr}>
+                  {Inner}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
