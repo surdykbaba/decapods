@@ -82,6 +82,11 @@ const STATUS_META: Record<OKR["status"], { label: string; cls: string }> = {
 
 export function OKRsPage() {
   const { user } = useAuth();
+  // Admin = anyone who has the governance:write surface (CEO / COO / HR / super_admin).
+  // Drives the empty-state CTA: admins get a "Create cycle" button right
+  // here, non-admins get a clearer "ask leadership" nudge that lists the
+  // actual admins to ping.
+  const isAdmin = !!user?.roles?.some((r) => r === "super_admin" || r === "ceo" || r === "coo" || r === "hr" || r === "hr_manager");
   const [tab, setTab] = useState<"mine" | "workspace">("mine");
   const [activeCycleId, setActiveCycleId] = useState<string | null>(null);
   const [editing, setEditing] = useState<OKR | null>(null);
@@ -89,6 +94,10 @@ export function OKRsPage() {
   // Phase 2 — check-in dialog target + history-popover target.
   const [checkingIn, setCheckingIn] = useState<OKR | null>(null);
   const [historyFor, setHistoryFor] = useState<OKR | null>(null);
+  // Inline cycle creation. Admins land on a tasty empty state with a
+  // single button that opens this dialog pre-filled with the current
+  // quarter — no "ask an admin" handwave, no Settings detour.
+  const [creatingCycle, setCreatingCycle] = useState(false);
 
   const { data: cyclesData } = useQuery<{ items: Cycle[] }>({
     queryKey: ["okrs", "cycles"],
@@ -184,16 +193,21 @@ export function OKRsPage() {
         ))}
       </div>
 
-      {/* Cycle empty-state — show the admin a CTA when no cycles exist */}
+      {/* Cycle empty-state — actually actionable. Admins get a one-click
+          "Create your first cycle" button pre-filled with the current
+          quarter; non-admins get a clearer "ping leadership" message
+          that surfaces the people they can actually ask. Worked example
+          underneath so first-time users see what an OKR is, not just
+          that the page is blank. */}
       {cycles.length === 0 && (
-        <section className="bg-surface border border-border rounded-2xl p-8 text-center">
-          <Target size={32} className="mx-auto text-muted mb-3" />
-          <div className="text-base font-bold text-text">No OKR cycles yet</div>
-          <p className="text-sm text-muted mt-1 max-w-md mx-auto">
-            Ask an admin to create the first quarterly cycle in <code className="text-xs">Settings → OKR cycles</code>
-            (coming next), or use the Workspace API to seed one.
-          </p>
-        </section>
+        <OKRsEmptyState
+          isAdmin={isAdmin}
+          onCreateCycle={() => setCreatingCycle(true)}
+        />
+      )}
+
+      {creatingCycle && (
+        <CycleDialog onClose={() => setCreatingCycle(false)} />
       )}
 
       {/* Body */}
@@ -275,6 +289,258 @@ export function OKRsPage() {
 // ObjectiveCard — one objective + its KRs. Inline progress bar driven
 // by the avg of the KR progress percentages (objectives don't carry
 // their own quantitative target in v1).
+// OKRsEmptyState — the "no cycles yet" surface. Designed to actually
+// teach the concept (a 3-row mini example showing how Objective + Key
+// Results compose) and put the next action one click away.
+function OKRsEmptyState({ isAdmin, onCreateCycle }: { isAdmin: boolean; onCreateCycle: () => void }) {
+  // Surface the workspace admins so a non-admin reader knows exactly who
+  // to ping. We only pull the picker list when we actually need it (i.e.
+  // when the user is NOT admin and the page would otherwise read as a
+  // dead-end). Cheap query, served from the existing members endpoint.
+  const { data: members } = useQuery<{ items: { id: string; name: string; email: string; roles: string[]; status: string }[] }>({
+    queryKey: ["okrs-empty-admins"],
+    queryFn: () => api("/api/v1/members"),
+    enabled: !isAdmin,
+    staleTime: 10 * 60_000,
+  });
+  const admins = (members?.items ?? []).filter((m) =>
+    m.status === "active"
+    && m.roles.some((r) => r === "super_admin" || r === "ceo" || r === "coo" || r === "hr" || r === "hr_manager"),
+  ).slice(0, 4);
+
+  return (
+    <section className="bg-surface border border-border rounded-2xl overflow-hidden">
+      {/* Hero band — accent gradient with the Target icon. Sets the tone
+          (this is performance management, not a system error). */}
+      <div className="relative px-6 sm:px-10 py-8 sm:py-10 text-center" style={{ background: "linear-gradient(135deg, rgba(15,123,151,0.08), rgba(15,123,151,0.02))" }}>
+        <div className="mx-auto w-14 h-14 rounded-2xl bg-accent grid place-items-center text-white shadow-soft mb-4">
+          <Target size={26} strokeWidth={2.4} />
+        </div>
+        <h2 className="text-xl font-extrabold text-text">
+          {isAdmin ? "Spin up your first OKR cycle" : "Your team hasn't started an OKR cycle yet"}
+        </h2>
+        <p className="text-[13px] text-muted mt-2 max-w-md mx-auto leading-relaxed">
+          {isAdmin
+            ? "An OKR cycle is the quarter (or month, sprint, half — your call) that frames every objective. Pick a window and we'll do the rest."
+            : "OKRs let leadership set quarterly objectives and let you log key-result progress against them. Ask one of the admins below to open the first cycle and you'll start seeing the workspace's goals here."}
+        </p>
+        {isAdmin ? (
+          <button
+            type="button"
+            onClick={onCreateCycle}
+            className="mt-5 inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-5 py-2.5 rounded-full hover:bg-[rgb(var(--accent-hover))] shadow-soft press-fx"
+          >
+            <Plus size={14} /> Create your first cycle
+          </button>
+        ) : admins.length > 0 ? (
+          <div className="mt-5 inline-flex items-center gap-2 flex-wrap justify-center">
+            <span className="text-[11.5px] uppercase tracking-wider font-bold text-muted">Ping</span>
+            {admins.map((a) => (
+              <a
+                key={a.id}
+                href={`mailto:${a.email}?subject=Can%20we%20open%20the%20first%20OKR%20cycle%3F`}
+                className="inline-flex items-center gap-1.5 text-[12px] font-semibold px-2.5 py-1 rounded-full bg-surface border border-border hover:border-accent/50 hover:text-accent transition-colors"
+              >
+                {a.name || a.email}
+              </a>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-5 text-[12px] text-muted italic">No admins found in this workspace yet.</div>
+        )}
+      </div>
+
+      {/* Worked example — actually shows what an OKR is. Three quick rows
+          that mimic the real cards once cycles exist. Reads as a teaser,
+          not a screenshot. */}
+      <div className="px-6 sm:px-10 py-6 border-t border-border space-y-4">
+        <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted">Worked example</div>
+        <div className="border border-border rounded-xl p-4 bg-bg/40">
+          <div className="flex items-start gap-2.5">
+            <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-accent-soft text-accent shrink-0 font-bold text-[12px]">O</span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13.5px] font-bold text-text">Ship the new payroll module to all clients</div>
+              <div className="text-[11.5px] text-muted mt-0.5">Quarterly objective · owned by Engineering</div>
+            </div>
+            <span className="pill bg-success/15 text-success text-[10px] uppercase tracking-wider">Confidence · Green</span>
+          </div>
+          <div className="mt-3 pl-9 space-y-2">
+            <div className="flex items-center gap-3 text-[12.5px]">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-md bg-accent-soft text-accent shrink-0 font-bold text-[10px]">KR</span>
+              <span className="flex-1 text-text">Move <span className="font-semibold">12 tenants</span> to v2 by 30 Jun</span>
+              <span className="text-[10.5px] font-semibold text-muted tabular-nums">8 / 12 · 67%</span>
+            </div>
+            <div className="flex items-center gap-3 text-[12.5px]">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-md bg-accent-soft text-accent shrink-0 font-bold text-[10px]">KR</span>
+              <span className="flex-1 text-text">Keep monthly support tickets under <span className="font-semibold">25</span></span>
+              <span className="text-[10.5px] font-semibold text-muted tabular-nums">18 / 25 · on track</span>
+            </div>
+            <div className="flex items-center gap-3 text-[12.5px]">
+              <span className="inline-flex items-center justify-center w-5 h-5 rounded-md bg-accent-soft text-accent shrink-0 font-bold text-[10px]">KR</span>
+              <span className="flex-1 text-text">NPS ≥ <span className="font-semibold">40</span> across the cohort</span>
+              <span className="text-[10.5px] font-semibold text-warn tabular-nums">32 / 40 · 80%</span>
+            </div>
+          </div>
+        </div>
+        <p className="text-[12px] text-muted italic">
+          That's it — one objective, a handful of measurable key results, and a weekly check-in to keep the confidence honest.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+// CycleDialog — admin's "open a new cycle" form. Pre-fills the name with
+// the current quarter ("Q2 2026"), start/end with that quarter's window,
+// and status with 'active' so the first cycle isn't stuck in planning.
+// Custom dates / names override the suggestion — the dialog isn't trying
+// to be clever, just helpful on first paint.
+function CycleDialog({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const today = new Date();
+  const year = today.getFullYear();
+  const q = Math.floor(today.getMonth() / 3) + 1;
+  const qStart = new Date(year, (q - 1) * 3, 1);
+  const qEnd = new Date(year, q * 3, 0);
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+
+  const [name, setName] = useState(`Q${q} ${year}`);
+  const [starts, setStarts] = useState(iso(qStart));
+  const [ends, setEnds] = useState(iso(qEnd));
+  const [status, setStatus] = useState<"active" | "planning" | "closed">("active");
+  const [preset, setPreset] = useState<"this-quarter" | "next-quarter" | "month" | "custom">("this-quarter");
+
+  function applyPreset(p: typeof preset) {
+    setPreset(p);
+    if (p === "custom") return;
+    let s: Date, e: Date, label: string;
+    if (p === "this-quarter") {
+      s = qStart; e = qEnd; label = `Q${q} ${year}`;
+    } else if (p === "next-quarter") {
+      const nq = q === 4 ? 1 : q + 1;
+      const ny = q === 4 ? year + 1 : year;
+      s = new Date(ny, (nq - 1) * 3, 1);
+      e = new Date(ny, nq * 3, 0);
+      label = `Q${nq} ${ny}`;
+    } else {
+      // Current month
+      s = new Date(year, today.getMonth(), 1);
+      e = new Date(year, today.getMonth() + 1, 0);
+      label = today.toLocaleString(undefined, { month: "long", year: "numeric" });
+    }
+    setStarts(iso(s));
+    setEnds(iso(e));
+    setName(label);
+  }
+
+  const create = useMutation({
+    mutationFn: () => api("/api/v1/okrs/cycles", {
+      method: "POST",
+      body: JSON.stringify({ name: name.trim(), starts_on: starts, ends_on: ends, status }),
+    }),
+    onSuccess: () => {
+      toast.success("Cycle created", "Now add your first objective and the key results that prove it.");
+      qc.invalidateQueries({ queryKey: ["okrs", "cycles"] });
+      onClose();
+    },
+    onError: (e: any) => toast.error("Couldn't create cycle", e?.message),
+  });
+
+  const ready = name.trim().length >= 2 && starts && ends && starts <= ends;
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md overflow-hidden">
+        <header className="px-5 py-4 border-b border-border flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[10.5px] uppercase tracking-wider text-accent font-bold">New cycle</div>
+            <h2 className="text-base font-bold text-text mt-0.5">Open an OKR window</h2>
+          </div>
+          <button onClick={onClose} className="text-muted hover:text-text"><X size={16} /></button>
+        </header>
+
+        <div className="p-5 space-y-3">
+          {/* Preset shortcuts — current quarter / next quarter / this
+              month / custom. One tap lands the dates + name. */}
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1.5">Preset</div>
+            <div className="flex flex-wrap gap-1.5">
+              {([
+                { k: "this-quarter", label: `This quarter · Q${q}` },
+                { k: "next-quarter", label: q === 4 ? `Next quarter · Q1` : `Next quarter · Q${q + 1}` },
+                { k: "month",        label: "This month" },
+                { k: "custom",       label: "Custom" },
+              ] as const).map((p) => (
+                <button
+                  key={p.k}
+                  type="button"
+                  onClick={() => applyPreset(p.k)}
+                  className={`text-[11.5px] font-semibold px-2.5 py-1 rounded-full border ${
+                    preset === p.k
+                      ? "bg-accent text-white border-accent"
+                      : "bg-bg/40 text-muted border-border hover:border-accent/40"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="block">
+            <div className="label">Name</div>
+            <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Q2 2026" />
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <div className="label">Starts on</div>
+              <input type="date" className="input" value={starts} onChange={(e) => setStarts(e.target.value)} />
+            </label>
+            <label className="block">
+              <div className="label">Ends on</div>
+              <input type="date" className="input" value={ends} onChange={(e) => setEnds(e.target.value)} />
+            </label>
+          </div>
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1.5">Status</div>
+            <div className="flex flex-wrap gap-1.5">
+              {(["active", "planning", "closed"] as const).map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => setStatus(s)}
+                  className={`text-[11.5px] font-semibold px-2.5 py-1 rounded-full border capitalize ${
+                    status === s
+                      ? "bg-accent-soft text-accent border-accent/30"
+                      : "bg-bg/40 text-muted border-border hover:border-accent/40"
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            <div className="text-[11px] text-muted mt-1">
+              <span className="font-semibold">Active</span> opens the cycle for objective + KR entry right away.
+              Pick <span className="font-semibold">planning</span> to draft objectives quietly first.
+            </div>
+          </div>
+        </div>
+        <footer className="px-4 py-3 border-t border-border flex items-center justify-end gap-2 bg-bg/30">
+          <button onClick={onClose} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg text-muted hover:text-text">Cancel</button>
+          <SmartButton
+            variant="primary"
+            disabled={!ready || create.isPending}
+            loadingLabel="Creating…"
+            onClick={() => create.mutate()}
+          >
+            <Plus size={13} /> Create cycle
+          </SmartButton>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
 function ObjectiveCard({
   objective, keyResults, canEdit, onEdit, onAddKR, onCheckin, onHistory,
 }: {
