@@ -338,13 +338,36 @@ func (h *Leave) notifyManagerStage(ctx context.Context, tid, requestID, requeste
 		return
 	}
 
-	// Requester display name for the subject line.
-	var requester string
+	// Requester display name for the subject line + their direct manager
+	// so we can prioritise that person on the approval ping. Reporting
+	// line is the canonical "ask them first" path; the broader admin
+	// pool is the safety net for unset managers / managers on leave.
+	var (
+		requester string
+		managerID *uuid.UUID
+	)
 	_ = h.db.QueryRow(ctx,
-		`SELECT COALESCE(NULLIF(full_name,''), email::text) FROM users WHERE id=$1`, requesterID,
-	).Scan(&requester)
+		`SELECT COALESCE(NULLIF(full_name,''), email::text), manager_id FROM users WHERE id=$1`, requesterID,
+	).Scan(&requester, &managerID)
 
-	// Anyone in the workspace whose role can approve at the manager stage.
+	recipients := []notifications.Recipient{}
+	// Direct manager first — only if they're an active member. If their
+	// row was disabled / deleted, fall through to the admin pool.
+	if managerID != nil {
+		var active bool
+		_ = h.db.QueryRow(ctx,
+			`SELECT status='active' AND deleted_at IS NULL FROM users WHERE id=$1`, *managerID,
+		).Scan(&active)
+		if active {
+			id := *managerID
+			recipients = append(recipients, notifications.Recipient{UserID: &id})
+		}
+	}
+
+	// Anyone in the workspace whose role can approve at the manager
+	// stage. Always queried so a manager-less user still gets approval
+	// routed somewhere; the direct manager (if any) just sits at the
+	// top of the recipient list.
 	rows, err := h.db.Query(ctx, `
 		SELECT DISTINCT u.id
 		FROM users u
@@ -354,13 +377,34 @@ func (h *Leave) notifyManagerStage(ctx context.Context, tid, requestID, requeste
 		  AND r.name IN ('super_admin','ceo','coo','delivery_manager','project_manager','line_manager')`,
 		tid)
 	if err != nil {
+		// If we at least have the direct manager, fire to them and bail.
+		if len(recipients) > 0 {
+			h.notify.Notify(ctx, notifications.Event{
+				Kind:       "leave.approval_needed",
+				TenantID:   tid,
+				Recipients: recipients,
+				Payload: map[string]any{
+					"Requester": requester,
+					"Type":      typeName,
+					"Days":      formatDays(days),
+					"Start":     start,
+					"End":       end,
+				},
+				DedupeKey: "leave.approval_needed:" + requestID.String(),
+				Link:      "/leave",
+			})
+		}
 		return
 	}
 	defer rows.Close()
-	recipients := []notifications.Recipient{}
+	seen := map[uuid.UUID]bool{}
+	for _, r := range recipients {
+		if r.UserID != nil { seen[*r.UserID] = true }
+	}
 	for rows.Next() {
 		var id uuid.UUID
-		if err := rows.Scan(&id); err == nil && id != requesterID {
+		if err := rows.Scan(&id); err == nil && id != requesterID && !seen[id] {
+			seen[id] = true
 			recipients = append(recipients, notifications.Recipient{UserID: &id})
 		}
 	}

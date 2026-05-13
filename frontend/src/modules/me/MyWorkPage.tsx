@@ -377,6 +377,7 @@ type WidgetKey =
   | "meetings"
   | "needs_now"
   | "projects"
+  | "team_pulse"
   | "next_moves"
   | "kudos_received"
   | "birthdays_today"
@@ -390,6 +391,7 @@ const WIDGET_META: Record<WidgetKey, { label: string; help: string }> = {
   meetings:        { label: "Meetings",           help: "Your Microsoft / Google calendar for today." },
   needs_now:       { label: "Needs you now",      help: "Overdue, due today, blocked, and soon-due tasks." },
   projects:        { label: "Your projects",      help: "Quick links to projects you're allocated to." },
+  team_pulse:      { label: "Your team today",    help: "Direct reports' check-in / blocked / overdue / leave status. Auto-hides when you have no reports." },
   next_moves:      { label: "Suggested next moves", help: "Adaptive prompts based on what's slipping." },
   kudos_received:  { label: "Kudos you received", help: "Recognition colleagues sent your way." },
   birthdays_today: { label: "Birthdays today",    help: "Wish your teammates a happy birthday." },
@@ -398,12 +400,12 @@ const WIDGET_META: Record<WidgetKey, { label: string; help: string }> = {
 };
 
 const DEFAULT_LAYOUT: WidgetKey[] = [
-  "hero", "standup", "heads_up", "meetings", "needs_now", "projects",
+  "hero", "standup", "heads_up", "team_pulse", "meetings", "needs_now", "projects",
   "kudos_received", "birthdays_today", "mood_pulse", "overtime", "next_moves",
 ];
 
 const ALL_WIDGETS: WidgetKey[] = [
-  "hero", "standup", "heads_up", "meetings", "needs_now", "projects",
+  "hero", "standup", "heads_up", "team_pulse", "meetings", "needs_now", "projects",
   "next_moves", "kudos_received", "birthdays_today", "mood_pulse", "overtime",
 ];
 
@@ -421,6 +423,7 @@ const DEFAULT_SIZES: Partial<Record<WidgetKey, WidgetSize>> = {
   meetings:        "medium",
   needs_now:       "full",
   projects:        "full",
+  team_pulse:      "full",
   next_moves:      "full",
   kudos_received:  "medium",
   birthdays_today: "small",
@@ -692,6 +695,8 @@ function DashboardTab() {
         return <NeedsNowCard key="needs_now" data={wd} overdue={overdue} dueToday={dueToday} blocked={blocked} orderedTriage={orderedTriage} />;
       case "projects":
         return <ProjectsCard key="projects" projects={wd.projects} />;
+      case "team_pulse":
+        return <TeamPulseCard key="team_pulse" />;
       case "next_moves":
         return suggestions.length > 0 ? <NextMovesCard key="next_moves" suggestions={suggestions} /> : null;
       case "kudos_received":
@@ -1148,6 +1153,125 @@ function ProjectRowCard({ p }: { p: ProjectRow }) {
         </div>
       </Link>
     </li>
+  );
+}
+
+// TeamPulseCard — surfaces a manager's direct reports' state today:
+// who's checked in, who's blocked / overdue, who's on leave. Reads
+// /me/team-pulse (cheap; one SELECT joined against tasks +
+// daily_checkins + leave_requests). Renders nothing when the caller
+// has no direct reports so it's invisible to ICs and only shows up
+// the moment a manager_id starts pointing at someone.
+function TeamPulseCard() {
+  const [collapsed, toggle] = useCollapsible("team_pulse");
+  type Report = {
+    id: string; name: string; email: string;
+    avatar_url: string; job_title: string;
+    checked_in_today: boolean;
+    on_leave_today: boolean;
+    open_tasks: number;
+    overdue_tasks: number;
+    blocked_tasks: number;
+    last_seen_at: string | null;
+  };
+  type Summary = {
+    total: number; checked_in: number; on_leave: number;
+    blocked: number; overdue: number;
+  };
+  const { data } = useQuery<{ reports: Report[]; summary: Summary }>({
+    queryKey: ["me", "team-pulse"],
+    queryFn: () => api("/api/v1/me/team-pulse"),
+    refetchInterval: 5 * 60_000,
+    staleTime: 60_000,
+  });
+  if (!data || data.reports.length === 0) return null;
+
+  const s = data.summary;
+  // Headline reads the state ("4 / 5 checked in · 1 needs attention")
+  // so a glance at the collapsed strip tells the manager whether to
+  // expand. Tints amber when any report has an open issue, danger
+  // when more than half do.
+  const issuesPct = s.total === 0 ? 0 : ((s.blocked + s.overdue) / s.total) * 100;
+  const tone =
+    issuesPct >= 50 ? "border-danger/30 bg-danger/5"
+    : issuesPct >= 20 ? "border-warn/30 bg-warn/5"
+    : "border-border bg-surface";
+
+  return (
+    <section className={`border rounded-2xl ${tone} ${collapsed ? "px-5 py-3" : "p-5"}`}>
+      <div className={`flex items-center justify-between gap-2 ${collapsed ? "" : "mb-3"}`}>
+        <h2 className="h2 flex items-center gap-2">
+          <UsersIcon size={16} className="text-accent" /> Your team today
+          <span className="text-[12px] font-medium text-muted">
+            · {s.checked_in}/{s.total} checked in
+            {(s.blocked + s.overdue) > 0 && <span className="text-warn"> · {s.blocked + s.overdue} need attention</span>}
+            {s.on_leave > 0 && <span className="text-muted/80"> · {s.on_leave} on leave</span>}
+          </span>
+        </h2>
+        <CollapseChevron collapsed={collapsed} onClick={toggle} />
+      </div>
+      {!collapsed && (
+        <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 animate-stagger">
+          {data.reports.map((r) => {
+            // Per-report visual state. On-leave wins (greys out + leave
+            // pill); blocked/overdue render the warning chips; clean
+            // gets a green check.
+            const onLeave = r.on_leave_today;
+            const issues = r.blocked_tasks + r.overdue_tasks;
+            const cardTone =
+              onLeave    ? "bg-bg/40 border-border opacity-70"
+              : issues > 0 ? "bg-warn/5 border-warn/30"
+              : r.checked_in_today ? "bg-success/5 border-success/25"
+              : "bg-bg/40 border-border";
+            return (
+              <li key={r.id}>
+                <Link
+                  to={`/members/${r.id}`}
+                  className={`block rounded-xl border px-3 py-2.5 hover-lift transition-colors ${cardTone}`}
+                >
+                  <div className="flex items-start gap-2.5">
+                    <Avatar name={r.name} email={r.email} src={r.avatar_url} size={32} />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[13px] font-bold text-text truncate">{r.name || r.email}</div>
+                      {r.job_title && <div className="text-[10.5px] text-muted truncate">{r.job_title}</div>}
+                    </div>
+                    {onLeave ? (
+                      <span className="pill bg-accent-soft text-accent text-[10px]">On leave</span>
+                    ) : r.checked_in_today ? (
+                      <CheckCircle2 size={14} className="text-success shrink-0" />
+                    ) : (
+                      <span className="text-[10px] text-muted font-semibold whitespace-nowrap">No check-in</span>
+                    )}
+                  </div>
+                  {!onLeave && (
+                    <div className="mt-1.5 flex items-center gap-1.5 flex-wrap text-[10.5px]">
+                      {r.blocked_tasks> 0 && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-danger/10 text-danger border border-danger/25 font-semibold">
+                          <AlertOctagon size={9} /> {r.blocked_tasks} blocked
+                        </span>
+                      )}
+                      {r.overdue_tasks > 0 && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-warn/10 text-warn border border-warn/25 font-semibold">
+                          <Clock size={9} /> {r.overdue_tasks} overdue
+                        </span>
+                      )}
+                      {r.open_tasks > 0 && r.blocked_tasks=== 0 && r.overdue_tasks === 0 && (
+                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-bg/60 text-muted border border-border">
+                          <ListChecks size={9} /> {r.open_tasks} open
+                        </span>
+                      )}
+                      {r.open_tasks === 0 && (
+                        <span className="text-success/80 font-semibold">All clear</span>
+                      )}
+                    </div>
+                  )}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
   );
 }
 

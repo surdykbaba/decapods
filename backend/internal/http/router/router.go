@@ -237,6 +237,7 @@ func New(d Deps) http.Handler {
 	// Reporting hierarchy — everyone can read their own line; the
 	// PATCH /members/:id route (governance:write) is what sets it.
 	authed.GET("/me/manager",                members.Manager)
+	authed.GET("/me/team-pulse",             members.TeamPulse)
 	authed.GET("/members/:id/profile",       members.Profile)
 	authed.POST("/members",                  mw.RequirePermission("governance:write"), members.Create)
 	authed.PATCH("/members/:id",             mw.RequirePermission("governance:write"), members.Update)

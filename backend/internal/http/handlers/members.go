@@ -978,3 +978,94 @@ func (h *Members) Manager(c *gin.Context) {
 	out["reports"] = reports
 	c.JSON(200, out)
 }
+
+// TeamPulse — a manager-facing snapshot of their direct reports' day:
+// who's checked in, who's blocked (overdue tasks), who's on approved
+// leave, and a thumbnail per-person open-task count. Powers the
+// "Your team today" widget on the Today dashboard. Cheap query — one
+// SELECT joined against tasks + daily_checkins + leave_requests.
+//
+// Returns an empty reports[] for callers with no direct reports — the
+// SPA hides the widget entirely in that case.
+func (h *Members) TeamPulse(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rows, err := h.db.Query(c, `
+		SELECT u.id, COALESCE(u.full_name,''), u.email::text,
+		       COALESCE(u.avatar_url,''), COALESCE(u.job_title,''),
+		       EXISTS (
+		         SELECT 1 FROM daily_checkins dc
+		         WHERE dc.tenant_id = u.tenant_id
+		           AND dc.user_id = u.id
+		           AND dc.day = (now() AT TIME ZONE 'UTC')::date
+		           AND (dc.mood IS NOT NULL OR dc.focus_note IS NOT NULL OR dc.yesterday_note IS NOT NULL)
+		       ) AS checked_in_today,
+		       EXISTS (
+		         SELECT 1 FROM leave_requests lr
+		         WHERE lr.user_id = u.id AND lr.status = 'approved'
+		           AND CURRENT_DATE BETWEEN lr.start_date AND lr.end_date
+		       ) AS on_leave_today,
+		       (SELECT COUNT(*) FROM tasks t
+		         WHERE t.assignee_id = u.id AND t.deleted_at IS NULL
+		           AND t.status <> 'done') AS open_tasks,
+		       (SELECT COUNT(*) FROM tasks t
+		         WHERE t.assignee_id = u.id AND t.deleted_at IS NULL
+		           AND t.status <> 'done'
+		           AND t.due_on IS NOT NULL AND t.due_on < CURRENT_DATE) AS overdue_tasks,
+		       (SELECT COUNT(*) FROM tasks t
+		         WHERE t.assignee_id = u.id AND t.deleted_at IS NULL
+		           AND t.status = 'blocked') AS blocked_tasks,
+		       u.last_seen_at
+		FROM users u
+		WHERE u.manager_id = $1 AND u.tenant_id = $2 AND u.deleted_at IS NULL
+		  AND u.status = 'active'
+		ORDER BY u.full_name`, uid, tid)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	reports := []gin.H{}
+	type roll struct {
+		Checked, OnLeave, Blocked, Overdue int
+		Total                              int
+	}
+	var r roll
+	for rows.Next() {
+		var (
+			id                                  uuid.UUID
+			name, email, avatar, jobTitle       string
+			checkedIn, onLeave                  bool
+			openTasks, overdue, blocked         int64
+			lastSeen                            *time.Time
+		)
+		if err := rows.Scan(&id, &name, &email, &avatar, &jobTitle,
+			&checkedIn, &onLeave, &openTasks, &overdue, &blocked, &lastSeen); err == nil {
+			reports = append(reports, gin.H{
+				"id": id, "name": name, "email": email,
+				"avatar_url": avatar, "job_title": jobTitle,
+				"checked_in_today": checkedIn,
+				"on_leave_today":   onLeave,
+				"open_tasks":       openTasks,
+				"overdue_tasks":    overdue,
+				"blocked_tasks":    blocked,
+				"last_seen_at":     lastSeen,
+			})
+			r.Total++
+			if checkedIn { r.Checked++ }
+			if onLeave   { r.OnLeave++ }
+			if blocked > 0 { r.Blocked++ }
+			if overdue > 0 { r.Overdue++ }
+		}
+	}
+	c.JSON(200, gin.H{
+		"reports": reports,
+		"summary": gin.H{
+			"total":            r.Total,
+			"checked_in":       r.Checked,
+			"on_leave":         r.OnLeave,
+			"blocked":          r.Blocked,
+			"overdue":          r.Overdue,
+		},
+	})
+}

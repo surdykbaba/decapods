@@ -1123,6 +1123,30 @@ function CreateOKRDialog({
   const [phase, setPhase] = useState<"compose" | "add-krs">("compose");
   const [objectiveID, setObjectiveID] = useState<string | null>(null);
 
+  // Cascade-up state. Only relevant when the user is composing an
+  // objective AND they have a manager AND the manager has at least one
+  // active objective in this cycle. When the user picks a parent, we
+  // flip the kind to "key_result" at save time so it lands as a KR
+  // under the manager's objective (which is the OKR alignment pattern:
+  // your goals roll up into theirs).
+  const { data: managerData } = useQuery<{
+    manager: { id: string; name: string; email: string } | null;
+  }>({
+    queryKey: ["okrs-my-manager"],
+    queryFn: () => api("/api/v1/me/manager"),
+    enabled: isObjective && !parentId,
+    staleTime: 5 * 60_000,
+  });
+  const managerId = managerData?.manager?.id;
+  const { data: managerOkrs } = useQuery<{ items: OKR[] }>({
+    queryKey: ["okrs-manager-objectives", cycleId, managerId],
+    queryFn: () => api(`/api/v1/okrs?cycle_id=${cycleId}&owner_id=${managerId}`),
+    enabled: !!managerId && isObjective && !parentId,
+    staleTime: 60_000,
+  });
+  const managerObjectives = (managerOkrs?.items ?? []).filter((o) => o.kind === "objective");
+  const [cascadeParentId, setCascadeParentId] = useState<string>("");
+
   // Members picker — only fetched when actually needed (the dialog is
   // opened), staletime keeps it cached across re-opens within 5 min.
   const { data: membersData } = useQuery<{ items: { id: string; name: string; email: string; status: string }[] }>({
@@ -1161,24 +1185,38 @@ function CreateOKRDialog({
   }, [title, isObjective, target, unit]);
 
   const save = useMutation({
-    mutationFn: () =>
-      api<{ id: string }>("/api/v1/okrs", {
+    mutationFn: () => {
+      // Cascade decision — if the user picked a manager objective to roll
+      // up into, the new entry lands as a key_result under that parent
+      // rather than its own top-level objective. The body still carries
+      // the user's title/description/confidence; the kind + parent_id
+      // change is the whole "rollup" mechanic.
+      const cascading = isObjective && !parentId && !!cascadeParentId;
+      const effectiveKind = cascading ? "key_result" : kind;
+      const effectiveParent = cascading ? cascadeParentId : parentId;
+      return api<{ id: string }>("/api/v1/okrs", {
         method: "POST",
         body: JSON.stringify({
           cycle_id: cycleId,
-          kind,
-          parent_id: parentId,
+          kind: effectiveKind,
+          parent_id: effectiveParent,
           owner_id: ownerId || undefined,
           title: title.trim(),
           description: description.trim(),
-          target_value: kind === "key_result" && target.trim() !== "" ? parseFloat(target) : undefined,
-          unit: kind === "key_result" ? unit.trim() : undefined,
+          // KRs may carry a target; rolled-up objectives don't unless
+          // the user typed something numeric in the title.
+          target_value: effectiveKind === "key_result" && target.trim() !== "" ? parseFloat(target) : undefined,
+          unit: effectiveKind === "key_result" ? unit.trim() : undefined,
           confidence,
           status,
         }),
-      }),
+      });
+    },
     onSuccess: (resp) => {
-      toast.success(isObjective ? "Objective added" : "Key result added");
+      const cascading = isObjective && !parentId && !!cascadeParentId;
+      toast.success(cascading
+        ? "Cascaded under your manager's objective"
+        : isObjective ? "Objective added" : "Key result added");
       qc.invalidateQueries({ queryKey: ["okrs"] });
       // For objectives, flip to the KR-quick-add step instead of closing.
       // The user usually wants to drop the 3 KRs that prove the
@@ -1255,6 +1293,44 @@ function CreateOKRDialog({
                     </button>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {/* Cascade up — only renders for top-level objective creation
+                when the caller has a manager AND the manager has at
+                least one active objective in this cycle. Picking a row
+                converts the new entry into a KR under that objective at
+                save time. Reading "Cascade my objective under …" makes
+                the OKR alignment pattern legible: my outcomes prove
+                their outcomes. */}
+            {isObjective && !parentId && managerData?.manager && managerObjectives.length > 0 && (
+              <div className="rounded-xl border border-accent/30 bg-accent-soft/20 p-3">
+                <div className="text-[10.5px] uppercase tracking-wider font-bold text-accent mb-1.5 inline-flex items-center gap-1.5">
+                  <TrendingUp size={11} /> Cascade up
+                </div>
+                <div className="text-[12px] text-text">
+                  Roll this objective up into one of <span className="font-bold">{managerData.manager.name || managerData.manager.email}</span>'s objectives — your KR will count as a measurable for theirs.
+                </div>
+                <select
+                  className="input mt-2"
+                  value={cascadeParentId}
+                  onChange={(e) => setCascadeParentId(e.target.value)}
+                >
+                  <option value="">— Top-level objective (no cascade)</option>
+                  {managerObjectives.map((o) => (
+                    <option key={o.id} value={o.id}>↗ {o.title}</option>
+                  ))}
+                </select>
+                {cascadeParentId && (
+                  <div className="text-[10.5px] text-muted mt-1.5">
+                    On save this entry will land as a <span className="font-bold text-accent">key result</span> under your manager's objective instead of a top-level objective.
+                  </div>
+                )}
+              </div>
+            )}
+            {isObjective && !parentId && managerData && !managerData.manager && (
+              <div className="rounded-xl border border-border bg-bg/30 p-3 text-[11.5px] text-muted">
+                <span className="font-semibold text-text">Tip:</span> ask HR to set your manager from <span className="font-mono">Members</span> — then your objectives can cascade into theirs and OKRs start working as an alignment tool.
               </div>
             )}
 
