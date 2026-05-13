@@ -541,6 +541,80 @@ func (h *Campfire) AddComment(c *gin.Context) {
 	c.JSON(201, gin.H{"id": id})
 }
 
+// UpdateComment lets the author edit their own comment body. Admins
+// (governance:write) can edit anyone's — useful for cleaning up profanity
+// or correcting a typo on someone's behalf. Anyone else gets 403.
+func (h *Campfire) UpdateComment(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	commentID, err := uuid.Parse(c.Param("commentID"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	var req struct {
+		Body string `json:"body" binding:"required,min=1"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	var authorID uuid.UUID
+	if err := h.db.QueryRow(c.Request.Context(), `
+		SELECT author_id FROM campfire_comments WHERE id=$1 AND tenant_id=$2`,
+		commentID, tid).Scan(&authorID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "comment not found"})
+		return
+	}
+	if authorID != uid && !auth.HasPermission(roles, "governance:write") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only edit your own comments"})
+		return
+	}
+	body := strings.TrimSpace(req.Body)
+	if _, err := h.db.Exec(c.Request.Context(), `
+		UPDATE campfire_comments SET body=$1 WHERE id=$2 AND tenant_id=$3`,
+		body, commentID, tid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// DeleteComment — same access rule as UpdateComment: author or admin.
+// Reactions on the comment cascade via FK; @mentions already fired at
+// post time so we don't reverse those.
+func (h *Campfire) DeleteComment(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	commentID, err := uuid.Parse(c.Param("commentID"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	var authorID uuid.UUID
+	if err := h.db.QueryRow(c.Request.Context(), `
+		SELECT author_id FROM campfire_comments WHERE id=$1 AND tenant_id=$2`,
+		commentID, tid).Scan(&authorID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "comment not found"})
+		return
+	}
+	if authorID != uid && !auth.HasPermission(roles, "governance:write") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only delete your own comments"})
+		return
+	}
+	if _, err := h.db.Exec(c.Request.Context(), `
+		DELETE FROM campfire_comments WHERE id=$1 AND tenant_id=$2`,
+		commentID, tid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
 // Reactions — polymorphic toggle. POST adds if missing, removes if present
 // (same emoji from same user). Caller specifies target via the URL.
 

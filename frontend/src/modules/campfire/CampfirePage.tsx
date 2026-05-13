@@ -1300,6 +1300,8 @@ function PollBody({ post }: { post: Post }) {
 
 function CommentsThread({ postId }: { postId: string }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const isAdmin = !!user?.roles?.some((r) => r === "super_admin" || r === "ceo" || r === "coo" || r === "hr");
   const { data } = useQuery<{ items: Comment[] }>({
     queryKey: ["campfire", "post-comments", postId],
     queryFn: () => api(`/api/v1/campfire/posts/${postId}/comments`),
@@ -1321,23 +1323,12 @@ function CommentsThread({ postId }: { postId: string }) {
   return (
     <div className="mt-3 pt-3 border-t border-border space-y-3">
       {items.map((c) => (
-        <div key={c.id} className="flex gap-2.5">
-          <Avatar name={c.author_name} email={c.author_email} src={c.author_avatar_url} size={28} />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="text-[12px] font-bold text-text">{c.author_name || c.author_email}</span>
-              <span className="text-[10.5px] text-muted">{relativeTime(c.created_at)}</span>
-            </div>
-            <SmartBody className="text-[13px] text-text" text={c.body} />
-            <ReactionStrip
-              targetType="comment"
-              targetId={c.id}
-              reactions={c.reactions ?? []}
-              invalidateKey={["campfire", "post-comments", postId]}
-              compact
-            />
-          </div>
-        </div>
+        <CommentRow
+          key={c.id}
+          c={c}
+          postId={postId}
+          canEdit={c.author_id === user?.id || isAdmin}
+        />
       ))}
       <div className="flex items-end gap-2">
         <div className="flex-1 min-w-0">
@@ -1358,6 +1349,133 @@ function CommentsThread({ postId }: { postId: string }) {
         >
           <Send size={13} />
         </button>
+      </div>
+    </div>
+  );
+}
+
+// CommentRow — a single comment with edit + delete affordances.
+//
+//   • Hover reveals a tiny ⋯ action group on the right of the row when
+//     the caller is the author or has governance:write. Pencil opens
+//     an inline edit textarea (with Save / Cancel); trash opens a
+//     confirm-step "Delete?" inline so a click is never one-and-done.
+//   • Edit / delete mutations invalidate the comments query so the
+//     thread snaps back to the new state.
+function CommentRow({
+  c, postId, canEdit,
+}: {
+  c: Comment;
+  postId: string;
+  canEdit: boolean;
+}) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(c.body);
+  const [confirmDel, setConfirmDel] = useState(false);
+
+  const save = useMutation({
+    mutationFn: () => api(`/api/v1/campfire/posts/${postId}/comments/${c.id}`, {
+      method: "PATCH", body: JSON.stringify({ body: draft.trim() }),
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campfire", "post-comments", postId] });
+      toast.success("Comment updated");
+      setEditing(false);
+    },
+    onError: (e: any) => toast.error("Couldn't save", e?.message),
+  });
+  const del = useMutation({
+    mutationFn: () => api(`/api/v1/campfire/posts/${postId}/comments/${c.id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campfire", "post-comments", postId] });
+      qc.invalidateQueries({ queryKey: ["campfire", "posts"] });
+      toast.success("Comment deleted");
+    },
+    onError: (e: any) => toast.error("Couldn't delete", e?.message),
+  });
+
+  return (
+    <div className="flex gap-2.5 group">
+      <Avatar name={c.author_name} email={c.author_email} src={c.author_avatar_url} size={28} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] font-bold text-text">{c.author_name || c.author_email}</span>
+          <span className="text-[10.5px] text-muted">{relativeTime(c.created_at)}</span>
+          {canEdit && !editing && !confirmDel && (
+            <span className="ml-auto inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                onClick={() => { setDraft(c.body); setEditing(true); }}
+                className="p-1 rounded text-muted hover:text-accent hover:bg-bg/60"
+                title="Edit"
+                aria-label="Edit comment"
+              >
+                <Pencil size={11} />
+              </button>
+              <button
+                onClick={() => setConfirmDel(true)}
+                className="p-1 rounded text-muted hover:text-danger hover:bg-danger/10"
+                title="Delete"
+                aria-label="Delete comment"
+              >
+                <Trash2 size={11} />
+              </button>
+            </span>
+          )}
+          {confirmDel && (
+            <span className="ml-auto inline-flex items-center gap-1.5 text-[11px]">
+              <span className="text-danger font-semibold">Delete?</span>
+              <button
+                onClick={() => setConfirmDel(false)}
+                className="text-muted hover:text-text px-1"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => del.mutate()}
+                disabled={del.isPending}
+                className="px-2 py-0.5 rounded-full bg-danger text-white font-semibold disabled:opacity-60"
+              >
+                {del.isPending ? "…" : "Yes"}
+              </button>
+            </span>
+          )}
+        </div>
+        {editing ? (
+          <div className="mt-1">
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              autoFocus
+              rows={2}
+              className="input text-[13px] min-h-[60px]"
+            />
+            <div className="mt-1.5 flex items-center justify-end gap-2">
+              <button
+                onClick={() => { setEditing(false); setDraft(c.body); }}
+                className="text-[11.5px] font-semibold text-muted hover:text-text px-2 py-1 rounded"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => save.mutate()}
+                disabled={save.isPending || !draft.trim() || draft.trim() === c.body.trim()}
+                className="text-[11.5px] font-bold bg-accent text-white px-2.5 py-1 rounded-full disabled:opacity-60 press-fx"
+              >
+                {save.isPending ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <SmartBody className="text-[13px] text-text" text={c.body} />
+        )}
+        <ReactionStrip
+          targetType="comment"
+          targetId={c.id}
+          reactions={c.reactions ?? []}
+          invalidateKey={["campfire", "post-comments", postId]}
+          compact
+        />
       </div>
     </div>
   );
