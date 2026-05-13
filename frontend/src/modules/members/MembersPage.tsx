@@ -541,19 +541,25 @@ function MemberTable({
             {pageRows.map((m) => {
               const sm = STATUS_META[m.status];
               const risk = memberRisk(m);
-              // The left rail signals risk at a glance. Danger > warn so admin-
-              // without-MFA always wins over plain dormancy.
+              // The left rail signals risk at a glance — danger > warn so
+              // admin-without-MFA always wins over plain dormancy. Rendered
+              // as an inline absolutely-positioned span inside the first
+              // <td> (not a `::before` on `<tr>`) because `position:relative`
+              // on table rows is unreliable across browsers and was producing
+              // a phantom blank column to the left of the avatar.
               const railCls =
-                risk.tone === "danger" ? "before:bg-danger"
-                : risk.tone === "warn" ? "before:bg-warn"
-                : "before:bg-transparent";
+                risk.tone === "danger" ? "bg-danger"
+                : risk.tone === "warn" ? "bg-warn"
+                : "";
               return (
                 <tr
                   key={m.id}
-                  className={`border-t border-border hover:bg-bg/40 transition-colors relative ${railCls}
-                    before:content-[''] before:absolute before:left-0 before:top-2 before:bottom-2 before:w-[3px] before:rounded-r`}
+                  className="border-t border-border hover:bg-bg/40 transition-colors"
                 >
-                  <td className="px-4 py-3 min-w-[260px]">
+                  <td className="px-4 py-3 min-w-[260px] relative">
+                    {railCls && (
+                      <span className={`absolute left-0 top-2 bottom-2 w-[3px] rounded-r ${railCls}`} aria-hidden />
+                    )}
                     <div className="flex items-center gap-3">
                       <span className="relative shrink-0">
                         <Avatar name={m.name} email={m.email} src={m.avatar_url} size={32} />
