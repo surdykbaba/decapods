@@ -492,6 +492,68 @@ function DashboardTab() {
   }
   const [customising, setCustomising] = useState(false);
 
+  // Drag-reorder state. dragKey = the widget the user picked up;
+  // dropTarget = the widget currently being hovered. We compute the
+  // insert position from the pointer's vertical midpoint inside the
+  // hovered card so the visual indicator (a 2px accent rail above OR
+  // below) matches where the drop will actually land.
+  const [dragKey, setDragKey] = useState<WidgetKey | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ key: WidgetKey; before: boolean } | null>(null);
+  function reorder(src: WidgetKey, dst: WidgetKey, before: boolean) {
+    if (src === dst) return;
+    const next = layout.filter((k) => k !== src);
+    const idx = next.indexOf(dst);
+    if (idx < 0) return;
+    next.splice(before ? idx : idx + 1, 0, src);
+    saveLayout(next);
+  }
+
+  // Drag-resize state. We measure the grid container's pixel width once
+  // resize starts so we can convert pointer X into a 1–12 column count,
+  // then snap to the nearest allowed size on pointer-up.
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [resizing, setResizing] = useState<{ key: WidgetKey; cols: number } | null>(null);
+  function startResize(key: WidgetKey, startEvent: React.PointerEvent) {
+    const grid = gridRef.current;
+    if (!grid) return;
+    const target = startEvent.currentTarget as HTMLElement;
+    target.setPointerCapture(startEvent.pointerId);
+    const rect = grid.getBoundingClientRect();
+    const colW = rect.width / 12;
+    function onMove(ev: PointerEvent) {
+      // Find the wrapper's left edge to measure from. We do it inside the
+      // handler so a layout shift mid-drag (rare) doesn't strand the
+      // calculation.
+      const wrapper = (target as HTMLElement).closest("[data-widget-key]") as HTMLElement | null;
+      const wrapperLeft = wrapper?.getBoundingClientRect().left ?? rect.left;
+      const xFromLeft = ev.clientX - wrapperLeft;
+      const cols = Math.max(2, Math.min(12, Math.round(xFromLeft / colW)));
+      setResizing({ key, cols });
+    }
+    function onUp() {
+      target.releasePointerCapture(startEvent.pointerId);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      setResizing((cur) => {
+        if (!cur || cur.key !== key) return null;
+        // Snap to the nearest WidgetSize. The thresholds split the four
+        // sizes at their midpoints — anything between 4 and 6 cols
+        // resolves to whichever is closer.
+        const c = cur.cols;
+        let next: WidgetSize;
+        if      (c <= 5)  next = "small";   // 2–5
+        else if (c <= 7)  next = "medium";  // 6–7
+        else if (c <= 10) next = "large";   // 8–10
+        else              next = "full";    // 11–12
+        setSize(key, next);
+        return null;
+      });
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    setResizing({ key, cols: 12 });
+  }
+
   if (isLoading || !data) return <div className="text-muted">Loading…</div>;
 
   const c = data.counts;
@@ -662,22 +724,100 @@ function DashboardTab() {
       </div>
 
       {/* 12-col grid wraps every widget. Each widget chooses its own
-          column span via the SIZE_COLS mapping, and a tiny resize cycler
-          floats in the top-right of the wrapper so the user can flip
-          a card between Compact / Half / Wide / Full without diving
-          into the customise dialog. On phones (< md) every widget spans
-          all 12 cols so the cycler is a visual hint, not a layout
-          surprise. */}
-      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-5">
+          column span via the SIZE_COLS mapping; the user can either
+          click the resize cycler (top-right of every card) or grab
+          the right-edge handle and drag horizontally for a freeform
+          resize that snaps to the nearest size on release.
+          Reordering happens by grabbing the drag rail on the left
+          edge and dropping the card above or below another widget.
+          On phones (< md) every widget spans 12 cols and the handles
+          hide — drag/resize is a desktop affordance only. */}
+      <div ref={gridRef} className="grid grid-cols-1 md:grid-cols-12 gap-4 md:gap-5">
         {layout.map((key) => {
           const node = renderWidget(key);
           if (!node) return null;
           const size = sizes[key];
+          const liveCols = resizing?.key === key
+            ? Math.max(2, Math.min(12, resizing.cols))
+            : null;
+          // Live resize uses an inline gridColumn style — Tailwind's JIT
+          // can't safelist arbitrary col-span-N values, so we bypass the
+          // class system mid-drag and let the snap on release flip back
+          // to the static SIZE_COLS class.
+          const colClass = liveCols == null ? SIZE_COLS[size] : "";
+          const liveStyle = liveCols != null
+            ? { gridColumn: `span ${liveCols} / span ${liveCols}` } as React.CSSProperties
+            : undefined;
+          const isDropAbove = dropTarget?.key === key && dropTarget.before;
+          const isDropBelow = dropTarget?.key === key && !dropTarget.before;
+          const isDragging  = dragKey === key;
           return (
-            <div key={key} className={`relative ${SIZE_COLS[size]} group`}>
+            <div
+              key={key}
+              data-widget-key={key}
+              style={liveStyle}
+              className={`relative ${colClass} group transition-opacity ${isDragging ? "opacity-40" : ""}`}
+              onDragOver={(e) => {
+                if (!dragKey || dragKey === key) return;
+                e.preventDefault();
+                const rect = e.currentTarget.getBoundingClientRect();
+                const before = e.clientY < rect.top + rect.height / 2;
+                setDropTarget((cur) =>
+                  cur && cur.key === key && cur.before === before ? cur : { key, before },
+                );
+              }}
+              onDragLeave={() => setDropTarget(null)}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (!dragKey || !dropTarget) { setDropTarget(null); return; }
+                reorder(dragKey, dropTarget.key, dropTarget.before);
+                setDragKey(null);
+                setDropTarget(null);
+              }}
+            >
+              {/* Drop-position indicator — a 2px accent rail above OR
+                  below the hovered card. Renders only during a drag. */}
+              {isDropAbove && <div aria-hidden className="absolute -top-2 left-0 right-0 h-0.5 bg-accent rounded-full pointer-events-none" />}
+              {isDropBelow && <div aria-hidden className="absolute -bottom-2 left-0 right-0 h-0.5 bg-accent rounded-full pointer-events-none" />}
+
+              {/* Drag rail — left edge. Grab anywhere on this strip to
+                  pick the widget up. Hidden until hover; cursor-move
+                  on the strip itself, the rest of the card stays
+                  click-through so links inside the widget still work. */}
+              <div
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("text/plain", key);
+                  setDragKey(key);
+                }}
+                onDragEnd={() => { setDragKey(null); setDropTarget(null); }}
+                className="hidden md:flex absolute -left-3 top-0 bottom-0 w-3 items-center justify-center cursor-move opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                title="Drag to reorder"
+                aria-label="Drag to reorder this widget"
+              >
+                <GripVertical size={14} className="text-muted/70" />
+              </div>
+
+              {/* Click-to-cycle resizer — sits next to the existing
+                  collapse chevron, top-right of every card. */}
               <div className="absolute top-3 right-12 z-10 opacity-0 group-hover:opacity-100 transition-opacity hidden md:block">
                 <WidgetResizer size={size} onChange={(next) => setSize(key, next)} />
               </div>
+
+              {/* Drag-to-resize handle — right edge of the card. Grab
+                  the vertical bar and drag horizontally; the wrapper's
+                  col-span follows the pointer and snaps to the nearest
+                  WidgetSize when you release. */}
+              <div
+                onPointerDown={(e) => startResize(key, e)}
+                className="hidden md:block absolute -right-2 top-2 bottom-2 w-3 cursor-col-resize opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                title="Drag to resize"
+                aria-label="Drag to resize this widget"
+              >
+                <div className="h-full w-0.5 bg-accent/50 rounded-full mx-auto" />
+              </div>
+
               {node}
             </div>
           );
