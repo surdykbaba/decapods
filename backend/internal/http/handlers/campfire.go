@@ -183,6 +183,7 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 	// computed sort key.
 	rows, err := h.db.Query(c.Request.Context(), `
 		SELECT p.id, p.author_id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
+		       COALESCE(u.avatar_url,''),
 		       p.kind, COALESCE(p.title,''), p.body, p.meta, p.pinned, p.created_at,
 		       (SELECT COUNT(*) FROM campfire_comments cc WHERE cc.post_id=p.id) AS comment_count
 		FROM campfire_posts p
@@ -200,21 +201,22 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 	postIDs := []uuid.UUID{}
 	for rows.Next() {
 		var (
-			id                                uuid.UUID
-			authorID                          *uuid.UUID
-			authorName, authorEmail, kind     string
-			title, body                       string
-			meta                              map[string]any
-			pinned                            bool
-			created                           time.Time
+			id                                       uuid.UUID
+			authorID                                 *uuid.UUID
+			authorName, authorEmail, authorAvatar    string
+			kind, title, body                        string
+			meta                                     map[string]any
+			pinned                                   bool
+			created                                  time.Time
 			// Postgres COUNT(*) is bigint; see the long note in ListRooms.
 			// Plain int silently drops the row on some pgx setups.
-			commentCount                      int64
+			commentCount                             int64
 		)
-		if err := rows.Scan(&id, &authorID, &authorName, &authorEmail, &kind,
+		if err := rows.Scan(&id, &authorID, &authorName, &authorEmail, &authorAvatar, &kind,
 			&title, &body, &meta, &pinned, &created, &commentCount); err == nil {
 			posts = append(posts, gin.H{
 				"id": id, "author_id": authorID, "author_name": authorName, "author_email": authorEmail,
+				"author_avatar_url": authorAvatar,
 				"kind": kind, "title": title, "body": body, "meta": meta,
 				"pinned": pinned, "created_at": created,
 				"comment_count": commentCount,
@@ -478,6 +480,7 @@ func (h *Campfire) ListComments(c *gin.Context) {
 	}
 	rows, err := h.db.Query(c.Request.Context(), `
 		SELECT c.id, c.author_id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
+		       COALESCE(u.avatar_url,''),
 		       c.body, c.created_at
 		FROM campfire_comments c
 		LEFT JOIN users u ON u.id = c.author_id
@@ -492,14 +495,15 @@ func (h *Campfire) ListComments(c *gin.Context) {
 	ids := []uuid.UUID{}
 	for rows.Next() {
 		var (
-			id                  uuid.UUID
-			author              *uuid.UUID
-			name, email, body   string
-			created             time.Time
+			id                          uuid.UUID
+			author                      *uuid.UUID
+			name, email, avatar, body   string
+			created                     time.Time
 		)
-		if err := rows.Scan(&id, &author, &name, &email, &body, &created); err == nil {
+		if err := rows.Scan(&id, &author, &name, &email, &avatar, &body, &created); err == nil {
 			out = append(out, gin.H{
 				"id": id, "author_id": author, "author_name": name, "author_email": email,
+				"author_avatar_url": avatar,
 				"body": body, "created_at": created,
 			})
 			ids = append(ids, id)
@@ -1757,6 +1761,7 @@ func (h *Campfire) ListMessages(c *gin.Context) {
 	// We return newest-200 in chronological order so the UI can scroll-bottom.
 	rows, err := h.db.Query(c.Request.Context(), `
 		SELECT m.id, m.author_id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
+		       COALESCE(u.avatar_url,''),
 		       m.body, m.created_at
 		FROM (
 		  SELECT * FROM campfire_messages
@@ -1774,14 +1779,15 @@ func (h *Campfire) ListMessages(c *gin.Context) {
 	ids := []uuid.UUID{}
 	for rows.Next() {
 		var (
-			id                  uuid.UUID
-			author              *uuid.UUID
-			name, email, body   string
-			created             time.Time
+			id                          uuid.UUID
+			author                      *uuid.UUID
+			name, email, avatar, body   string
+			created                     time.Time
 		)
-		if err := rows.Scan(&id, &author, &name, &email, &body, &created); err == nil {
+		if err := rows.Scan(&id, &author, &name, &email, &avatar, &body, &created); err == nil {
 			out = append(out, gin.H{
 				"id": id, "author_id": author, "author_name": name, "author_email": email,
+				"author_avatar_url": avatar,
 				"body": body, "created_at": created,
 			})
 			ids = append(ids, id)

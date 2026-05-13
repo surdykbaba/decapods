@@ -11,6 +11,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toast } from "@/lib/toast";
 import { SmartButton } from "@/components/SmartButton";
+import { Avatar } from "@/components/Avatar";
 import { SmartBody } from "@/modules/campfire/smartBody";
 import { MentionInput } from "@/modules/campfire/MentionInput";
 import {
@@ -30,7 +31,7 @@ import {
  * Types
  * ───────────────────────────────────────────────────────────────────────── */
 
-type Member = { id: string; name: string; email: string };
+type Member = { id: string; name: string; email: string; avatar_url?: string };
 
 type Reaction = { emoji: string; count: number; mine: boolean };
 
@@ -39,6 +40,7 @@ type Post = {
   author_id: string | null;
   author_name: string;
   author_email: string;
+  author_avatar_url?: string;
   kind: string;
   title: string;
   body: string;
@@ -54,6 +56,7 @@ type Comment = {
   author_id: string | null;
   author_name: string;
   author_email: string;
+  author_avatar_url?: string;
   body: string;
   created_at: string;
   reactions: Reaction[] | null;
@@ -99,6 +102,7 @@ type Message = {
   author_id: string | null;
   author_name: string;
   author_email: string;
+  author_avatar_url?: string;
   body: string;
   created_at: string;
   reactions: Reaction[] | null;
@@ -180,16 +184,11 @@ function initials(name: string, email: string): string {
   return s.charAt(0).toUpperCase();
 }
 
-function Avatar({ name, email, size = 32 }: { name: string; email: string; size?: number }) {
-  return (
-    <span
-      className="rounded-full bg-accent-soft text-accent font-bold grid place-items-center shrink-0"
-      style={{ width: size, height: size, fontSize: Math.max(10, size * 0.4) }}
-    >
-      {initials(name, email)}
-    </span>
-  );
-}
+// The local Avatar component used to live here and only rendered an
+// initials bubble — silently dropping any uploaded photo passed via
+// `src`. It's been replaced with the shared @/components/Avatar at the
+// top of the file (one import, applies to every callsite below).
+void initials;
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Page shell
@@ -391,7 +390,7 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
           className="w-full bg-surface rounded-2xl px-4 py-3.5 flex items-center gap-3 hover:bg-bg/40 border border-border/60 hover:border-accent transition-all text-left"
           aria-label="Share something with the workspace"
         >
-          <Avatar name={user?.name ?? ""} email={user?.email ?? ""} size={40} />
+          <Avatar name={user?.name ?? ""} email={user?.email ?? ""} src={user?.avatar_url} size={40} />
           <div className="flex-1 min-w-0">
             <div className="text-sm font-bold text-text">
               Share something with the workspace
@@ -904,7 +903,7 @@ function PostCard({
       )}
       <div className="px-5 py-4">
         <header className="flex items-start gap-3">
-          <Avatar name={post.author_name} email={post.author_email} size={40} />
+          <Avatar name={post.author_name} email={post.author_email} src={post.author_avatar_url} size={40} />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-bold text-text">{post.author_name || post.author_email || "Someone"}</span>
@@ -1060,7 +1059,7 @@ function CommentsThread({ postId }: { postId: string }) {
     <div className="mt-3 pt-3 border-t border-border space-y-3">
       {items.map((c) => (
         <div key={c.id} className="flex gap-2.5">
-          <Avatar name={c.author_name} email={c.author_email} size={28} />
+          <Avatar name={c.author_name} email={c.author_email} src={c.author_avatar_url} size={28} />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="text-[12px] font-bold text-text">{c.author_name || c.author_email}</span>
@@ -2171,7 +2170,7 @@ function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreat
                           >
                             {on && <Check size={11} />}
                           </span>
-                          <Avatar name={m.name} email={m.email} size={22} />
+                          <Avatar name={m.name} email={m.email} src={m.avatar_url} size={22} />
                           <span className="text-[13px] text-text truncate flex-1">{m.name || m.email}</span>
                           <span className="text-[11px] text-muted truncate">{m.email}</span>
                         </button>
@@ -2363,7 +2362,7 @@ function RoomView({
         )}
         {messages.map((m) => (
           <div key={m.id} className="flex gap-3">
-            <Avatar name={m.author_name} email={m.author_email} size={32} />
+            <Avatar name={m.author_name} email={m.author_email} src={m.author_avatar_url} size={32} />
             <div className="flex-1 min-w-0">
               <div className="flex items-baseline gap-2">
                 <span className="text-[13px] font-bold text-text">{m.author_name || m.author_email}</span>
@@ -2383,7 +2382,7 @@ function RoomView({
       </div>
 
       <footer className="border-t border-border p-3 flex items-end gap-2">
-        <Avatar name={user?.name ?? ""} email={user?.email ?? ""} size={30} />
+        <Avatar name={user?.name ?? ""} email={user?.email ?? ""} src={user?.avatar_url} size={30} />
         <div className="flex-1 min-w-0">
           <MentionInput
             className="input min-h-[40px]"
@@ -2542,7 +2541,7 @@ function RoomMembersDialog({ room, onClose, embedded }: { room: Room; onClose: (
             <ul className="divide-y divide-border border border-border rounded-lg">
               {roster.map((m) => (
                 <li key={m.user_id} className="px-3 py-2 flex items-center gap-2">
-                  <Avatar name={m.name} email={m.email} size={26} />
+                  <Avatar name={m.name} email={m.email} src={m.avatar_url} size={26} />
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] font-semibold text-text truncate">{m.name || m.email}</div>
                     <div className="text-[11px] text-muted truncate">{m.email}</div>
@@ -2587,7 +2586,7 @@ function RoomMembersDialog({ room, onClose, embedded }: { room: Room; onClose: (
                 ) : (
                   filtered.map((m) => (
                     <li key={m.id} className="px-3 py-2 flex items-center gap-2">
-                      <Avatar name={m.name} email={m.email} size={24} />
+                      <Avatar name={m.name} email={m.email} src={m.avatar_url} size={24} />
                       <div className="min-w-0 flex-1">
                         <div className="text-[13px] font-semibold text-text truncate">{m.name || m.email}</div>
                         <div className="text-[11px] text-muted truncate">{m.email}</div>

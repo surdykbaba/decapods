@@ -450,7 +450,7 @@ function ColleagueCard({ c, onOpen }: { c: Colleague; onOpen: () => void }) {
     >
       <div className="flex items-start gap-3">
         <div className="relative shrink-0">
-          <Avatar name={c.name} email={c.email} size={44} />
+          <Avatar name={c.name} email={c.email} src={c.avatar_url} size={44} />
           <span
             className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ring-2 ring-surface ${presenceCls}`}
             title={PRESENCE_LABEL[c.presence] ?? c.presence}
@@ -504,7 +504,7 @@ function ColleagueRow({ c, onOpen }: { c: Colleague; onOpen: () => void }) {
             decoration, gives the row a "primary action" feel. */}
         <span aria-hidden className="hidden sm:block absolute left-0 w-0.5 h-8 bg-accent rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
         <div className="relative shrink-0">
-          <Avatar name={c.name} email={c.email} size={36} />
+          <Avatar name={c.name} email={c.email} src={c.avatar_url} size={36} />
           <span
             className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-surface ${presenceCls}`}
             title={presenceLabel}
@@ -655,7 +655,7 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-start gap-3 min-w-0">
               <div className="relative shrink-0">
-                <Avatar name={c.name} email={c.email} size={56} />
+                <Avatar name={c.name} email={c.email} src={c.avatar_url} size={56} />
                 <span className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full ring-2 ring-surface ${presenceCls}`} />
               </div>
               <div className="min-w-0">
