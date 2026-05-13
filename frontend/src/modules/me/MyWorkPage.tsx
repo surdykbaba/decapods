@@ -13,7 +13,7 @@ import { useAuth } from "@/lib/auth";
 import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
-  Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
+  Folder, ChevronRight, ChevronDown, ChevronUp, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
   Sparkles, Bell, XCircle, Pencil, Smile,
   Mail as MailIcon, Paperclip, Reply, AtSign, Users as UsersIcon, AlertCircle,
   RefreshCw, ExternalLink,
@@ -251,6 +251,49 @@ export function MyWorkPage() {
 
 /* ---------- Dashboard ---------- */
 
+// useCollapsible — small hook each widget calls to give itself an in-place
+// hide/show chevron. State is persisted in a per-user-per-id localStorage
+// map so a collapse choice on one device survives reloads. Hiding a widget
+// entirely is a separate concern (the Customise dialog) — collapse is a
+// quick "I don't need this right now" without leaving the layout.
+function useCollapsible(id: string) {
+  const STORAGE_KEY = "me-today-collapsed";
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      const map = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
+      return !!map[id];
+    } catch { return false; }
+  });
+  function toggle() {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        const map = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
+        map[id] = next;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(map));
+      } catch { /* ignore */ }
+      return next;
+    });
+  }
+  return [collapsed, toggle] as const;
+}
+
+// CollapseChevron — the standard "click me to hide/show this card" button.
+// Shared so the affordance reads identically across every widget.
+function CollapseChevron({ collapsed, onClick }: { collapsed: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center justify-center w-7 h-7 rounded-full text-muted hover:text-text hover:bg-bg/40 transition-colors"
+      aria-label={collapsed ? "Expand" : "Collapse"}
+      title={collapsed ? "Expand" : "Hide"}
+    >
+      {collapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+    </button>
+  );
+}
+
 // Widget vocabulary for the Today tab. Each entry is one card the user
 // can toggle in / out and re-order. Widgets are render-fn-driven so adding
 // a new one is a single object plus a switch case in renderWidget below —
@@ -264,7 +307,8 @@ type WidgetKey =
   | "next_moves"
   | "kudos_received"
   | "birthdays_today"
-  | "mood_pulse";
+  | "mood_pulse"
+  | "overtime";
 
 const WIDGET_META: Record<WidgetKey, { label: string; help: string }> = {
   hero:            { label: "Welcome hero",       help: "Time-of-day greeting + your today snapshot." },
@@ -276,16 +320,17 @@ const WIDGET_META: Record<WidgetKey, { label: string; help: string }> = {
   kudos_received:  { label: "Kudos you received", help: "Recognition colleagues sent your way." },
   birthdays_today: { label: "Birthdays today",    help: "Wish your teammates a happy birthday." },
   mood_pulse:      { label: "Mood pulse",         help: "Quick-pick mood for the current check-in slot." },
+  overtime:        { label: "Overtime watch",     help: "Hours logged this week vs the standard 40h week." },
 };
 
 const DEFAULT_LAYOUT: WidgetKey[] = [
   "hero", "heads_up", "meetings", "needs_now", "projects",
-  "kudos_received", "birthdays_today", "mood_pulse", "next_moves",
+  "kudos_received", "birthdays_today", "mood_pulse", "overtime", "next_moves",
 ];
 
 const ALL_WIDGETS: WidgetKey[] = [
   "hero", "heads_up", "meetings", "needs_now", "projects",
-  "next_moves", "kudos_received", "birthdays_today", "mood_pulse",
+  "next_moves", "kudos_received", "birthdays_today", "mood_pulse", "overtime",
 ];
 
 const LAYOUT_KEY = "me-today-layout";
@@ -475,6 +520,8 @@ function DashboardTab() {
         return todaysBirthdays.length > 0 ? <BirthdaysCard key="birthdays_today" birthdays={todaysBirthdays} /> : null;
       case "mood_pulse":
         return <MoodPulseCard key="mood_pulse" />;
+      case "overtime":
+        return <OvertimeCard key="overtime" hoursThisWeek={wd.counts.hours_this_week} />;
     }
   }
 
@@ -518,6 +565,7 @@ function HeroCard({
   data: WorkResponse;
   overdue: number; dueToday: number; blocked: number;
 }) {
+  const [collapsed, toggle] = useCollapsible("hero");
   const h = new Date().getHours();
   const greeting = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
   const emoji = h < 12 ? "🌅" : h < 17 ? "☀️" : "🌙";
@@ -535,23 +583,36 @@ function HeroCard({
     ? "from-warn/20 to-warn/5 border-warn/40"
     : "from-accent-soft to-accent-soft/30 border-accent/30";
   return (
-    <section className={`relative overflow-hidden bg-gradient-to-br ${tone} border rounded-2xl p-5`}>
+    <section className={`relative overflow-hidden bg-gradient-to-br ${tone} border rounded-2xl ${collapsed ? "px-5 py-3" : "p-5"}`}>
       <div aria-hidden className="absolute -top-8 -right-8 w-32 h-32 rounded-full bg-white/20 pointer-events-none" />
-      <div className="relative flex items-center justify-between gap-4 flex-wrap">
-        <div className="min-w-0">
-          <div className="text-[11px] uppercase tracking-[0.14em] font-bold text-text/70">My day</div>
-          <h2 className="text-2xl font-extrabold text-text leading-tight mt-1">
-            <span className="mr-1.5">{emoji}</span>
-            {greeting}, {first}.
-          </h2>
-          <p className="text-[13px] text-text/80 mt-1">{summary}</p>
+      {collapsed ? (
+        <div className="relative flex items-center justify-between gap-2">
+          <div className="inline-flex items-center gap-1.5 text-[12px] font-bold text-text/80">
+            <span>{emoji}</span> {greeting}, {first}
+            <span className="text-muted font-normal">· {summary}</span>
+          </div>
+          <CollapseChevron collapsed={collapsed} onClick={toggle} />
         </div>
-        <div className="text-right shrink-0">
-          <div className="text-[11px] uppercase tracking-wider text-muted font-bold">This week</div>
-          <div className="text-2xl font-extrabold text-text">{data.counts.hours_this_week.toFixed(1)}h</div>
-          <div className="text-[10.5px] text-muted">logged</div>
+      ) : (
+        <div className="relative flex items-center justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <div className="text-[11px] uppercase tracking-[0.14em] font-bold text-text/70">My day</div>
+            <h2 className="text-2xl font-extrabold text-text leading-tight mt-1">
+              <span className="mr-1.5">{emoji}</span>
+              {greeting}, {first}.
+            </h2>
+            <p className="text-[13px] text-text/80 mt-1">{summary}</p>
+          </div>
+          <div className="flex items-start gap-3 shrink-0">
+            <div className="text-right">
+              <div className="text-[11px] uppercase tracking-wider text-muted font-bold">This week</div>
+              <div className="text-2xl font-extrabold text-text">{data.counts.hours_this_week.toFixed(1)}h</div>
+              <div className="text-[10.5px] text-muted">logged</div>
+            </div>
+            <CollapseChevron collapsed={collapsed} onClick={toggle} />
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
@@ -565,9 +626,10 @@ function NeedsNowCard({
   data: WorkResponse;
   overdue: any[]; dueToday: any[]; blocked: any[]; orderedTriage: any[]; // eslint-disable-line @typescript-eslint/no-explicit-any
 }) {
+  const [collapsed, toggle] = useCollapsible("needs_now");
   return (
-    <section className="bg-surface border border-border rounded-2xl p-5">
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+    <section className={`bg-surface border border-border rounded-2xl ${collapsed ? "px-5 py-3" : "p-5"}`}>
+      <div className={`flex items-center justify-between gap-2 flex-wrap ${collapsed ? "" : "mb-3"}`}>
         <h2 className="h2 flex items-center gap-2"><Zap size={16} className="text-accent" /> Needs you now</h2>
         <div className="flex items-center gap-1.5 flex-wrap">
           {overdue.length > 0  && <span className="pill bg-danger/15 text-danger">{overdue.length} overdue</span>}
@@ -576,9 +638,10 @@ function NeedsNowCard({
           {overdue.length === 0 && dueToday.length === 0 && blocked.length === 0 && (
             <span className="text-xs text-muted">{data.priorities.length} item{data.priorities.length === 1 ? "" : "s"}</span>
           )}
+          <CollapseChevron collapsed={collapsed} onClick={toggle} />
         </div>
       </div>
-      {data.priorities.length === 0 ? (
+      {collapsed ? null : data.priorities.length === 0 ? (
         <EmptyHint
           icon={<CheckCircle2 size={22} className="text-success" />}
           title="Inbox zero"
@@ -608,13 +671,17 @@ function NeedsNowCard({
 
 // ProjectsCard — quick links to allocated projects with health pill.
 function ProjectsCard({ projects }: { projects: WorkResponse["projects"] }) {
+  const [collapsed, toggle] = useCollapsible("projects");
   return (
-    <section className="bg-surface border border-border rounded-2xl p-5">
-      <div className="flex items-center justify-between mb-3">
+    <section className={`bg-surface border border-border rounded-2xl ${collapsed ? "px-5 py-3" : "p-5"}`}>
+      <div className={`flex items-center justify-between gap-2 ${collapsed ? "" : "mb-3"}`}>
         <h2 className="h2 flex items-center gap-2"><Activity size={16} className="text-accent" /> Your projects</h2>
-        <span className="text-xs text-muted">{projects.length}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted">{projects.length}</span>
+          <CollapseChevron collapsed={collapsed} onClick={toggle} />
+        </div>
       </div>
-      {projects.length === 0 ? (
+      {collapsed ? null : projects.length === 0 ? (
         <EmptyHint
           icon={<Inbox size={22} className="text-muted" />}
           title="Not on any project yet"
@@ -655,11 +722,16 @@ function NextMovesCard({
 }: {
   suggestions: { icon: React.ReactNode; title: string; body: string; tone: "warn" | "info" | "good" }[];
 }) {
+  const [collapsed, toggle] = useCollapsible("next_moves");
   return (
-    <section className="bg-surface border border-border rounded-2xl p-5">
-      <h2 className="h2 flex items-center gap-2 mb-3">
-        <Sparkles size={16} className="text-accent" /> Suggested next moves
-      </h2>
+    <section className={`bg-surface border border-border rounded-2xl ${collapsed ? "px-5 py-3" : "p-5"}`}>
+      <div className={`flex items-center justify-between gap-2 ${collapsed ? "" : "mb-3"}`}>
+        <h2 className="h2 flex items-center gap-2">
+          <Sparkles size={16} className="text-accent" /> Suggested next moves
+        </h2>
+        <CollapseChevron collapsed={collapsed} onClick={toggle} />
+      </div>
+      {collapsed ? null : (
       <ul className="grid grid-cols-1 md:grid-cols-2 gap-2">
         {suggestions.map((s, i) => {
           const toneCls = s.tone === "warn" ? "bg-warn/10 text-warn border-warn/30"
@@ -678,6 +750,7 @@ function NextMovesCard({
           );
         })}
       </ul>
+      )}
     </section>
   );
 }
@@ -689,6 +762,7 @@ function KudosReceivedCard({
 }: {
   kudos: { id: string; from: { id: string; name: string; email: string }; badge: string; message: string; created_at: string }[];
 }) {
+  const [collapsed, toggle] = useCollapsible("kudos_received");
   const BADGES: Record<string, { label: string; emoji: string }> = {
     delivery_champion: { label: "Delivery champion", emoji: "🏆" },
     problem_solver:    { label: "Problem solver",    emoji: "🧠" },
@@ -698,11 +772,15 @@ function KudosReceivedCard({
     custom:            { label: "Thanks",            emoji: "🙌" },
   };
   return (
-    <section className="bg-gradient-to-br from-warn/10 to-accent-soft border border-warn/30 rounded-2xl p-5">
-      <h2 className="h2 flex items-center gap-2 mb-3 text-warn">
-        🎉 Kudos you received
-        <span className="text-[12px] text-muted font-medium">· {kudos.length} total</span>
-      </h2>
+    <section className={`bg-gradient-to-br from-warn/10 to-accent-soft border border-warn/30 rounded-2xl ${collapsed ? "px-5 py-3" : "p-5"}`}>
+      <div className={`flex items-center justify-between gap-2 ${collapsed ? "" : "mb-3"}`}>
+        <h2 className="h2 flex items-center gap-2 text-warn">
+          🎉 Kudos you received
+          <span className="text-[12px] text-muted font-medium">· {kudos.length} total</span>
+        </h2>
+        <CollapseChevron collapsed={collapsed} onClick={toggle} />
+      </div>
+      {collapsed ? null : <>
       <ul className="space-y-2">
         {kudos.slice(0, 4).map((k) => {
           const meta = BADGES[k.badge] ?? { label: k.badge, emoji: "🙌" };
@@ -725,6 +803,7 @@ function KudosReceivedCard({
           + {kudos.length - 4} more · open <Link to="/colleagues" className="text-accent hover:underline">Colleagues</Link>
         </div>
       )}
+      </>}
     </section>
   );
 }
@@ -735,11 +814,17 @@ function BirthdaysCard({
 }: {
   birthdays: { id: string; name: string; email: string }[];
 }) {
+  const [collapsed, toggle] = useCollapsible("birthdays_today");
   return (
-    <section className="bg-gradient-to-br from-warn/15 to-accent-soft/40 border border-warn/30 rounded-2xl p-5">
-      <h2 className="h2 flex items-center gap-2 mb-3">
-        🎂 Happy birthday today
-      </h2>
+    <section className={`bg-gradient-to-br from-warn/15 to-accent-soft/40 border border-warn/30 rounded-2xl ${collapsed ? "px-5 py-3" : "p-5"}`}>
+      <div className={`flex items-center justify-between gap-2 ${collapsed ? "" : "mb-3"}`}>
+        <h2 className="h2 flex items-center gap-2">
+          🎂 Happy birthday today
+          <span className="text-[12px] text-muted font-medium">· {birthdays.length}</span>
+        </h2>
+        <CollapseChevron collapsed={collapsed} onClick={toggle} />
+      </div>
+      {collapsed ? null : <>
       <ul className="flex flex-wrap gap-2">
         {birthdays.map((b) => (
           <li key={b.id}>
@@ -756,6 +841,7 @@ function BirthdaysCard({
         ))}
       </ul>
       <p className="text-[11.5px] text-muted mt-2">Tap a name to open their drawer and send a kudo.</p>
+      </>}
     </section>
   );
 }
@@ -764,20 +850,84 @@ function BirthdaysCard({
 // always visible so a user with a tough morning gets a one-click path to
 // log it.
 function MoodPulseCard() {
+  const [collapsed, toggle] = useCollapsible("mood_pulse");
   return (
-    <section className="bg-surface border border-border rounded-2xl p-5 flex items-center justify-between gap-4 flex-wrap">
-      <div>
-        <h2 className="h2 flex items-center gap-2"><Smile size={16} className="text-accent" /> Mood pulse</h2>
+    <section className={`bg-surface border border-border rounded-2xl ${collapsed ? "px-5 py-3" : "p-5"} ${collapsed ? "flex items-center justify-between gap-2" : "flex items-center justify-between gap-4 flex-wrap"}`}>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="h2 flex items-center gap-2"><Smile size={16} className="text-accent" /> Mood pulse</h2>
+          {collapsed && <CollapseChevron collapsed={collapsed} onClick={toggle} />}
+        </div>
+        {!collapsed && <>
         <p className="text-[12.5px] text-muted mt-1">
           Up to three quick check-ins per day — morning, afternoon, evening. One tap to log.
         </p>
+        </>}
       </div>
-      <Link
-        to="/my-work?tab=checkins"
-        className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 press-fx"
-      >
-        <Smile size={13} /> Check in
-      </Link>
+      {!collapsed && (
+      <div className="flex items-center gap-2">
+        <Link
+          to="/my-work?tab=checkins"
+          className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 press-fx"
+        >
+          <Smile size={13} /> Check in
+        </Link>
+        <CollapseChevron collapsed={collapsed} onClick={toggle} />
+      </div>
+      )}
+    </section>
+  );
+}
+
+// OvertimeCard — compares hours_this_week against a 40h standard week.
+// Surfaces over/under as a single sentence + a slim progress bar. Tinted
+// amber/danger when materially over (>5h / >10h respectively) so chronic
+// over-work doesn't hide behind a green pill.
+function OvertimeCard({ hoursThisWeek }: { hoursThisWeek: number }) {
+  const [collapsed, toggle] = useCollapsible("overtime");
+  const STANDARD_WEEK = 40;
+  const delta = hoursThisWeek - STANDARD_WEEK;
+  const pct = Math.min(150, (hoursThisWeek / STANDARD_WEEK) * 100);
+  const tone =
+    delta >= 10 ? "bg-danger/10 border-danger/30 text-danger"
+    : delta >= 5  ? "bg-warn/10 border-warn/30 text-warn"
+    : delta >= 0  ? "bg-success/10 border-success/30 text-success"
+    : "bg-bg/40 border-border text-muted";
+  const barCls =
+    delta >= 10 ? "bg-danger"
+    : delta >= 5  ? "bg-warn"
+    : "bg-success";
+  const headline =
+    delta >= 5  ? `${delta.toFixed(1)}h over a standard week`
+    : delta > 0 ? `${delta.toFixed(1)}h over — fine but watch it`
+    : delta === 0 ? "Right on the standard 40h week"
+    : `${Math.abs(delta).toFixed(1)}h under standard so far`;
+  return (
+    <section className={`border rounded-2xl ${tone} ${collapsed ? "px-5 py-3" : "p-5"}`}>
+      <div className={`flex items-center justify-between gap-2 ${collapsed ? "" : "mb-3"}`}>
+        <h2 className="h2 flex items-center gap-2">
+          <Clock size={16} /> Overtime watch
+          <span className="text-[12px] font-medium opacity-80">· {hoursThisWeek.toFixed(1)}h this week</span>
+        </h2>
+        <CollapseChevron collapsed={collapsed} onClick={toggle} />
+      </div>
+      {collapsed ? null : (
+        <>
+          <div className="text-[13px] font-semibold">{headline}</div>
+          <div className="mt-2 h-2 bg-bg/40 rounded-full overflow-hidden">
+            <div className={`h-full ${barCls} transition-all`} style={{ width: `${pct}%` }} />
+          </div>
+          <div className="flex items-center justify-between mt-1 text-[10.5px] text-muted">
+            <span>0h</span>
+            <span>40h · standard</span>
+            <span>50h+</span>
+          </div>
+          <p className="text-[11.5px] text-muted mt-2 leading-snug">
+            Based on a 40h Mon-Fri baseline. Hours come from your logged time entries — if you've worked but
+            haven't logged, the number won't reflect it.
+          </p>
+        </>
+      )}
     </section>
   );
 }
