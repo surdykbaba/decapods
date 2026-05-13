@@ -21,6 +21,7 @@ import {
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
   Wrench, Briefcase, Hash, Plus, Loader2, CalendarDays, Calendar,
   Lock, Users as UsersIcon, X as XIcon, UserPlus as UserPlusIcon, Search as SearchIcon, Check,
+  ChevronLeft, Trash2,
 } from "lucide-react";
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -273,7 +274,7 @@ export function CampfirePage() {
           {tab === "kudos"    && <Kudos />}
           {tab === "mood"     && <MoodCheck isAdmin={isAdmin} />}
           {tab === "help"     && <HelpWall currentUserId={user?.id ?? ""} />}
-          {tab === "rooms"    && <TeamRooms />}
+          {tab === "rooms"    && <TeamRooms isAdmin={isAdmin} />}
         </div>
       </div>
       </div>{/* close: relative z-10 content layer */}
@@ -1458,7 +1459,7 @@ function HelpComposer({ onClose, onCreated }: { onClose: () => void; onCreated: 
  * Team rooms
  * ───────────────────────────────────────────────────────────────────────── */
 
-function TeamRooms() {
+function TeamRooms({ isAdmin }: { isAdmin: boolean }) {
   // refetchOnWindowFocus + poll so a freshly-created room appears without a
   // hard refresh. The roster query elsewhere is the one that's heavy; the
   // rooms list itself is just metadata.
@@ -1472,6 +1473,11 @@ function TeamRooms() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [search, setSearch] = useState("");
+  // Mobile uses a single-column flip between sidebar ("list") and the
+  // active channel ("room"). md+ shows both side-by-side. Picking a
+  // channel on mobile flips us to "room" so the message view fills the
+  // viewport; the room header's back arrow flips us back.
+  const [mobileView, setMobileView] = useState<"list" | "room">("list");
 
   useEffect(() => {
     if (!activeId && rooms.length > 0) {
@@ -1480,6 +1486,10 @@ function TeamRooms() {
   }, [rooms, activeId]);
 
   const active = rooms.find((r) => r.id === activeId);
+  const handlePick = (id: string) => {
+    setActiveId(id);
+    setMobileView("room");
+  };
 
   // Group + filter: workspace-wide (public) on top, private below. Search
   // filters both. Sort each group by most recently active, then name.
@@ -1504,8 +1514,8 @@ function TeamRooms() {
   const totalShown = groups.workspace.length + groups.private.length;
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-4 h-[640px]">
-      <aside className="bg-surface border border-border rounded-2xl overflow-hidden flex flex-col">
+    <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] gap-3 md:gap-4 h-[calc(100dvh-220px)] min-h-[480px] md:h-[640px]">
+      <aside className={`${mobileView === "room" ? "hidden md:flex" : "flex"} bg-surface border border-border rounded-2xl overflow-hidden flex-col`}>
         <button
           onClick={() => setCreateOpen(true)}
           className="m-2 inline-flex items-center justify-center gap-1.5 text-[12.5px] font-semibold px-3 py-2 rounded-lg bg-accent-soft text-accent hover:bg-accent hover:text-white transition-colors"
@@ -1553,14 +1563,14 @@ function TeamRooms() {
                 label="Workspace"
                 rooms={groups.workspace}
                 activeId={activeId}
-                onPick={setActiveId}
+                onPick={handlePick}
               />
               <RoomGroup
                 label="Private"
                 privateGroup
                 rooms={groups.private}
                 activeId={activeId}
-                onPick={setActiveId}
+                onPick={handlePick}
                 onCreate={() => setCreateOpen(true)}
               />
             </>
@@ -1568,9 +1578,14 @@ function TeamRooms() {
         </div>
       </aside>
 
-      <div className="bg-surface border border-border rounded-2xl flex flex-col overflow-hidden">
+      <div className={`${mobileView === "list" ? "hidden md:flex" : "flex"} bg-surface border border-border rounded-2xl flex-col overflow-hidden min-h-0`}>
         {active ? (
-          <RoomView room={active} />
+          <RoomView
+            room={active}
+            isAdmin={isAdmin}
+            onBack={() => setMobileView("list")}
+            onDeleted={() => { setActiveId(null); setMobileView("list"); }}
+          />
         ) : (
           <RoomsEmptyState
             hasRooms={rooms.length > 0}
@@ -1582,7 +1597,7 @@ function TeamRooms() {
       {createOpen && (
         <CreateRoomDialog
           onClose={() => setCreateOpen(false)}
-          onCreated={(id) => { setActiveId(id); setCreateOpen(false); }}
+          onCreated={(id) => { setActiveId(id); setMobileView("room"); setCreateOpen(false); }}
         />
       )}
     </div>
@@ -1874,7 +1889,14 @@ function CreateRoomDialog({ onClose, onCreated }: { onClose: () => void; onCreat
   );
 }
 
-function RoomView({ room }: { room: Room }) {
+function RoomView({
+  room, isAdmin, onBack, onDeleted,
+}: {
+  room: Room;
+  isAdmin: boolean;
+  onBack: () => void;
+  onDeleted: () => void;
+}) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const { data } = useQuery<{ items: Message[] }>({
@@ -1898,6 +1920,22 @@ function RoomView({ room }: { room: Room }) {
     },
   });
 
+  // Delete-channel mutation. Backend gates by ownership / governance:write
+  // so the UI doesn't need to over-restrict — but we still hide the menu
+  // entry for users with no chance of success, to avoid an obvious 403.
+  const canDelete = !room.is_default && (room.is_owner || isAdmin);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const del = useMutation({
+    mutationFn: () =>
+      api(`/api/v1/campfire/rooms/${room.id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      toast.success("Channel deleted");
+      qc.invalidateQueries({ queryKey: ["campfire", "rooms"] });
+      onDeleted();
+    },
+    onError: (e: any) => toast.error("Couldn't delete", e?.message),
+  });
+
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages.length]);
@@ -1906,27 +1944,72 @@ function RoomView({ room }: { room: Room }) {
 
   return (
     <>
-      <header className="px-5 py-3 border-b border-border flex items-center justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            {room.is_private ? <Lock size={14} className="text-warn" /> : <Hash size={16} className="text-muted" />}
-            <span className="text-sm font-bold truncate">{room.name}</span>
-            {room.is_private && (
-              <span className="pill bg-warn/15 text-warn text-[10px]">Private</span>
-            )}
-          </div>
-          {room.description && <div className="text-[11px] text-muted truncate">{room.description}</div>}
-        </div>
-        {room.is_private && (
+      <header className="px-3 sm:px-5 py-3 border-b border-border flex items-center justify-between gap-2 sm:gap-3">
+        <div className="min-w-0 flex items-center gap-2 flex-1">
           <button
-            onClick={() => setMembersOpen(true)}
-            className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-muted hover:text-accent px-2 py-1 rounded-lg hover:bg-bg/40 shrink-0"
-            title="Manage members"
+            onClick={onBack}
+            className="md:hidden -ml-1 p-1.5 rounded-lg text-muted hover:bg-bg/40"
+            title="Back to channels"
+            aria-label="Back to channels"
           >
-            <UsersIcon size={12} /> {room.member_count ?? "—"}
+            <ChevronLeft size={18} />
           </button>
-        )}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              {room.is_private ? <Lock size={14} className="text-warn shrink-0" /> : <Hash size={16} className="text-muted shrink-0" />}
+              <span className="text-sm font-bold truncate">{room.name}</span>
+              {room.is_private && (
+                <span className="pill bg-warn/15 text-warn text-[10px] hidden sm:inline">Private</span>
+              )}
+            </div>
+            {room.description && <div className="text-[11px] text-muted truncate hidden sm:block">{room.description}</div>}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          {room.is_private && (
+            <button
+              onClick={() => setMembersOpen(true)}
+              className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-muted hover:text-accent px-2 py-1 rounded-lg hover:bg-bg/40"
+              title="Manage members"
+            >
+              <UsersIcon size={12} /> {room.member_count ?? "—"}
+            </button>
+          )}
+          {canDelete && (
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-muted hover:text-danger px-2 py-1 rounded-lg hover:bg-danger/10"
+              title="Delete channel"
+              aria-label="Delete channel"
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
+        </div>
       </header>
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={() => setConfirmDelete(false)}>
+          <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-sm p-5" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-base font-bold flex items-center gap-2"><Trash2 size={14} className="text-danger" /> Delete #{room.name}?</h3>
+            <p className="text-[13px] text-muted mt-2">
+              Every message, reaction and member row in this channel will be removed. This can't be undone.
+            </p>
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button onClick={() => setConfirmDelete(false)} className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg text-muted hover:bg-bg/40">
+                Cancel
+              </button>
+              <button
+                disabled={del.isPending}
+                onClick={() => del.mutate()}
+                className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg bg-danger text-white hover:bg-danger/90 disabled:opacity-60"
+              >
+                {del.isPending ? "Deleting…" : "Delete channel"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {membersOpen && (
         <RoomMembersDialog

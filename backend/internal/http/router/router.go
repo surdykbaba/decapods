@@ -360,6 +360,10 @@ func New(d Deps) http.Handler {
 	authed.GET("/campfire/rooms/:id/members",   cf.ListRoomMembers)
 	authed.POST("/campfire/rooms/:id/members",  cf.AddRoomMember)
 	authed.DELETE("/campfire/rooms/:id/members/:uid", cf.RemoveRoomMember)
+	// Channel deletion. Gate is enforced inside the handler: room owner
+	// (any role) OR governance:write (CEO / COO / super_admin). Default
+	// rooms (is_default=true) refuse to delete.
+	authed.DELETE("/campfire/rooms/:id", cf.DeleteRoom)
 
 	authed.GET("/campfire/insights", mw.RequirePermission("governance:write"), cf.Insights)
 	authed.GET("/campfire/unread",     cf.Unread)

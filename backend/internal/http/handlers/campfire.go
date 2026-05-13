@@ -1119,6 +1119,56 @@ func (h *Campfire) RemoveRoomMember(c *gin.Context) {
 	c.JSON(200, gin.H{"ok": true})
 }
 
+// DeleteRoom hard-deletes a channel and cascades messages, reactions and
+// member rows via FK ON DELETE CASCADE. Allowed for the channel owner or
+// any caller with governance:write (CEO / COO / super_admin). The default
+// "General" channel and any other is_default=true rooms refuse to delete
+// — they're the workspace fallback chat and removing them would orphan
+// the UI's default-room logic.
+func (h *Campfire) DeleteRoom(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	roomID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad room id"})
+		return
+	}
+	var (
+		ownerID   uuid.UUID
+		isDefault bool
+		name      string
+	)
+	if err := h.db.QueryRow(c.Request.Context(), `
+		SELECT COALESCE(created_by, '00000000-0000-0000-0000-000000000000'::uuid),
+		       COALESCE(is_default, false),
+		       name
+		FROM campfire_rooms WHERE id=$1 AND tenant_id=$2`, roomID, tid).Scan(&ownerID, &isDefault, &name); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
+		return
+	}
+	if isDefault {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "The default channel can't be deleted — it's the workspace fallback chat.",
+		})
+		return
+	}
+	if ownerID != uid && !auth.HasPermission(roles, "governance:write") {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Only the channel owner or a CEO/COO can delete this channel.",
+		})
+		return
+	}
+	// Single statement; FK cascade handles members + messages + reactions.
+	if _, err := h.db.Exec(c.Request.Context(), `
+		DELETE FROM campfire_rooms WHERE id=$1 AND tenant_id=$2`, roomID, tid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "deleted": name})
+}
+
 func (h *Campfire) ListMessages(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
