@@ -42,6 +42,16 @@ type Resp = {
     tasks_done: number;
     mood_counts: Record<string, number>;
   };
+  // Diagnostic block surfaced on the empty state so a "no history" report
+  // is debuggable without DB access. items_emitted should match items.length;
+  // a non-zero scan_errors means the backend dropped rows during scan.
+  _meta?: {
+    items_emitted: number;
+    scan_errors: number;
+    last_scan_err: string;
+    from: string;
+    days: number;
+  };
 };
 
 function fmtDay(iso: string): string {
@@ -428,6 +438,19 @@ export function MyCheckinsTab() {
                 <Activity size={13} /> Refresh
               </button>
             </div>
+            {/* Diagnostic — only renders when the server returned 0 items
+                OR dropped any during scan. Lets the user (and us) tell apart
+                "endpoint returned nothing" from "rows came back but a scan
+                bug ate them" without DB access. */}
+            {data?._meta && (data._meta.items_emitted === 0 || data._meta.scan_errors > 0) && (
+              <div className="text-[10.5px] text-muted/70 mt-3 font-mono">
+                debug · items: {data._meta.items_emitted} · scan_errs: {data._meta.scan_errors}
+                {data._meta.scan_errors > 0 && (
+                  <> · last: <span className="text-danger">{data._meta.last_scan_err}</span></>
+                )}
+                {" "}· from: {data._meta.from} · days: {data._meta.days}
+              </div>
+            )}
           </div>
         ) : pageRows.length === 0 ? (
           <div className="p-10 text-center text-muted text-sm">No days match these filters.</div>

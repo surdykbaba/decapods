@@ -424,7 +424,19 @@ func (h *CheckinRollup) Self(c *gin.Context) {
 			"tasks_done":  totalTasks,
 			"mood_counts": moodCounts,
 		},
+		// _meta is a small diagnostic block the SPA can surface when items
+		// is empty. Without this the user (and us!) can't tell apart
+		// "endpoint returned 0 rows" from "rows came back but every scan
+		// failed silently" — the bug class we keep hitting with bigint.
+		"_meta": gin.H{
+			"items_emitted": len(out),
+			"scan_errors":   scanErrs,
+			"last_scan_err": lastScanErr,
+			"from":          fromStr,
+			"days":          days,
+		},
 	})
+	_ = tid // referenced for context; not used in the query
 }
 
 // (totalTasks is int64 above for type-safety with PostgreSQL COUNT bigint;
