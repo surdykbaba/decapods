@@ -165,6 +165,9 @@ func classifyPresence(manual *string, manualUntil *time.Time, lastSeen *time.Tim
 var validPostKinds = map[string]bool{
 	"announcement": true, "win": true, "celebration": true, "joiner": true,
 	"birthday": true, "anniversary": true, "note": true, "update": true,
+	// Polls — meta carries the options + flags. The card renders inline
+	// vote bars and a "Vote" button. Tallies live in campfire_poll_votes.
+	"poll": true,
 }
 
 func (h *Campfire) ListPosts(c *gin.Context) {
@@ -229,7 +232,163 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 		p["reactions"] = reactions[id]
 	}
 
+	// Hydrate poll tallies. One query for the whole page: count votes per
+	// (post, option) plus the calling user's selections. Posts without any
+	// votes still render the bars at 0, so the result map needs an empty
+	// entry for every poll post even when nobody has voted yet.
+	pollIDs := []uuid.UUID{}
+	for _, p := range posts {
+		if p["kind"] == "poll" {
+			pollIDs = append(pollIDs, p["id"].(uuid.UUID))
+		}
+	}
+	if len(pollIDs) > 0 {
+		tallies := map[uuid.UUID]map[int]int64{}
+		myVotes := map[uuid.UUID]map[int]bool{}
+		voters := map[uuid.UUID]map[uuid.UUID]bool{}
+		rows2, err := h.db.Query(c.Request.Context(), `
+			SELECT post_id, option_idx, user_id
+			FROM campfire_poll_votes WHERE post_id = ANY($1)`, pollIDs)
+		if err == nil {
+			defer rows2.Close()
+			for rows2.Next() {
+				var pid, vUID uuid.UUID
+				var idx int
+				if err := rows2.Scan(&pid, &idx, &vUID); err == nil {
+					if tallies[pid] == nil {
+						tallies[pid] = map[int]int64{}
+					}
+					tallies[pid][idx]++
+					if vUID == uid {
+						if myVotes[pid] == nil {
+							myVotes[pid] = map[int]bool{}
+						}
+						myVotes[pid][idx] = true
+					}
+					if voters[pid] == nil {
+						voters[pid] = map[uuid.UUID]bool{}
+					}
+					voters[pid][vUID] = true
+				}
+			}
+		}
+		for _, p := range posts {
+			if p["kind"] != "poll" {
+				continue
+			}
+			id := p["id"].(uuid.UUID)
+			t := tallies[id]
+			counts := []int64{}
+			meta, _ := p["meta"].(map[string]any)
+			if opts, ok := meta["options"].([]any); ok {
+				counts = make([]int64, len(opts))
+				for i := range opts {
+					counts[i] = t[i]
+				}
+			}
+			mine := []int{}
+			for idx := range myVotes[id] {
+				mine = append(mine, idx)
+			}
+			meta["vote_counts"] = counts
+			meta["my_votes"] = mine
+			meta["voter_count"] = int64(len(voters[id]))
+			p["meta"] = meta
+		}
+	}
+
 	c.JSON(200, gin.H{"items": posts})
+}
+
+// VotePoll toggles the caller's vote on a poll option. The body specifies
+// option_idx; the handler enforces uniqueness per (post, user, idx) so
+// re-clicking the same option un-votes. For single-choice polls (meta.multi
+// is missing or false), voting for a new option clears the previous one.
+func (h *Campfire) VotePoll(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	postID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad post id"})
+		return
+	}
+	var req struct {
+		OptionIdx int `json:"option_idx"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	// Fetch the post + its meta to know option count + single-vs-multi.
+	var (
+		kind string
+		meta map[string]any
+	)
+	if err := h.db.QueryRow(c.Request.Context(), `
+		SELECT kind, COALESCE(meta, '{}'::jsonb) FROM campfire_posts
+		WHERE id=$1 AND tenant_id=$2`, postID, tid).Scan(&kind, &meta); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "poll not found"})
+		return
+	}
+	if kind != "poll" {
+		c.JSON(400, gin.H{"error": "not a poll"})
+		return
+	}
+	opts, _ := meta["options"].([]any)
+	if req.OptionIdx < 0 || req.OptionIdx >= len(opts) {
+		c.JSON(400, gin.H{"error": "option_idx out of range"})
+		return
+	}
+	multi, _ := meta["multi"].(bool)
+
+	tx, err := h.db.Begin(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback(c.Request.Context())
+
+	// Look for an existing vote on this exact option. If we find one, the
+	// click is a toggle-off: remove it. Otherwise, for single-vote polls
+	// clear all the caller's previous votes first; then insert.
+	var has bool
+	if err := tx.QueryRow(c.Request.Context(), `
+		SELECT EXISTS (SELECT 1 FROM campfire_poll_votes
+		               WHERE post_id=$1 AND user_id=$2 AND option_idx=$3)`,
+		postID, uid, req.OptionIdx).Scan(&has); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if has {
+		if _, err := tx.Exec(c.Request.Context(), `
+			DELETE FROM campfire_poll_votes
+			WHERE post_id=$1 AND user_id=$2 AND option_idx=$3`,
+			postID, uid, req.OptionIdx); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+	} else {
+		if !multi {
+			if _, err := tx.Exec(c.Request.Context(), `
+				DELETE FROM campfire_poll_votes
+				WHERE post_id=$1 AND user_id=$2`, postID, uid); err != nil {
+				c.JSON(500, gin.H{"error": err.Error()})
+				return
+			}
+		}
+		if _, err := tx.Exec(c.Request.Context(), `
+			INSERT INTO campfire_poll_votes (post_id, user_id, option_idx)
+			VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+			postID, uid, req.OptionIdx); err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	if err := tx.Commit(c.Request.Context()); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
 }
 
 func (h *Campfire) CreatePost(c *gin.Context) {

@@ -23,6 +23,7 @@ import {
   Wrench, Briefcase, Hash, Plus, Loader2, CalendarDays, Calendar,
   Lock, Users as UsersIcon, X as XIcon, UserPlus as UserPlusIcon, Search as SearchIcon, Check,
   ChevronLeft, ChevronDown, ChevronUp, Trash2, Link as LinkIcon, Copy, Pencil, Info,
+  BarChart3, CheckCircle2 as CheckCircle, Megaphone as MegaphoneIcon,
 } from "lucide-react";
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -126,6 +127,7 @@ const POST_KINDS: Record<string, { label: string; icon: React.ComponentType<any>
   anniversary:  { label: "Work anniversary", icon: Sparkles,  ring: "ring-success", tint: "bg-success/10 text-success" },
   note:         { label: "Leadership note", icon: StickyNote, ring: "ring-accent",  tint: "bg-accent-soft text-accent" },
   update:       { label: "Quick update",  icon: Newspaper,    ring: "ring-muted",   tint: "bg-bg text-muted" },
+  poll:         { label: "Poll",           icon: BarChart3,    ring: "ring-accent",  tint: "bg-accent-soft text-accent" },
 };
 
 const BADGES: Record<string, { label: string; icon: React.ComponentType<any>; tint: string }> = {
@@ -723,21 +725,46 @@ function ComposerHints({ value, onChange }: { value: string; onChange: (v: strin
   );
 }
 
-function PostComposer({ initialKind, onClose, onCreated, allowPin }: { initialKind?: string; onClose: () => void; onCreated: () => void; allowPin: boolean }) {
+function PostComposer({
+  initialKind, initialBody, initialTitle, onClose, onCreated, allowPin,
+}: {
+  initialKind?: string;
+  initialBody?: string;
+  initialTitle?: string;
+  onClose: () => void;
+  onCreated: () => void;
+  allowPin: boolean;
+}) {
   const [kind, setKind] = useState(initialKind ?? "update");
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
+  const [title, setTitle] = useState(initialTitle ?? "");
+  const [body, setBody] = useState(initialBody ?? "");
   const [pinned, setPinned] = useState(false);
+  // Poll-only state. Two options is the floor (a "poll" with one choice
+  // is just a button) and six is the ceiling (longer than that and the
+  // card stops being skim-readable).
+  const [pollOptions, setPollOptions] = useState<string[]>(["", ""]);
+  const [pollMulti, setPollMulti] = useState(false);
 
   const create = useMutation({
-    mutationFn: () =>
-      api("/api/v1/campfire/posts", {
+    mutationFn: () => {
+      const payload: any = { kind, title: title.trim(), body: body.trim(), pinned };
+      if (kind === "poll") {
+        const opts = pollOptions.map((o) => o.trim()).filter(Boolean);
+        payload.meta = { options: opts, multi: pollMulti };
+      }
+      return api("/api/v1/campfire/posts", {
         method: "POST",
-        body: JSON.stringify({ kind, title: title.trim(), body: body.trim(), pinned }),
-      }),
+        body: JSON.stringify(payload),
+      });
+    },
     onSuccess: () => { toast.success("Posted to Campfire"); onCreated(); },
     onError: (e: Error) => toast.error("Could not post", e.message),
   });
+
+  // For polls, require ≥2 non-empty options. Reuse the body field as the
+  // poll question — feels natural ("What should we eat?") and stops us
+  // having to invent a new prompt field on the row.
+  const pollReady = kind !== "poll" || pollOptions.map((o) => o.trim()).filter(Boolean).length >= 2;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={onClose}>
@@ -779,12 +806,59 @@ function PostComposer({ initialKind, onClose, onCreated, allowPin }: { initialKi
           />
           <MentionInput
             className="input min-h-[120px]"
-            placeholder="What's the story? Paste a link, drop an @mention…"
+            placeholder={kind === "poll" ? "Ask the workspace something. 'What should we eat for the team lunch?'" : "What's the story? Paste a link, drop an @mention…"}
             value={body}
             onChange={setBody}
             minRows={5}
           />
-          <ComposerHints onChange={setBody} value={body} />
+          {kind === "poll" && (
+            <div className="rounded-xl border border-accent/30 bg-accent-soft/30 p-3 space-y-2">
+              <div className="text-[10.5px] uppercase tracking-wider font-bold text-accent inline-flex items-center gap-1.5">
+                <BarChart3 size={11} /> Poll options · {pollOptions.filter((o) => o.trim()).length}/6
+              </div>
+              {pollOptions.map((opt, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <span className="text-[11px] font-bold text-muted w-5 text-center">{idx + 1}</span>
+                  <input
+                    className="input flex-1"
+                    placeholder={`Option ${idx + 1}`}
+                    value={opt}
+                    onChange={(e) => {
+                      const next = [...pollOptions];
+                      next[idx] = e.target.value;
+                      setPollOptions(next);
+                    }}
+                  />
+                  {pollOptions.length > 2 && (
+                    <button
+                      type="button"
+                      onClick={() => setPollOptions(pollOptions.filter((_, i) => i !== idx))}
+                      className="p-1.5 text-muted hover:text-danger rounded-md"
+                      title="Remove option"
+                      aria-label="Remove option"
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <div className="flex items-center justify-between pt-1">
+                <button
+                  type="button"
+                  onClick={() => pollOptions.length < 6 && setPollOptions([...pollOptions, ""])}
+                  disabled={pollOptions.length >= 6}
+                  className="text-[12px] font-semibold text-accent hover:underline disabled:opacity-50 inline-flex items-center gap-1"
+                >
+                  <Plus size={11} /> Add option
+                </button>
+                <label className="inline-flex items-center gap-1.5 text-[12px] text-muted">
+                  <input type="checkbox" checked={pollMulti} onChange={(e) => setPollMulti(e.target.checked)} />
+                  Allow multiple choices
+                </label>
+              </div>
+            </div>
+          )}
+          {kind !== "poll" && <ComposerHints onChange={setBody} value={body} />}
           {allowPin && (
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
@@ -796,12 +870,12 @@ function PostComposer({ initialKind, onClose, onCreated, allowPin }: { initialKi
           <button onClick={onClose} className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text">Cancel</button>
           <SmartButton
             variant="primary"
-            disabled={create.isPending || !body.trim()}
+            disabled={create.isPending || !body.trim() || !pollReady}
             loadingLabel="Posting…"
             icon={<Send size={14} />}
             onClick={() => create.mutate()}
           >
-            Post
+            {kind === "poll" ? "Post poll" : "Post"}
           </SmartButton>
         </footer>
       </div>
@@ -841,6 +915,7 @@ function PostCard({
             </div>
             {post.title && <div className="text-base font-bold text-text mt-1">{post.title}</div>}
             <SmartBody className="text-sm text-text mt-1" text={post.body} />
+            {post.kind === "poll" && <PollBody post={post} />}
           </div>
           <div className="flex items-center gap-1 shrink-0">
             {isAdmin && (
@@ -873,6 +948,91 @@ function PostCard({
         {showComments && <CommentsThread postId={post.id} />}
       </div>
     </article>
+  );
+}
+
+/* PollBody — the vote-bar block that follows the question text on
+ * kind="poll" posts. Click any row to toggle a vote; single-choice polls
+ * (meta.multi=false) flip the previous vote automatically. Counts and
+ * "your vote" markers come back from ListPosts hydration so the card
+ * is correct on first paint.
+ *
+ * Branding: the bar uses the accent gradient at full opacity for the
+ * winning option and a faded version for the rest, so a glance at any
+ * card answers "what's winning?" without reading numbers.
+ */
+function PollBody({ post }: { post: Post }) {
+  const qc = useQueryClient();
+  const meta = (post.meta ?? {}) as Record<string, any>;
+  const options: string[] = Array.isArray(meta.options) ? meta.options : [];
+  const counts: number[] = Array.isArray(meta.vote_counts) ? meta.vote_counts : new Array(options.length).fill(0);
+  const myVotes: number[] = Array.isArray(meta.my_votes) ? meta.my_votes : [];
+  const voterCount: number = typeof meta.voter_count === "number" ? meta.voter_count : 0;
+  const multi: boolean = !!meta.multi;
+
+  const total = counts.reduce((a, b) => a + b, 0);
+  const winner = total > 0 ? Math.max(...counts) : 0;
+
+  const vote = useMutation({
+    mutationFn: (idx: number) =>
+      api(`/api/v1/campfire/posts/${post.id}/vote`, {
+        method: "POST",
+        body: JSON.stringify({ option_idx: idx }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["campfire-posts"] }),
+    onError: (e: any) => toast.error("Vote didn't go through", e?.message),
+  });
+
+  if (options.length === 0) {
+    return (
+      <div className="mt-2 text-[12px] text-muted italic">Poll has no options yet.</div>
+    );
+  }
+
+  return (
+    <div className="mt-3 space-y-1.5">
+      {options.map((opt, idx) => {
+        const c = counts[idx] ?? 0;
+        const pct = total === 0 ? 0 : Math.round((c / total) * 100);
+        const picked = myVotes.includes(idx);
+        const isWinner = total > 0 && c === winner;
+        return (
+          <button
+            key={idx}
+            onClick={() => vote.mutate(idx)}
+            disabled={vote.isPending}
+            className={`group relative w-full text-left border rounded-xl px-3 py-2 overflow-hidden press-fx transition-colors ${
+              picked
+                ? "border-accent bg-accent-soft/50"
+                : "border-border hover:border-accent/40 hover:bg-bg/40"
+            }`}
+          >
+            {/* Fill bar — sits behind the label so the percentage is
+                readable on top. Width = pct, hue brightens for the
+                winning option. */}
+            <span
+              aria-hidden
+              className={`absolute inset-y-0 left-0 ${isWinner ? "bg-accent/30" : "bg-accent/12"} transition-[width] duration-300`}
+              style={{ width: `${pct}%` }}
+            />
+            <span className="relative flex items-center justify-between gap-3 text-[13px] font-semibold">
+              <span className="inline-flex items-center gap-2 min-w-0 truncate text-text">
+                {picked && <CheckCircle size={12} className="text-accent shrink-0" />}
+                {opt || <span className="italic text-muted">Option {idx + 1}</span>}
+              </span>
+              <span className="shrink-0 text-[11.5px] font-bold text-muted">
+                {c} · {pct}%
+              </span>
+            </span>
+          </button>
+        );
+      })}
+      <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted/80 inline-flex items-center gap-1.5 pt-1">
+        <BarChart3 size={10} />
+        {voterCount} {voterCount === 1 ? "voter" : "voters"}
+        {multi && <span className="ml-1 text-muted/60 font-medium normal-case">· multiple choices allowed</span>}
+      </div>
+    </div>
   );
 }
 
@@ -2678,7 +2838,50 @@ function ChannelOverview({
         )}
         <Meta label="Slug" value={details?.slug ?? room.slug} mono wide />
       </div>
+
+      {/* Share to the pulse feed — prefills an announcement post so the
+          author lands on a "tell the workspace" surface instead of having
+          to context-switch to Campfire and remember what to say. */}
+      <ShareToCampfire
+        title={`#${name} is open`}
+        body={
+          desc
+            ? `🚀 Just spun up the **#${name}** channel — ${desc}\n\nDrop in to follow along.`
+            : `🚀 Just spun up the **#${name}** channel. Drop in to follow along.`
+        }
+        label="Announce this channel in Campfire"
+      />
     </div>
+  );
+}
+
+// ShareToCampfire — a generic "shout this from the pulse feed" button
+// used from the Channel details, Colleagues drawer, and anywhere else
+// we want to invite a one-click broadcast. Clicking opens the global
+// PostComposer with kind=announcement and pre-filled title + body so
+// the author lands on a ready-to-post draft instead of a blank canvas.
+function ShareToCampfire({ title, body, label }: { title: string; body: string; label: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="w-full inline-flex items-center justify-center gap-1.5 text-[12.5px] font-semibold px-3 py-2 rounded-xl border border-accent/30 bg-accent-soft/40 text-accent hover:bg-accent-soft press-fx"
+      >
+        <MegaphoneIcon size={13} /> {label}
+      </button>
+      {open && (
+        <PostComposer
+          initialKind="announcement"
+          initialTitle={title}
+          initialBody={body}
+          onClose={() => setOpen(false)}
+          onCreated={() => setOpen(false)}
+          allowPin={false}
+        />
+      )}
+    </>
   );
 }
 

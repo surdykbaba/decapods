@@ -336,6 +336,9 @@ func New(d Deps) http.Handler {
 	authed.POST("/campfire/posts/:id/pin", mw.RequirePermission("governance:write"), cf.PinPost)
 	authed.GET("/campfire/posts/:id/comments",  cf.ListComments)
 	authed.POST("/campfire/posts/:id/comments", cf.AddComment)
+	// Poll voting — toggles the caller's vote on a single option. The
+	// handler enforces single-vs-multi from the post's meta.
+	authed.POST("/campfire/posts/:id/vote", cf.VotePoll)
 
 	authed.POST("/campfire/react/:kind/:id", cf.ToggleReaction)
 

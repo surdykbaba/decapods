@@ -3,7 +3,7 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Smile, Search, Mail, MessageCircle, Sparkles, Award,
-  Users as UsersIcon, Hash, Calendar, X as XIcon,
+  Users as UsersIcon, Hash, Calendar, X as XIcon, Megaphone,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Avatar } from "@/components/Avatar";
@@ -42,6 +42,19 @@ type Colleague = {
 };
 
 type Resp = { items: Colleague[] };
+
+// Kudo — one recognition record. Shape matches the /api/v1/campfire/kudos
+// list endpoint. We filter the list to the caller on the client and group
+// by sender so a colleague who's sent multiple kudos appears once with a
+// count instead of spamming the section.
+type Kudo = {
+  id: string;
+  from: { id: string; name: string; email: string };
+  to:   { id: string; name: string; email: string };
+  badge: string;
+  message: string;
+  created_at: string;
+};
 
 const PRESENCE_LABEL: Record<string, string> = {
   online:   "Online",
@@ -149,6 +162,22 @@ export function ColleaguesPage() {
     staleTime: 30_000,
   });
 
+  // Kudos received by the caller. Endpoint returns every kudo in the
+  // tenant (cheap — capped at 50 server-side); we filter to "to me" on
+  // the client because the existing API doesn't take a user filter and
+  // adding one would just churn the surface. Refresh every 2 minutes so
+  // new kudos show up while the user is on this page.
+  const { data: kudosData } = useQuery<{ items: Kudo[] }>({
+    queryKey: ["colleagues", "kudos-received"],
+    queryFn: () => api("/api/v1/campfire/kudos?limit=100"),
+    refetchInterval: 2 * 60_000,
+    staleTime: 60_000,
+  });
+  const myKudos = useMemo<Kudo[]>(
+    () => (kudosData?.items ?? []).filter((k) => k.to?.id === me?.id),
+    [kudosData, me?.id],
+  );
+
   const items = (data?.items ?? []).filter((c) => c.status === "active" && c.id !== me?.id);
 
   const allRoles = useMemo(() => {
@@ -235,6 +264,14 @@ export function ColleaguesPage() {
         </div>
       </div>
 
+      {/* Kudos you've received — surfaces what colleagues have sent the
+          caller. Hidden when the inbox is empty so first-time users
+          don't get a "no kudos yet" guilt strip. Click any kudo to open
+          the sender's drawer. */}
+      {myKudos.length > 0 && (
+        <KudosInbox kudos={myKudos} onOpenSender={(id) => setOpenId(id)} />
+      )}
+
       {/* Grid */}
       {isLoading ? (
         <GridSkeleton />
@@ -261,6 +298,75 @@ export function ColleaguesPage() {
         />
       )}
     </div>
+  );
+}
+
+// KudosInbox — compact "you've been recognised" strip above the directory
+// grid. Shows the most recent 5 kudos with sender avatar, badge tone, and
+// the relative time. The full message is in the title (tooltip) so the
+// strip stays readable; tapping a card opens the sender's drawer where
+// you can reply with a kudo, start a channel, or just say thanks.
+function KudosInbox({
+  kudos, onOpenSender,
+}: {
+  kudos: Kudo[];
+  onOpenSender: (senderId: string) => void;
+}) {
+  const visible = kudos.slice(0, 5);
+  const more = Math.max(0, kudos.length - visible.length);
+  return (
+    <section className="bg-gradient-to-br from-warn/10 to-accent-soft border border-warn/30 rounded-2xl p-4 mb-4">
+      <div className="flex items-center justify-between gap-2 mb-2.5 flex-wrap">
+        <div className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-[0.14em] font-bold text-warn">
+          <Award size={11} /> Kudos you've received
+          <span className="text-muted/80 font-medium normal-case tracking-normal">
+            · {kudos.length} total
+          </span>
+        </div>
+      </div>
+      <ul className="space-y-2">
+        {visible.map((k) => {
+          const meta = KUDOS_BADGES.find((b) => b.key === k.badge);
+          return (
+            <li key={k.id}>
+              <button
+                type="button"
+                onClick={() => onOpenSender(k.from.id)}
+                title={k.message || "Tap to open sender"}
+                className="w-full flex items-start gap-3 bg-surface/70 hover:bg-surface border border-border/60 hover:border-accent/40 rounded-xl px-3 py-2.5 text-left transition-colors press-fx"
+              >
+                <Avatar name={k.from.name} email={k.from.email} size={32} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[12.5px] font-bold text-text truncate">
+                      {k.from.name || k.from.email.split("@")[0]}
+                    </span>
+                    {meta && (
+                      <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${meta.tone}`}>
+                        <span className="mr-0.5">{meta.emoji}</span> {meta.label}
+                      </span>
+                    )}
+                    <span className="text-[11px] text-muted ml-auto whitespace-nowrap">
+                      {fmtRelative(k.created_at)}
+                    </span>
+                  </div>
+                  {k.message && (
+                    <p className="text-[12.5px] text-text/80 mt-0.5 leading-snug line-clamp-2">
+                      {k.message}
+                    </p>
+                  )}
+                </div>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {more > 0 && (
+        <div className="mt-2 text-[11.5px] text-muted text-center">
+          + {more} earlier kudos · open the Recognition tab in Campfire to see them all
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -398,6 +504,38 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
     onError: (e: any) => toast.error("Couldn't open channel", e?.message),
   });
 
+  // Shout-out in Campfire — posts an announcement to the Pulse feed with
+  // a pre-baked welcome / appreciation copy that mentions the colleague.
+  // One click; the author doesn't have to switch to Campfire to do it.
+  // We pick the verb based on tenure: ≤7 days reads as "welcome", older
+  // reads as a shout-out so it doesn't look like a fake welcome to a
+  // long-tenured teammate.
+  const announce = useMutation({
+    mutationFn: () => {
+      const firstName = (c.name || c.email.split("@")[0]).split(" ")[0];
+      const tenureDays = relativeDays(c.created_at);
+      const isWelcome = tenureDays < 7;
+      const title = isWelcome
+        ? `👋 Welcome ${firstName}!`
+        : `🙌 Shout-out to ${firstName}`;
+      const body = isWelcome
+        ? `Big welcome to **${c.name || c.email}** — say hi when you get a moment.`
+        : `Just wanted to give **${c.name || c.email}** a shout-out for being a great colleague. Drop a 🔥 if you agree.`;
+      return api("/api/v1/campfire/posts", {
+        method: "POST",
+        body: JSON.stringify({
+          kind: isWelcome ? "joiner" : "celebration",
+          title, body,
+        }),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campfire-posts"] });
+      toast.success("Posted to Campfire");
+    },
+    onError: (e: any) => toast.error("Couldn't post", e?.message),
+  });
+
   return (
     <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
       <div
@@ -473,17 +611,27 @@ function ColleagueDrawer({ c, onClose }: { c: Colleague; onClose: () => void }) 
         </header>
 
         {/* Quick actions */}
-        <div className="px-5 py-4 grid grid-cols-2 gap-2 border-b border-border">
+        <div className="px-5 py-4 grid grid-cols-3 gap-2 border-b border-border">
           <button
             onClick={() => openDM.mutate()}
             disabled={openDM.isPending}
             className="inline-flex items-center justify-center gap-1.5 text-[12.5px] font-semibold px-3 py-2 rounded-xl bg-accent text-white hover:bg-[rgb(var(--accent-hover))] disabled:opacity-60 press-fx"
+            title="Open a private channel with this colleague"
           >
-            <MessageCircle size={13} /> {openDM.isPending ? "Opening…" : "Start a channel"}
+            <MessageCircle size={13} /> {openDM.isPending ? "…" : "Channel"}
+          </button>
+          <button
+            onClick={() => announce.mutate()}
+            disabled={announce.isPending}
+            className="inline-flex items-center justify-center gap-1.5 text-[12.5px] font-semibold px-3 py-2 rounded-xl border border-accent/30 bg-accent-soft/40 text-accent hover:bg-accent-soft press-fx disabled:opacity-60"
+            title="Post a shout-out for this colleague in the Pulse feed"
+          >
+            <Megaphone size={13} /> {announce.isPending ? "…" : "Shout-out"}
           </button>
           <a
             href={`mailto:${c.email}`}
             className="inline-flex items-center justify-center gap-1.5 text-[12.5px] font-semibold px-3 py-2 rounded-xl bg-bg/40 text-text hover:bg-bg/70 press-fx"
+            title="Open an email draft"
           >
             <Mail size={13} /> Email
           </a>

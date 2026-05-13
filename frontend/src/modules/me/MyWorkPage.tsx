@@ -293,9 +293,10 @@ function DashboardTab() {
     }
     return { label: "On track", tone: "good", sub: "Healthy task flow. Keep shipping." };
   })();
-  const healthCls = { good: "bg-success/10 text-success border-success/30",
-                      warn: "bg-warn/10 text-warn border-warn/30",
-                      bad:  "bg-danger/10 text-danger border-danger/30" }[health.tone];
+  // healthCls and briefing fed the now-removed Today's Briefing section.
+  // Kept the upstream computation in case we revive the briefing later;
+  // void here so tsc stops flagging the unused values.
+  void health;
 
   // Adaptive briefing — single sentence that summarises the situation. Skips
   // pieces that don't apply so it never reads like a template.
@@ -309,6 +310,7 @@ function DashboardTab() {
       ? `${c.active_tasks} task${c.active_tasks === 1 ? "" : "s"} in flight — no urgent deadlines on the horizon.`
       : "Your queue is clear."
     : briefingPieces.join(" · ");
+  void briefing; // unused since the briefing card was removed
 
   // Suggested next moves — 2-4 concrete prompts based on state. Adaptive.
   const suggestions: { icon: React.ReactNode; title: string; body: string; tone: "warn" | "info" | "good" }[] = [];
@@ -364,26 +366,12 @@ function DashboardTab() {
           Azure AD app. Otherwise stays silent so nobody sees an orphan card. */}
       <MeetingsCard />
 
-      {/* Smart briefing — adaptive headline, health badge, briefing sentence */}
-      <section className="bg-surface border border-border rounded-2xl p-5">
-        <div className="flex items-start justify-between flex-wrap gap-3">
-          <div className="min-w-0">
-            <div className="text-[11px] uppercase tracking-wider font-bold text-muted">Today's briefing</div>
-            <div className="text-[15px] text-text mt-1.5 leading-snug max-w-2xl">{briefing}</div>
-          </div>
-          <span className={`pill ${healthCls} whitespace-nowrap`} title={health.sub}>
-            <Activity size={11} /> {health.label}
-          </span>
-        </div>
-        <div className="text-[11.5px] text-muted mt-1.5 leading-snug">{health.sub}</div>
-      </section>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KpiTile label="Active tasks"    value={c.active_tasks}    icon={<ListChecks size={14} />}     tone="info" />
-        <KpiTile label="Overdue"         value={c.overdue_tasks}   icon={<AlertTriangle size={14} />}  tone={c.overdue_tasks ? "bad" : "good"} />
-        <KpiTile label="Blocked"         value={c.blocked_tasks}   icon={<PauseCircle size={14} />}    tone={c.blocked_tasks ? "warn" : "good"} />
-        <KpiTile label="Hours this week" value={`${c.hours_this_week.toFixed(1)}h`} icon={<Clock size={14} />} tone="neutral" />
-      </div>
+      {/* "Today's briefing" + the 4-tile KPI strip lived here. Removed at
+          the user's request — the Needs you now / Your projects panels
+          below carry the same actionable signal without the duplicated
+          counts and "Your queue is clear" billboard. Briefing /
+          KpiTile helpers are kept above (void'd) in case we revive a
+          smarter, less noisy top-of-page later. */}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Triage — overdue → today → blocked → soon → rest */}
@@ -2508,22 +2496,6 @@ function HeadsUpRow({ item, onDismiss }: { item: HeadsUpItem; onDismiss: () => v
 
 /* ---------- Shared bits ---------- */
 
-function KpiTile({ label, value, icon, tone = "neutral" }: {
-  label: string; value: number | string; icon: React.ReactNode;
-  tone?: "good" | "warn" | "bad" | "info" | "neutral";
-}) {
-  const cls = {
-    good: "text-success", warn: "text-warn", bad: "text-danger", info: "text-accent", neutral: "text-text",
-  }[tone];
-  return (
-    <div className="bg-surface border border-border rounded-2xl p-4">
-      <div className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-muted font-bold">
-        {icon} {label}
-      </div>
-      <div className={`text-[26px] font-extrabold mt-1 ${cls}`}>{value}</div>
-    </div>
-  );
-}
 
 function EmptyHint({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) {
   return (
