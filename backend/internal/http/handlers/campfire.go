@@ -749,12 +749,22 @@ func (h *Campfire) UpdateHelpStatus(c *gin.Context) {
 // gated by the campfire_room_members roster.
 func (h *Campfire) canAccessRoom(ctx context.Context, tid, uid, roomID uuid.UUID) (bool, error) {
 	var isPrivate bool
+	var createdBy *uuid.UUID
 	if err := h.db.QueryRow(ctx, `
-		SELECT COALESCE(is_private, false) FROM campfire_rooms
-		WHERE id=$1 AND tenant_id=$2`, roomID, tid).Scan(&isPrivate); err != nil {
+		SELECT COALESCE(is_private, false), created_by FROM campfire_rooms
+		WHERE id=$1 AND tenant_id=$2`, roomID, tid).Scan(&isPrivate, &createdBy); err != nil {
 		return false, err
 	}
 	if !isPrivate {
+		return true, nil
+	}
+	// Owners always have access to rooms they created, even if their
+	// membership row went missing — re-seed it on the way through so
+	// future checks short-circuit on the EXISTS branch.
+	if createdBy != nil && *createdBy == uid {
+		_, _ = h.db.Exec(ctx, `
+			INSERT INTO campfire_room_members (room_id, user_id, added_by)
+			VALUES ($1,$2,$2) ON CONFLICT DO NOTHING`, roomID, uid)
 		return true, nil
 	}
 	var member bool
@@ -769,8 +779,26 @@ func (h *Campfire) canAccessRoom(ctx context.Context, tid, uid, roomID uuid.UUID
 func (h *Campfire) ListRooms(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
-	// Private rooms are filtered to those the caller belongs to via the
-	// inner OR; public rooms are visible to everyone in the tenant.
+	// Self-heal on read: owners of private rooms who somehow aren't on the
+	// roster (e.g. seeded before the membership table existed, or a half-
+	// failed create-transaction) get added back. Idempotent.
+	_, _ = h.db.Exec(c.Request.Context(), `
+		INSERT INTO campfire_room_members (room_id, user_id, added_by)
+		SELECT r.id, r.created_by, r.created_by
+		  FROM campfire_rooms r
+		 WHERE r.tenant_id=$1
+		   AND r.created_by = $2
+		   AND COALESCE(r.is_private, false) = true
+		   AND NOT EXISTS (
+		     SELECT 1 FROM campfire_room_members m
+		      WHERE m.room_id = r.id AND m.user_id = r.created_by
+		   )
+		ON CONFLICT DO NOTHING`, tid, uid)
+
+	// Private rooms are filtered to those the caller belongs to OR owns;
+	// public rooms are visible to everyone in the tenant. The created_by
+	// clause is the safety net for orphaned rooms — without it an owner
+	// whose membership row got dropped is invisible to themselves.
 	rows, err := h.db.Query(c.Request.Context(), `
 		SELECT r.id, r.slug, r.name, COALESCE(r.description,''), r.is_default,
 		       COALESCE(r.is_private, false),
@@ -782,6 +810,7 @@ func (h *Campfire) ListRooms(c *gin.Context) {
 		WHERE r.tenant_id=$1
 		  AND (
 		    COALESCE(r.is_private, false) = false
+		    OR r.created_by = $2
 		    OR EXISTS (
 		      SELECT 1 FROM campfire_room_members rm
 		       WHERE rm.room_id = r.id AND rm.user_id = $2
