@@ -116,8 +116,20 @@ export function MembersPage() {
   const [statusFilter, setStatusFilter] = useState<"all" | MemberStatus>("all");
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [presenceFilter] = useState<"all" | Presence>("all");
+  // Smart quick-filters owned by the (now-clickable) insight tiles. Each one
+  // toggles a derived predicate that can't be expressed via a single role or
+  // status filter — so they layer on top of the existing dropdowns instead of
+  // replacing them. Mutually exclusive: picking a new one clears the others.
+  type Quick = "none" | "admins_no_mfa" | "no_mfa" | "external" | "dormant";
+  const [quick, setQuick] = useState<Quick>("none");
+  function pickQuick(q: Quick) {
+    setQuick((prev) => (prev === q ? "none" : q));
+  }
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<Member | null>(null);
+  // Smarter default: surface risky members first (admins without MFA → other
+  // no-MFA → dormant → everyone else). Users can still click any column to
+  // override.
   const [sort, setSort] = useState<{ col: SortCol; dir: SortDir }>({ col: "name", dir: "asc" });
 
   const filtered = useMemo(() => {
@@ -125,6 +137,21 @@ export function MembersPage() {
     if (statusFilter !== "all")   list = list.filter((m) => m.status === statusFilter);
     if (roleFilter !== "all")     list = list.filter((m) => m.roles.includes(roleFilter));
     if (presenceFilter !== "all") list = list.filter((m) => m.presence === presenceFilter);
+    // Quick-filter layer — the clickable insight tiles run through here.
+    // Each predicate matches the same rule the corresponding KPI tile counts
+    // by, so what the user sees in the strip always matches what they get.
+    const dormantCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    if (quick === "admins_no_mfa") {
+      list = list.filter((m) => m.status === "active" && !m.mfa_enabled && m.roles.some((r) => ADMIN_ROLES.has(r)));
+    } else if (quick === "no_mfa") {
+      list = list.filter((m) => m.status === "active" && !m.mfa_enabled);
+    } else if (quick === "external") {
+      list = list.filter((m) => m.status === "active" && isExternalEmail(m.email));
+    } else if (quick === "dormant") {
+      list = list.filter((m) =>
+        m.status === "active" && (!m.last_login_at || new Date(m.last_login_at).getTime() < dormantCutoff),
+      );
+    }
     if (query.trim()) {
       const q = query.toLowerCase();
       list = list.filter((m) =>
@@ -145,7 +172,7 @@ export function MembersPage() {
       }
     };
     return [...list].sort(cmp);
-  }, [items, statusFilter, roleFilter, presenceFilter, query, sort]);
+  }, [items, statusFilter, roleFilter, presenceFilter, quick, query, sort]);
 
   const counts = useMemo(() => {
     const c = { all: items.length, active: 0, invited: 0, disabled: 0 };
@@ -258,20 +285,30 @@ export function MembersPage() {
 
   return (
     <div className="space-y-5 max-w-7xl">
-      {/* Compact header — the page identity is already covered by the sidebar
-          nav highlight; no need for a giant "Members" billboard up here. */}
-      <header className="flex items-center justify-between flex-wrap gap-3">
-        <p className="text-sm text-muted max-w-2xl">
-          Everyone with an account in this workspace. Roles control what each member can read and write —
-          assign carefully, especially <code className="text-accent">super_admin</code> and{" "}
-          <code className="text-accent">finance</code>.
-        </p>
+      {/* Page header — title, subtitle, and the primary CTA. Restored after
+          a brief experiment with a compact billboard-less layout; users
+          expected the same "Members" h1 they see on other directory pages. */}
+      <header className="flex items-start justify-between flex-wrap gap-4">
+        <div>
+          <h1 className="h1 flex items-center gap-2">
+            <Users size={26} className="text-accent" /> Members
+          </h1>
+          <p className="text-sm text-muted mt-1 max-w-2xl">
+            Everyone with an account in this workspace. Roles control what each member can read and write —
+            assign carefully, especially <code className="text-accent">super_admin</code> and{" "}
+            <code className="text-accent">finance</code>.
+          </p>
+        </div>
         <SmartButton variant="primary" onClick={() => setCreateOpen(true)} icon={<Plus size={14} />}>
           Add member
         </SmartButton>
       </header>
 
-      {/* Insight strip — top-of-page team health */}
+      {/* Insight strip — top-of-page team health. Tiles are now clickable
+          quick-filters: clicking "Admins without MFA" narrows the table to
+          exactly those rows, "Dormant 7d+" to dormant members, etc. The
+          active tile gets an accent border. Clicking the same tile again
+          clears the filter — no extra "Clear" affordance needed. */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
         <InsightTile
           icon={<Users size={14} />}
@@ -279,6 +316,8 @@ export function MembersPage() {
           label="Active"
           value={String(insights.active)}
           sub={`${insights.onlineNow} online · ${insights.away} away`}
+          onClick={() => setStatusFilter((s) => (s === "active" ? "all" : "active"))}
+          active={statusFilter === "active"}
         />
         <InsightTile
           icon={<ShieldCheck size={14} />}
@@ -286,6 +325,8 @@ export function MembersPage() {
           label="MFA coverage"
           value={`${insights.mfaCoverage}%`}
           sub={`${insights.mfaOn} of ${insights.active} active`}
+          onClick={() => pickQuick("no_mfa")}
+          active={quick === "no_mfa"}
         />
         <InsightTile
           icon={<ShieldAlert size={14} />}
@@ -293,6 +334,8 @@ export function MembersPage() {
           label="Admins without MFA"
           value={String(insights.adminsAtRisk)}
           sub={`${insights.adminClass} admin-class total`}
+          onClick={() => pickQuick("admins_no_mfa")}
+          active={quick === "admins_no_mfa"}
         />
         <InsightTile
           icon={<Globe size={14} />}
@@ -300,6 +343,8 @@ export function MembersPage() {
           label="External email"
           value={String(insights.external)}
           sub="Outside the workspace domain"
+          onClick={() => pickQuick("external")}
+          active={quick === "external"}
         />
         <InsightTile
           icon={<Activity size={14} />}
@@ -307,8 +352,32 @@ export function MembersPage() {
           label="Dormant 7d+"
           value={String(insights.dormant)}
           sub="No login in the last week"
+          onClick={() => pickQuick("dormant")}
+          active={quick === "dormant"}
         />
       </div>
+
+      {/* Active-quick-filter banner — gives the user an obvious "clear" path
+          when a quick filter is on, so they don't get confused by a partial
+          list. Only renders when a quick filter is active. */}
+      {quick !== "none" && (
+        <div className="flex items-center gap-2 text-[12px] text-muted">
+          <span>Filtered by:</span>
+          <span className="pill bg-accent-soft text-accent border border-accent/30 font-bold uppercase tracking-wide text-[10px]">
+            {quick === "admins_no_mfa" ? "Admins without MFA"
+             : quick === "no_mfa" ? "No MFA"
+             : quick === "external" ? "External email"
+             : "Dormant 7d+"}
+          </span>
+          <button
+            type="button"
+            onClick={() => setQuick("none")}
+            className="text-accent font-semibold hover:underline"
+          >
+            Clear
+          </button>
+        </div>
+      )}
 
       {/* Status pills */}
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -639,7 +708,9 @@ function MemberTable({
                       </button>
                     </div>
                   </td>
-                  <td className="px-3 py-3 text-[12px] text-muted whitespace-nowrap">{fmtRel(m.last_login_at)}</td>
+                  <td className="px-3 py-3 text-[12px] whitespace-nowrap">
+                    <LastLoginCell iso={m.last_login_at} />
+                  </td>
                   <td className="px-3 py-3 text-[12px] text-muted whitespace-nowrap">{fmtRel(m.created_at)}</td>
                   <td className="px-3 py-3 text-right whitespace-nowrap">
                     <button onClick={() => onReset(m)} className="text-muted hover:text-accent p-1" title="Issue new temporary password">
@@ -1312,14 +1383,34 @@ function SortHeader({
   );
 }
 
+// LastLoginCell — age-tinted "last login" hint. Within a week: muted; one
+// to four weeks: warn; never or >30 days: danger. Same thresholds drive the
+// Dormant 7d+ insight tile so the row colour and the KPI agree.
+function LastLoginCell({ iso }: { iso: string | null }) {
+  if (!iso) {
+    return <span className="text-danger font-semibold">Never</span>;
+  }
+  const ageDays = (Date.now() - new Date(iso).getTime()) / 86_400_000;
+  const tone =
+    ageDays > 30 ? "text-danger font-semibold"
+    : ageDays > 7  ? "text-warn font-semibold"
+    : "text-muted";
+  return <span className={tone}>{fmtRel(iso)}</span>;
+}
+
 function InsightTile({
-  icon, label, value, sub, tone,
+  icon, label, value, sub, tone, onClick, active,
 }: {
   icon: React.ReactNode;
   label: string;
   value: string;
   sub: string;
   tone: "good" | "warn" | "bad" | "info";
+  // Optional click handler — when present the tile renders as a button and
+  // acts as a quick filter. The `active` flag draws an accent border to
+  // signal which filter is currently applied.
+  onClick?: () => void;
+  active?: boolean;
 }) {
   const bubble = {
     good: "bg-success/10 text-success",
@@ -1327,17 +1418,29 @@ function InsightTile({
     bad:  "bg-danger/10 text-danger",
     info: "bg-accent-soft text-accent",
   }[tone];
+  const interactive = !!onClick;
+  const borderCls = active
+    ? "border-accent ring-1 ring-accent/30"
+    : interactive
+      ? "border-border hover:border-accent/40"
+      : "border-border";
+  const Wrapper: React.ElementType = interactive ? "button" : "div";
   return (
-    <div className="bg-surface border border-border rounded-2xl p-4 flex flex-col gap-2">
+    <Wrapper
+      type={interactive ? "button" : undefined}
+      onClick={onClick}
+      className={`bg-surface border rounded-2xl p-4 flex flex-col gap-2 text-left w-full transition-colors ${borderCls} ${interactive ? "cursor-pointer" : ""}`}
+      title={interactive ? (active ? "Click to clear this filter" : `Filter to: ${label}`) : undefined}
+    >
       <div className="flex items-center justify-between">
         <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${bubble}`}>
           {icon}
         </span>
-        <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted">{label}</span>
+        <span className={`text-[10.5px] font-bold uppercase tracking-wider ${active ? "text-accent" : "text-muted"}`}>{label}</span>
       </div>
       <div className="text-[1.5rem] font-extrabold text-text leading-none">{value}</div>
       <div className="text-[11px] text-muted leading-snug">{sub}</div>
-    </div>
+    </Wrapper>
   );
 }
 
