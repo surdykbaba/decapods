@@ -364,6 +364,18 @@ func New(d Deps) http.Handler {
 	// (any role) OR governance:write (CEO / COO / super_admin). Default
 	// rooms (is_default=true) refuse to delete.
 	authed.DELETE("/campfire/rooms/:id", cf.DeleteRoom)
+	// Channel-details drawer: fetch single, rename / re-describe, invite-link
+	// lifecycle. All access checks live in the handlers.
+	authed.GET("/campfire/rooms/:id",       cf.GetRoom)
+	authed.PATCH("/campfire/rooms/:id",     cf.UpdateRoom)
+	authed.GET("/campfire/rooms/:id/invites",      cf.ListRoomInvites)
+	authed.POST("/campfire/rooms/:id/invites",     cf.CreateRoomInvite)
+	authed.DELETE("/campfire/rooms/:id/invites/:inviteID", cf.RevokeRoomInvite)
+	// Token-redeem endpoints — caller is authenticated but doesn't need
+	// to be a member of the channel yet, so they live outside the room
+	// scope.
+	authed.GET("/campfire/invites/:token",         cf.PreviewInvite)
+	authed.POST("/campfire/invites/:token/accept", cf.AcceptInvite)
 
 	authed.GET("/campfire/insights", mw.RequirePermission("governance:write"), cf.Insights)
 	authed.GET("/campfire/unread",     cf.Unread)

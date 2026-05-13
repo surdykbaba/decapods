@@ -8,6 +8,8 @@ package handlers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -1167,6 +1169,418 @@ func (h *Campfire) DeleteRoom(c *gin.Context) {
 		return
 	}
 	c.JSON(200, gin.H{"ok": true, "deleted": name})
+}
+
+// GetRoom returns the full metadata for a single channel — used by the
+// "Channel details" drawer. Access is the same as ListMessages: members,
+// owner, or governance:write only.
+func (h *Campfire) GetRoom(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	roomID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad room id"})
+		return
+	}
+	if ok, _ := h.canAccessRoom(c.Request.Context(), tid, uid, roomID); !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member of this channel"})
+		return
+	}
+	var (
+		slug, name, desc       string
+		isDefault, isPrivate   bool
+		createdBy              *uuid.UUID
+		createdAt              time.Time
+		creatorName, creatorEm *string
+		memberCount, msgCount  int64
+	)
+	if err := h.db.QueryRow(c.Request.Context(), `
+		SELECT r.slug, r.name, COALESCE(r.description,''),
+		       COALESCE(r.is_default, false), COALESCE(r.is_private, false),
+		       r.created_by, r.created_at,
+		       u.full_name, u.email::text,
+		       (SELECT COUNT(*) FROM campfire_room_members rm WHERE rm.room_id=r.id),
+		       (SELECT COUNT(*) FROM campfire_messages m WHERE m.room_id=r.id)
+		FROM campfire_rooms r
+		LEFT JOIN users u ON u.id = r.created_by
+		WHERE r.id=$1 AND r.tenant_id=$2`,
+		roomID, tid,
+	).Scan(&slug, &name, &desc, &isDefault, &isPrivate, &createdBy, &createdAt,
+		&creatorName, &creatorEm, &memberCount, &msgCount); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
+		return
+	}
+	out := gin.H{
+		"id":            roomID,
+		"slug":          slug,
+		"name":          name,
+		"description":   desc,
+		"is_default":    isDefault,
+		"is_private":    isPrivate,
+		"created_at":    createdAt,
+		"member_count":  memberCount,
+		"message_count": msgCount,
+		"is_owner":      createdBy != nil && *createdBy == uid,
+	}
+	if createdBy != nil {
+		out["created_by"] = gin.H{
+			"id":    *createdBy,
+			"name":  derefStrCF(creatorName),
+			"email": derefStrCF(creatorEm),
+		}
+	}
+	c.JSON(200, out)
+}
+
+func derefStrCF(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// UpdateRoom renames or re-describes a channel. Owner or governance:write
+// only. The slug is immutable — renaming a workspace channel from
+// "Engineering" to "Eng" shouldn't break URLs people have bookmarked, and
+// reconciling slug history would be a bigger feature. Default channels
+// can be renamed but not unmade default.
+func (h *Campfire) UpdateRoom(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	roomID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad room id"})
+		return
+	}
+	var req struct {
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	var ownerID uuid.UUID
+	if err := h.db.QueryRow(c.Request.Context(), `
+		SELECT COALESCE(created_by, '00000000-0000-0000-0000-000000000000'::uuid)
+		FROM campfire_rooms WHERE id=$1 AND tenant_id=$2`, roomID, tid).Scan(&ownerID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
+		return
+	}
+	if ownerID != uid && !auth.HasPermission(roles, "governance:write") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Only the channel owner or a CEO/COO can edit this channel."})
+		return
+	}
+	// COALESCE the optional fields so callers can update one at a time.
+	// NULLIF(description,'') keeps the column NULL-when-empty convention
+	// the rest of the table already uses.
+	var name, desc *string
+	if req.Name != nil {
+		v := strings.TrimSpace(*req.Name)
+		if len(v) < 2 {
+			c.JSON(400, gin.H{"error": "Name must be at least 2 characters."})
+			return
+		}
+		name = &v
+	}
+	if req.Description != nil {
+		v := strings.TrimSpace(*req.Description)
+		desc = &v
+	}
+	if _, err := h.db.Exec(c.Request.Context(), `
+		UPDATE campfire_rooms
+		   SET name = COALESCE($3, name),
+		       description = CASE WHEN $4::text IS NULL THEN description
+		                          WHEN $4 = '' THEN NULL
+		                          ELSE $4 END
+		 WHERE id=$1 AND tenant_id=$2`, roomID, tid, name, desc); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// CreateRoomInvite mints a shareable join-link for a private channel.
+// The token is opaque; acceptance is gated on a valid logged-in session
+// in the same tenant. Public channels don't need an invite link — every
+// tenant member can see them — so the endpoint refuses with 400 there.
+func (h *Campfire) CreateRoomInvite(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	roomID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad room id"})
+		return
+	}
+	var req struct {
+		ExpiresInHours int  `json:"expires_in_hours"`
+		MaxUses        *int `json:"max_uses"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if req.ExpiresInHours <= 0 {
+		req.ExpiresInHours = 24 * 7 // default: 7 days
+	}
+	if req.ExpiresInHours > 24*30 {
+		req.ExpiresInHours = 24 * 30 // hard ceiling: 30 days
+	}
+	// Must be a member or admin to issue an invite. We don't restrict to
+	// the owner only — any current member can pull a friend in, which
+	// matches the social model of Slack-style "shared private channels".
+	if ok, _ := h.canAccessRoom(c.Request.Context(), tid, uid, roomID); !ok {
+		if !auth.HasPermission(roles, "governance:write") {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Join the channel first to invite others."})
+			return
+		}
+	}
+	var isPrivate bool
+	if err := h.db.QueryRow(c.Request.Context(), `
+		SELECT COALESCE(is_private, false) FROM campfire_rooms WHERE id=$1 AND tenant_id=$2`,
+		roomID, tid).Scan(&isPrivate); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
+		return
+	}
+	if !isPrivate {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "Workspace channels don't need invite links — every member can see them.",
+		})
+		return
+	}
+	tok, err := newInviteToken()
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	expiresAt := time.Now().Add(time.Duration(req.ExpiresInHours) * time.Hour)
+	var inviteID uuid.UUID
+	if err := h.db.QueryRow(c.Request.Context(), `
+		INSERT INTO campfire_room_invites (room_id, tenant_id, token, created_by, expires_at, max_uses)
+		VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+		roomID, tid, tok, uid, expiresAt, req.MaxUses).Scan(&inviteID); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(201, gin.H{
+		"id":         inviteID,
+		"token":      tok,
+		"expires_at": expiresAt,
+		// Caller composes the full URL on the frontend — the backend has
+		// no idea what hostname the user is browsing from.
+	})
+}
+
+// ListRoomInvites returns the active (non-revoked, non-expired) invites
+// on this channel so the UI can show "1 active link" + a revoke button.
+func (h *Campfire) ListRoomInvites(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	roomID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad room id"})
+		return
+	}
+	if ok, _ := h.canAccessRoom(c.Request.Context(), tid, uid, roomID); !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+	rows, err := h.db.Query(c.Request.Context(), `
+		SELECT id, token, created_at, expires_at, max_uses, uses
+		FROM campfire_room_invites
+		WHERE room_id=$1 AND tenant_id=$2
+		  AND revoked_at IS NULL
+		  AND (expires_at IS NULL OR expires_at > now())
+		ORDER BY created_at DESC`, roomID, tid)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	out := []gin.H{}
+	for rows.Next() {
+		var (
+			id                uuid.UUID
+			tok               string
+			createdAt         time.Time
+			expiresAt         *time.Time
+			maxUses, usesUsed *int
+			uses              int
+		)
+		_ = maxUses
+		_ = usesUsed
+		var maxUsesNul *int
+		if err := rows.Scan(&id, &tok, &createdAt, &expiresAt, &maxUsesNul, &uses); err == nil {
+			out = append(out, gin.H{
+				"id":         id,
+				"token":      tok,
+				"created_at": createdAt,
+				"expires_at": expiresAt,
+				"max_uses":   maxUsesNul,
+				"uses":       uses,
+			})
+		}
+	}
+	c.JSON(200, gin.H{"items": out})
+}
+
+// RevokeRoomInvite kills an active link. Same access rule as creation:
+// any current member can revoke any link on the channel they're in. We
+// could narrow this to the link's creator + owner, but the social loop
+// (someone spam-shares a link) needs to be fixable by anyone present.
+func (h *Campfire) RevokeRoomInvite(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	roomID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad room id"})
+		return
+	}
+	inviteID, err := uuid.Parse(c.Param("inviteID"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad invite id"})
+		return
+	}
+	if ok, _ := h.canAccessRoom(c.Request.Context(), tid, uid, roomID); !ok {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+	if _, err := h.db.Exec(c.Request.Context(), `
+		UPDATE campfire_room_invites SET revoked_at = now()
+		 WHERE id=$1 AND room_id=$2 AND tenant_id=$3 AND revoked_at IS NULL`,
+		inviteID, roomID, tid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// PreviewInvite returns enough info for the join-confirmation screen —
+// channel name + member count + creator. Authenticated tenant-scoped:
+// we don't leak the channel name across tenants. If the caller isn't in
+// the right tenant we return 404 (not 403) to avoid confirming the
+// token's existence to outsiders.
+func (h *Campfire) PreviewInvite(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	token := strings.TrimSpace(c.Param("token"))
+	if token == "" {
+		c.JSON(400, gin.H{"error": "missing token"})
+		return
+	}
+	var (
+		roomID      uuid.UUID
+		name, desc  string
+		isPrivate   bool
+		expiresAt   *time.Time
+		revoked     *time.Time
+		maxUses     *int
+		uses        int
+		memberCount int64
+	)
+	if err := h.db.QueryRow(c.Request.Context(), `
+		SELECT r.id, r.name, COALESCE(r.description,''), COALESCE(r.is_private, false),
+		       i.expires_at, i.revoked_at, i.max_uses, i.uses,
+		       (SELECT COUNT(*) FROM campfire_room_members rm WHERE rm.room_id=r.id)
+		FROM campfire_room_invites i
+		JOIN campfire_rooms r ON r.id = i.room_id
+		WHERE i.token=$1 AND i.tenant_id=$2`, token, tid).Scan(
+		&roomID, &name, &desc, &isPrivate, &expiresAt, &revoked, &maxUses, &uses, &memberCount); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "invite not found"})
+		return
+	}
+	status := "active"
+	switch {
+	case revoked != nil:
+		status = "revoked"
+	case expiresAt != nil && expiresAt.Before(time.Now()):
+		status = "expired"
+	case maxUses != nil && uses >= *maxUses:
+		status = "exhausted"
+	}
+	c.JSON(200, gin.H{
+		"room_id":      roomID,
+		"name":         name,
+		"description":  desc,
+		"is_private":   isPrivate,
+		"member_count": memberCount,
+		"status":       status,
+		"expires_at":   expiresAt,
+	})
+}
+
+// AcceptInvite adds the caller to the channel referenced by the token.
+// Idempotent — if the user is already a member, we still return success
+// (so opening an invite link the user already joined is a no-op redirect
+// instead of an error wall).
+func (h *Campfire) AcceptInvite(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	token := strings.TrimSpace(c.Param("token"))
+	if token == "" {
+		c.JSON(400, gin.H{"error": "missing token"})
+		return
+	}
+	tx, err := h.db.Begin(c.Request.Context())
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback(c.Request.Context())
+
+	var (
+		inviteID, roomID uuid.UUID
+		expiresAt        *time.Time
+		revoked          *time.Time
+		maxUses          *int
+		uses             int
+	)
+	if err := tx.QueryRow(c.Request.Context(), `
+		SELECT id, room_id, expires_at, revoked_at, max_uses, uses
+		FROM campfire_room_invites WHERE token=$1 AND tenant_id=$2 FOR UPDATE`,
+		token, tid).Scan(&inviteID, &roomID, &expiresAt, &revoked, &maxUses, &uses); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "invite not found"})
+		return
+	}
+	if revoked != nil {
+		c.JSON(http.StatusGone, gin.H{"error": "This invite link has been revoked."})
+		return
+	}
+	if expiresAt != nil && expiresAt.Before(time.Now()) {
+		c.JSON(http.StatusGone, gin.H{"error": "This invite link has expired."})
+		return
+	}
+	if maxUses != nil && uses >= *maxUses {
+		c.JSON(http.StatusGone, gin.H{"error": "This invite link has hit its use limit."})
+		return
+	}
+	if _, err := tx.Exec(c.Request.Context(), `
+		INSERT INTO campfire_room_members (room_id, user_id, added_by)
+		VALUES ($1,$2,$2) ON CONFLICT DO NOTHING`, roomID, uid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if _, err := tx.Exec(c.Request.Context(), `
+		UPDATE campfire_room_invites SET uses = uses + 1 WHERE id=$1`, inviteID); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	if err := tx.Commit(c.Request.Context()); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true, "room_id": roomID})
+}
+
+// newInviteToken returns a URL-safe random string. 24 bytes ≈ 32 chars
+// once base64-encoded — long enough to be unguessable without burning
+// real-estate in a chat-bot DM.
+func newInviteToken() (string, error) {
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 func (h *Campfire) ListMessages(c *gin.Context) {

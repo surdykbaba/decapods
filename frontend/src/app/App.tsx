@@ -38,6 +38,7 @@ import { MyWorkPage } from "@/modules/me/MyWorkPage";
 import { FilesPage } from "@/modules/files/FilesPage";
 import { LeavePage } from "@/modules/leave/LeavePage";
 import { CampfirePage } from "@/modules/campfire/CampfirePage";
+import { CampfireJoinPage } from "@/modules/campfire/CampfireJoinPage";
 import { AttendancePage } from "@/modules/attendance/AttendancePage";
 import { ArchivedProjectsPage } from "@/modules/settings/ArchivedProjectsPage";
 import { VendorDetailPage } from "@/modules/vendors/VendorDetailPage";
@@ -77,6 +78,7 @@ export function App() {
         <Route path="/files"   element={<FilesPage />} />
         <Route path="/leave"   element={<LeavePage />} />
         <Route path="/campfire" element={<CampfirePage />} />
+        <Route path="/campfire/join/:token" element={<CampfireJoinPage />} />
         <Route path="/attendance" element={<AttendancePage />} />
         <Route path="/pipeline" element={<PipelinePage />} />
         <Route path="/pipeline/new" element={<OpportunityWizard />} />

@@ -21,7 +21,7 @@ import {
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
   Wrench, Briefcase, Hash, Plus, Loader2, CalendarDays, Calendar,
   Lock, Users as UsersIcon, X as XIcon, UserPlus as UserPlusIcon, Search as SearchIcon, Check,
-  ChevronLeft, ChevronDown, ChevronUp, Trash2,
+  ChevronLeft, ChevronDown, ChevronUp, Trash2, Link as LinkIcon, Copy, Pencil, Info,
 } from "lucide-react";
 
 /* ─────────────────────────────────────────────────────────────────────────
@@ -1996,6 +1996,10 @@ function RoomView({
   }, [messages.length]);
 
   const [membersOpen, setMembersOpen] = useState(false);
+  // Channel-details drawer: overview / edit / members / invite link.
+  // Opened by clicking the header title or the user-count button. Pre-
+  // selects a tab so the user lands on the section they clicked toward.
+  const [detailsOpen, setDetailsOpen] = useState<null | "overview" | "members" | "invite">(null);
 
   return (
     <>
@@ -2009,7 +2013,11 @@ function RoomView({
           >
             <ChevronLeft size={18} />
           </button>
-          <div className="min-w-0">
+          <button
+            onClick={() => setDetailsOpen("overview")}
+            className="min-w-0 text-left rounded-lg hover:bg-bg/40 px-1.5 py-1 -ml-1.5"
+            title="Channel details"
+          >
             <div className="flex items-center gap-2">
               {room.is_private ? <Lock size={14} className="text-warn shrink-0" /> : <Hash size={16} className="text-muted shrink-0" />}
               <span className="text-sm font-bold truncate">{room.name}</span>
@@ -2018,16 +2026,25 @@ function RoomView({
               )}
             </div>
             {room.description && <div className="text-[11px] text-muted truncate hidden sm:block">{room.description}</div>}
-          </div>
+          </button>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           {room.is_private && (
             <button
-              onClick={() => setMembersOpen(true)}
+              onClick={() => setDetailsOpen("members")}
               className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-muted hover:text-accent px-2 py-1 rounded-lg hover:bg-bg/40"
-              title="Manage members"
+              title="View members"
             >
               <UsersIcon size={12} /> {room.member_count ?? "—"}
+            </button>
+          )}
+          {room.is_private && (
+            <button
+              onClick={() => setDetailsOpen("invite")}
+              className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-muted hover:text-accent px-2 py-1 rounded-lg hover:bg-bg/40"
+              title="Invite link"
+            >
+              <LinkIcon size={13} />
             </button>
           )}
           {canDelete && (
@@ -2070,6 +2087,15 @@ function RoomView({
         <RoomMembersDialog
           room={room}
           onClose={() => setMembersOpen(false)}
+        />
+      )}
+
+      {detailsOpen && (
+        <ChannelDetailsDialog
+          room={room}
+          isAdmin={isAdmin}
+          initialTab={detailsOpen}
+          onClose={() => setDetailsOpen(null)}
         />
       )}
 
@@ -2188,7 +2214,7 @@ type RoomMember = {
   is_owner: boolean;
 };
 
-function RoomMembersDialog({ room, onClose }: { room: Room; onClose: () => void }) {
+function RoomMembersDialog({ room, onClose, embedded }: { room: Room; onClose: () => void; embedded?: boolean }) {
   const qc = useQueryClient();
   const me = useAuth((s) => s.user);
 
@@ -2237,9 +2263,12 @@ function RoomMembersDialog({ room, onClose }: { room: Room; onClose: () => void 
 
   const canManage = !!room.is_owner;
 
-  return (
-    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
-      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md max-h-[88vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+  // Embedded mode: render just the body so the new ChannelDetailsDialog
+  // can host the roster inside its own tabbed shell. Standalone mode
+  // keeps the modal chrome for callers that still open this directly.
+  const body = (
+    <>
+      {!embedded && (
         <header className="px-5 py-4 border-b border-border flex items-center justify-between">
           <h2 className="text-base font-bold text-text inline-flex items-center gap-2">
             <Lock size={14} className="text-warn" /> Members · {roster.length}
@@ -2248,8 +2277,8 @@ function RoomMembersDialog({ room, onClose }: { room: Room; onClose: () => void 
             <XIcon size={14} />
           </button>
         </header>
-
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      )}
+      <div className={embedded ? "space-y-4" : "flex-1 overflow-y-auto p-4 space-y-4"}>
           <div>
             <div className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2">On the team</div>
             <ul className="divide-y divide-border border border-border rounded-lg">
@@ -2318,7 +2347,364 @@ function RoomMembersDialog({ room, onClose }: { room: Room; onClose: () => void 
               </ul>
             </div>
           )}
+      </div>
+    </>
+  );
+
+  if (embedded) return body;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-md max-h-[88vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        {body}
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Channel-details dialog — overview + edit + members + invite link in one
+ * place. The right-rail "more about this channel" surface that's been
+ * missing.
+ *
+ *  - Overview tab: metadata (creator, age, member count, visibility) + an
+ *    inline rename / re-describe form when the caller can edit.
+ *  - Members tab: a thin wrapper over the existing RoomMembersDialog body
+ *    so we don't fork the roster UI.
+ *  - Invite tab: list active links + a one-click "Generate invite link"
+ *    button. Copy-to-clipboard with toast confirmation; revoke beside
+ *    each row.
+ *
+ * Permissions:
+ *   - Edit: owner OR governance:write
+ *   - Generate / revoke invite: any member (matches Slack's "anyone in
+ *     the channel can pull a friend in" social model)
+ *   - View: any member
+ * ───────────────────────────────────────────────────────────────────────── */
+
+type ChannelDetails = {
+  id: string;
+  slug: string;
+  name: string;
+  description: string;
+  is_default: boolean;
+  is_private: boolean;
+  is_owner: boolean;
+  member_count: number;
+  message_count: number;
+  created_at: string;
+  created_by?: { id: string; name: string; email: string };
+};
+
+type ChannelInvite = {
+  id: string;
+  token: string;
+  created_at: string;
+  expires_at: string | null;
+  max_uses: number | null;
+  uses: number;
+};
+
+function ChannelDetailsDialog({
+  room, isAdmin, initialTab, onClose,
+}: {
+  room: Room;
+  isAdmin: boolean;
+  initialTab: "overview" | "members" | "invite";
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [tab, setTab] = useState<"overview" | "members" | "invite">(initialTab);
+
+  const { data: details } = useQuery<ChannelDetails>({
+    queryKey: ["campfire", "room-detail", room.id],
+    queryFn: () => api(`/api/v1/campfire/rooms/${room.id}`),
+  });
+
+  const canEdit = (details?.is_owner ?? room.is_owner ?? false) || isAdmin;
+  const tabs: { key: typeof tab; label: string; icon: any; show: boolean }[] = [
+    { key: "overview", label: "Overview",  icon: Info,      show: true },
+    { key: "members",  label: "Members",   icon: UsersIcon, show: !!room.is_private },
+    { key: "invite",   label: "Invite link", icon: LinkIcon, show: !!room.is_private },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between gap-3">
+          <h2 className="text-base font-bold text-text flex items-center gap-2 min-w-0">
+            {room.is_private ? <Lock size={14} className="text-warn shrink-0" /> : <Hash size={16} className="text-muted shrink-0" />}
+            <span className="truncate">{details?.name ?? room.name}</span>
+          </h2>
+          <button onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted shrink-0">
+            <XIcon size={14} />
+          </button>
+        </header>
+
+        {/* Tab strip */}
+        <div className="px-3 pt-3 flex items-center gap-1 border-b border-border">
+          {tabs.filter((t) => t.show).map((t) => {
+            const Icon = t.icon;
+            const active = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                onClick={() => setTab(t.key)}
+                className={`inline-flex items-center gap-1.5 px-3 py-2 text-[12.5px] font-semibold rounded-t-lg border-b-2 transition-colors ${
+                  active
+                    ? "border-accent text-accent"
+                    : "border-transparent text-muted hover:text-text"
+                }`}
+              >
+                <Icon size={13} /> {t.label}
+              </button>
+            );
+          })}
         </div>
+
+        <div className="flex-1 overflow-y-auto p-5">
+          {tab === "overview" && (
+            <ChannelOverview
+              room={room}
+              details={details ?? null}
+              canEdit={canEdit}
+              onSaved={() => {
+                qc.invalidateQueries({ queryKey: ["campfire", "room-detail", room.id] });
+                qc.invalidateQueries({ queryKey: ["campfire", "rooms"] });
+              }}
+            />
+          )}
+          {tab === "members" && (
+            <InlineMemberRoster room={room} />
+          )}
+          {tab === "invite" && (
+            <InviteLinkPanel room={room} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChannelOverview({
+  room, details, canEdit, onSaved,
+}: {
+  room: Room;
+  details: ChannelDetails | null;
+  canEdit: boolean;
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(details?.name ?? room.name);
+  const [desc, setDesc] = useState(details?.description ?? room.description ?? "");
+
+  useEffect(() => {
+    if (details) {
+      setName(details.name);
+      setDesc(details.description);
+    }
+  }, [details?.id, details?.name, details?.description]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      api(`/api/v1/campfire/rooms/${room.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name: name.trim(), description: desc.trim() }),
+      }),
+    onSuccess: () => {
+      toast.success("Channel updated");
+      setEditing(false);
+      onSaved();
+    },
+    onError: (e: any) => toast.error("Couldn't save", e?.message),
+  });
+
+  const createdLabel = details?.created_at ? new Date(details.created_at).toLocaleString() : "—";
+
+  return (
+    <div className="space-y-5">
+      {/* Editable block */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted">Channel</div>
+          {canEdit && !editing && (
+            <button
+              onClick={() => setEditing(true)}
+              className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-accent hover:underline"
+            >
+              <Pencil size={11} /> Edit
+            </button>
+          )}
+        </div>
+        {editing ? (
+          <div className="space-y-3">
+            <label className="block">
+              <div className="label">Name</div>
+              <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
+            </label>
+            <label className="block">
+              <div className="label">Description</div>
+              <input className="input" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="What this channel is for" />
+            </label>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button
+                onClick={() => { setEditing(false); setName(details?.name ?? room.name); setDesc(details?.description ?? ""); }}
+                className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg text-muted hover:bg-bg/40"
+              >
+                Cancel
+              </button>
+              <button
+                disabled={save.isPending || name.trim().length < 2}
+                onClick={() => save.mutate()}
+                className="text-[12.5px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-[rgb(var(--accent-hover))] disabled:opacity-60"
+              >
+                {save.isPending ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div className="text-sm font-bold text-text">{name}</div>
+            <div className="text-[13px] text-muted mt-1">{desc || <span className="italic">No description yet.</span>}</div>
+          </div>
+        )}
+      </div>
+
+      {/* Metadata grid */}
+      <div className="grid grid-cols-2 gap-3 text-[12.5px]">
+        <Meta label="Visibility" value={room.is_private ? "Private" : "Workspace-wide"} />
+        <Meta label="Members" value={String(details?.member_count ?? room.member_count ?? "—")} />
+        <Meta label="Messages" value={String(details?.message_count ?? room.message_count ?? 0)} />
+        <Meta label="Created" value={createdLabel} />
+        {details?.created_by && (
+          <Meta label="Created by" value={details.created_by.name || details.created_by.email} wide />
+        )}
+        <Meta label="Slug" value={details?.slug ?? room.slug} mono wide />
+      </div>
+    </div>
+  );
+}
+
+function Meta({ label, value, mono, wide }: { label: string; value: string; mono?: boolean; wide?: boolean }) {
+  return (
+    <div className={`bg-bg/40 rounded-xl p-3 ${wide ? "col-span-2" : ""}`}>
+      <div className="text-[10px] uppercase tracking-wider font-bold text-muted">{label}</div>
+      <div className={`mt-0.5 text-text font-semibold truncate ${mono ? "font-mono text-[12px]" : ""}`}>{value}</div>
+    </div>
+  );
+}
+
+function InlineMemberRoster({ room }: { room: Room }) {
+  // Pulls the existing roster UI without forking it. RoomMembersDialog
+  // renders its own modal chrome, but the body is just a list — we
+  // mount it as a pass-through and rely on its onClose being a no-op
+  // (we provide one, but never trigger it from inside).
+  return <RoomMembersDialog room={room} onClose={() => {}} embedded />;
+}
+
+function InviteLinkPanel({ room }: { room: Room }) {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<{ items: ChannelInvite[] }>({
+    queryKey: ["campfire", "room-invites", room.id],
+    queryFn: () => api(`/api/v1/campfire/rooms/${room.id}/invites`),
+  });
+  const invites = data?.items ?? [];
+
+  const create = useMutation({
+    mutationFn: () =>
+      api<{ token: string }>(`/api/v1/campfire/rooms/${room.id}/invites`, {
+        method: "POST",
+        body: JSON.stringify({ expires_in_hours: 24 * 7 }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campfire", "room-invites", room.id] });
+      toast.success("Invite link ready");
+    },
+    onError: (e: any) => toast.error("Couldn't generate link", e?.message),
+  });
+
+  const revoke = useMutation({
+    mutationFn: (id: string) =>
+      api(`/api/v1/campfire/rooms/${room.id}/invites/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campfire", "room-invites", room.id] });
+      toast.success("Link revoked");
+    },
+  });
+
+  function inviteUrl(token: string) {
+    return `${window.location.origin}/campfire/join/${token}`;
+  }
+
+  async function copy(token: string) {
+    try {
+      await navigator.clipboard.writeText(inviteUrl(token));
+      toast.success("Copied to clipboard");
+    } catch {
+      toast.error("Couldn't copy", "Long-press the link to copy manually.");
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-accent-soft/40 border border-accent/20 rounded-xl p-4">
+        <div className="flex items-start gap-3">
+          <LinkIcon size={16} className="text-accent shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <div className="text-sm font-bold text-text">Shareable invite link</div>
+            <div className="text-[12px] text-muted mt-0.5">
+              Anyone in this workspace can open the link to join #{room.name}. Links last 7 days by default and can be revoked any time.
+            </div>
+            <button
+              onClick={() => create.mutate()}
+              disabled={create.isPending}
+              className="mt-3 inline-flex items-center gap-1.5 text-[12.5px] font-semibold px-3 py-1.5 rounded-lg bg-accent text-white hover:bg-[rgb(var(--accent-hover))] disabled:opacity-60"
+            >
+              <Plus size={12} /> {create.isPending ? "Generating…" : "Generate invite link"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-2">
+          Active links {invites.length > 0 && <span className="text-muted/70 font-normal">· {invites.length}</span>}
+        </div>
+        {isLoading ? (
+          <div className="text-[12px] text-muted">Loading…</div>
+        ) : invites.length === 0 ? (
+          <div className="text-[12px] text-muted italic">No active links yet. Generate one above to share with a teammate.</div>
+        ) : (
+          <ul className="space-y-2">
+            {invites.map((iv) => {
+              const url = inviteUrl(iv.token);
+              const exp = iv.expires_at ? new Date(iv.expires_at).toLocaleDateString() : "never";
+              return (
+                <li key={iv.id} className="bg-bg/40 border border-border rounded-xl p-3 flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-mono text-[11.5px] text-text truncate">{url}</div>
+                    <div className="text-[10.5px] text-muted mt-0.5">
+                      Expires {exp} · Used {iv.uses}{iv.max_uses != null ? ` / ${iv.max_uses}` : ""} times
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => copy(iv.token)}
+                    title="Copy link"
+                    className="p-1.5 rounded-lg text-muted hover:bg-bg hover:text-accent"
+                  >
+                    <Copy size={13} />
+                  </button>
+                  <button
+                    onClick={() => revoke.mutate(iv.id)}
+                    title="Revoke link"
+                    className="p-1.5 rounded-lg text-muted hover:bg-danger/10 hover:text-danger"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </div>
   );
