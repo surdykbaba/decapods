@@ -56,6 +56,9 @@ func (h *Members) List(c *gin.Context) {
 		       COALESCE(u.avatar_url, ''),
 		       COALESCE(u.birthday, '') AS birthday,
 		       COALESCE(u.job_title, '') AS job_title,
+		       u.manager_id,
+		       m.full_name AS manager_name,
+		       m.email::text AS manager_email,
 		       COALESCE(array_agg(DISTINCT r.name) FILTER (WHERE r.name IS NOT NULL), '{}') AS roles,
 		       -- Today's check-in flags. We surface both whether the
 		       -- daily_checkins row exists for today AND whether it
@@ -74,6 +77,7 @@ func (h *Members) List(c *gin.Context) {
 		FROM users u
 		LEFT JOIN user_roles ur ON ur.user_id = u.id
 		LEFT JOIN roles r       ON r.id = ur.role_id
+		LEFT JOIN users m       ON m.id = u.manager_id
 		WHERE u.tenant_id=$1 AND u.deleted_at IS NULL`
 	if s := c.Query("status"); s == "active" || s == "disabled" || s == "invited" {
 		args = append(args, s)
@@ -88,7 +92,11 @@ func (h *Members) List(c *gin.Context) {
 		q += " AND (u.email::text ILIKE $" + strconv.Itoa(len(args)) +
 			" OR u.full_name ILIKE $" + strconv.Itoa(len(args)) + ")"
 	}
-	q += " GROUP BY u.id ORDER BY u.created_at DESC LIMIT 500"
+	if mid := c.Query("manager_id"); mid != "" {
+		args = append(args, mid)
+		q += " AND u.manager_id = $" + strconv.Itoa(len(args)) + "::uuid"
+	}
+	q += " GROUP BY u.id, m.full_name, m.email ORDER BY u.created_at DESC LIMIT 500"
 
 	rows, err := h.db.Query(c, q, args...)
 	if err != nil {
@@ -107,9 +115,11 @@ func (h *Members) List(c *gin.Context) {
 			manualUntil                                   *time.Time
 			created                                       time.Time
 			roles                                         []string
+			managerID                                     *uuid.UUID
+			managerName, managerEmail                     *string
 		)
 		if err := rows.Scan(&id, &email, &name, &status, &mfa, &mfaRequired, &lastLogin, &created, &lastSeen,
-			&manual, &manualUntil, &avatar, &birthday, &jobTitle, &roles, &checkedInToday); err == nil {
+			&manual, &manualUntil, &avatar, &birthday, &jobTitle, &managerID, &managerName, &managerEmail, &roles, &checkedInToday); err == nil {
 			// Single source of truth for presence — see derivePresence in me.go.
 			presence := derivePresence(manual, manualUntil, lastSeen)
 			var sinceSec int64 = -1
@@ -123,7 +133,7 @@ func (h *Members) List(c *gin.Context) {
 			if birthday != "" {
 				bday = birthday
 			}
-			out = append(out, gin.H{
+			row := gin.H{
 				"id": id, "email": email, "name": name, "status": status,
 				"mfa_enabled":  mfa,
 				"mfa_required": mfaRequired,
@@ -136,7 +146,15 @@ func (h *Members) List(c *gin.Context) {
 				"avatar_url":    avatar,
 				"birthday":      bday,
 				"checked_in_today": checkedInToday,
-			})
+			}
+			if managerID != nil {
+				row["manager"] = gin.H{
+					"id":    *managerID,
+					"name":  derefStr2(managerName),
+					"email": derefStr2(managerEmail),
+				}
+			}
+			out = append(out, row)
 		}
 	}
 	c.JSON(200, gin.H{"items": out})
@@ -250,18 +268,58 @@ func (h *Members) Update(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil { c.JSON(400, gin.H{"error": "bad id"}); return }
 	var req struct {
-		Name     *string   `json:"name"`
-		Status   *string   `json:"status"` // active | disabled | invited
-		Roles    *[]string `json:"roles"`
-		JobTitle *string   `json:"job_title"`
+		Name      *string   `json:"name"`
+		Status    *string   `json:"status"` // active | disabled | invited
+		Roles     *[]string `json:"roles"`
+		JobTitle  *string   `json:"job_title"`
+		// ManagerID is *string so the caller can clear the relation by
+		// sending "" (or null serialises into nil so we treat both as
+		// "no manager"). Cycle-detection runs below.
+		ManagerID *string   `json:"manager_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil { c.JSON(400, gin.H{"error": err.Error()}); return }
+
+	// Manager validation — needs to happen before the SET clause is
+	// composed so we can early-return on a bad value without writing.
+	if req.ManagerID != nil {
+		mid := strings.TrimSpace(*req.ManagerID)
+		if mid != "" {
+			// Self-reference is the obvious cycle.
+			if mid == id.String() {
+				c.JSON(400, gin.H{"error": "a member can't report to themselves"})
+				return
+			}
+			mgr, err := uuid.Parse(mid)
+			if err != nil {
+				c.JSON(400, gin.H{"error": "bad manager_id"})
+				return
+			}
+			// Walk the proposed manager's existing chain looking for `id`
+			// — if found, we'd create a cycle (A→B→…→A). Cap the walk
+			// at 32 hops as a runaway-safety belt.
+			cur := mgr
+			for i := 0; i < 32; i++ {
+				var next *uuid.UUID
+				if err := h.db.QueryRow(c, `SELECT manager_id FROM users WHERE id=$1 AND tenant_id=$2`, cur, tid).Scan(&next); err != nil {
+					break
+				}
+				if next == nil {
+					break
+				}
+				if *next == id {
+					c.JSON(400, gin.H{"error": "cycle detected — this manager would loop back to the member"})
+					return
+				}
+				cur = *next
+			}
+		}
+	}
 
 	tx, err := h.db.Begin(c)
 	if err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }
 	defer tx.Rollback(c)
 
-	if req.Name != nil || req.Status != nil || req.JobTitle != nil {
+	if req.Name != nil || req.Status != nil || req.JobTitle != nil || req.ManagerID != nil {
 		sets := []string{"updated_at=now()"}
 		args := []any{}
 		add := func(col string, v any) { args = append(args, v); sets = append(sets, col+"=$"+strconv.Itoa(len(args))) }
@@ -274,6 +332,15 @@ func (h *Members) Update(c *gin.Context) {
 			add("status", *req.Status)
 		}
 		if req.JobTitle != nil { add("job_title", strings.TrimSpace(*req.JobTitle)) }
+		if req.ManagerID != nil {
+			mid := strings.TrimSpace(*req.ManagerID)
+			if mid == "" {
+				// Empty string explicitly clears the relation.
+				add("manager_id", nil)
+			} else {
+				add("manager_id", mid)
+			}
+		}
 		args = append(args, id, tid)
 		q := "UPDATE users SET " + strings.Join(sets, ", ") +
 			" WHERE id=$" + strconv.Itoa(len(args)-1) + " AND tenant_id=$" + strconv.Itoa(len(args)) + " AND deleted_at IS NULL"
@@ -841,4 +908,73 @@ func (h *Members) PublicAcceptInvite(c *gin.Context) {
 	})
 
 	c.JSON(200, gin.H{"ok": true, "email": email})
+}
+
+// derefStr2 — tiny helper used by the manager join in List (and the
+// /me/manager + /me/reports endpoints below). Just unwraps *string.
+func derefStr2(p *string) string {
+	if p == nil { return "" }
+	return *p
+}
+
+// Manager returns the calling user's reporting line: who they report to
+// and who reports to them. Lightweight on purpose — the SPA's Profile
+// surface and the Colleagues "My team" filter both call this and bail
+// out cleanly when neither side has data.
+func (h *Members) Manager(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+
+	out := gin.H{"manager": nil, "reports": []gin.H{}}
+
+	// Manager — single row, may be missing.
+	var (
+		mgrID                   *uuid.UUID
+		mgrName, mgrEmail       *string
+		mgrAvatar               *string
+		mgrJobTitle             *string
+	)
+	_ = h.db.QueryRow(c, `
+		SELECT m.id, m.full_name, m.email::text, m.avatar_url, m.job_title
+		FROM users u
+		JOIN users m ON m.id = u.manager_id
+		WHERE u.id = $1 AND u.tenant_id = $2 AND u.deleted_at IS NULL
+		  AND m.deleted_at IS NULL`, uid, tid,
+	).Scan(&mgrID, &mgrName, &mgrEmail, &mgrAvatar, &mgrJobTitle)
+	if mgrID != nil {
+		out["manager"] = gin.H{
+			"id":         *mgrID,
+			"name":       derefStr2(mgrName),
+			"email":      derefStr2(mgrEmail),
+			"avatar_url": derefStr2(mgrAvatar),
+			"job_title":  derefStr2(mgrJobTitle),
+		}
+	}
+
+	// Direct reports — could be many; cap at 100 which is comfortably
+	// more than any realistic span of control.
+	reports := []gin.H{}
+	rows, err := h.db.Query(c, `
+		SELECT id, full_name, email::text, COALESCE(avatar_url,''),
+		       COALESCE(job_title,''), status
+		FROM users
+		WHERE manager_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
+		ORDER BY full_name LIMIT 100`, uid, tid)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var (
+				id                 uuid.UUID
+				name, email, av, jt, status string
+			)
+			if err := rows.Scan(&id, &name, &email, &av, &jt, &status); err == nil {
+				reports = append(reports, gin.H{
+					"id": id, "name": name, "email": email,
+					"avatar_url": av, "job_title": jt, "status": status,
+				})
+			}
+		}
+	}
+	out["reports"] = reports
+	c.JSON(200, out)
 }

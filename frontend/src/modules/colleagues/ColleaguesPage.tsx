@@ -25,6 +25,12 @@ import { useAuth } from "@/lib/auth";
 // Member CRUD continues to live on the HR page; this view is read-only
 // plus a couple of social actions.
 
+// Caller's reporting line — drives the "My team" filter chip.
+type ReportingLine = {
+  manager: { id: string } | null;
+  reports: { id: string }[];
+};
+
 type Colleague = {
   id: string;
   name: string;
@@ -152,7 +158,7 @@ function isNewThisWeek(c: Colleague): boolean {
   return relativeDays(c.created_at) < 7;
 }
 
-type Filter = "all" | "new" | "active" | "role";
+type Filter = "all" | "new" | "active" | "role" | "team";
 
 export function ColleaguesPage() {
   const { user: me } = useAuth();
@@ -206,6 +212,22 @@ export function ColleaguesPage() {
 
   const [page, setPage] = useState(1);
 
+  // Reporting line — only used when the "My team" filter is active, but
+  // we fetch it eagerly so the chip count is honest from the first paint.
+  // Refresh every 5 min so a freshly-set manager flips the chip in
+  // reasonable time without a hard refresh.
+  const { data: line } = useQuery<ReportingLine>({
+    queryKey: ["colleagues", "reporting-line"],
+    queryFn: () => api("/api/v1/me/manager"),
+    staleTime: 5 * 60_000,
+  });
+  const teamIds = useMemo<Set<string>>(() => {
+    const s = new Set<string>();
+    if (line?.manager) s.add(line.manager.id);
+    (line?.reports ?? []).forEach((r) => s.add(r.id));
+    return s;
+  }, [line]);
+
   const { data, isLoading } = useQuery<Resp>({
     queryKey: ["colleagues", "list"],
     queryFn: () => api("/api/v1/members"),
@@ -241,12 +263,17 @@ export function ColleaguesPage() {
     all:    items.length,
     new:    items.filter(isNewThisWeek).length,
     active: items.filter(isActiveToday).length,
-  }), [items]);
+    // My team = caller's manager (if set) ∪ direct reports. Counts
+    // surface even when filter !== "team" so the chip reads honest
+    // before the user clicks it.
+    team:   items.filter((c) => teamIds.has(c.id)).length,
+  }), [items, teamIds]);
 
   const filtered = useMemo(() => {
     let out = items;
     if (filter === "new")    out = out.filter(isNewThisWeek);
     if (filter === "active") out = out.filter(isActiveToday);
+    if (filter === "team")   out = out.filter((c) => teamIds.has(c.id));
     if (filter === "role" && roleFilter) {
       out = out.filter((c) => c.roles.includes(roleFilter));
     }
@@ -335,6 +362,9 @@ export function ColleaguesPage() {
         <FilterChip active={filter === "all"}    onClick={() => switchFilter("all")}    label="Everyone"        count={counts.all} />
         <FilterChip active={filter === "new"}    onClick={() => switchFilter("new")}    label="New this week"   count={counts.new}    icon={Sparkles} />
         <FilterChip active={filter === "active"} onClick={() => switchFilter("active")} label="Active today"    count={counts.active} />
+        {counts.team > 0 && (
+          <FilterChip active={filter === "team"} onClick={() => switchFilter("team")} label="My team" count={counts.team} icon={UsersIcon} />
+        )}
         {allRoles.length > 0 && (
           <div className="ml-1 pl-2 border-l border-border flex items-center gap-1.5">
             <span className="text-[10.5px] uppercase tracking-wider font-bold text-muted shrink-0">Role</span>

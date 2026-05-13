@@ -3117,6 +3117,79 @@ void MailCard;
 
 /* ---------- Profile ---------- */
 
+// ReportingLineCard — surfaces "Reports to: X" + the caller's direct
+// reports on the Profile tab. Calls /me/manager once and stays quiet
+// when neither side has data (so a fresh tenant doesn't show an
+// empty-state guilt block). Each face is a Link to the relevant
+// member's profile so an admin can walk the org tree.
+function ReportingLineCard() {
+  const { data } = useQuery<{
+    manager: { id: string; name: string; email: string; avatar_url: string; job_title: string } | null;
+    reports: { id: string; name: string; email: string; avatar_url: string; job_title: string; status: string }[];
+  }>({
+    queryKey: ["me", "manager"],
+    queryFn: () => api("/api/v1/me/manager"),
+    staleTime: 5 * 60_000,
+  });
+  if (!data) return null;
+  const hasManager = !!data.manager;
+  const hasReports = data.reports.length > 0;
+  if (!hasManager && !hasReports) return null;
+  return (
+    <section className="bg-surface border border-border rounded-2xl p-5">
+      <div className="text-[13px] font-semibold text-text flex items-center gap-1.5 mb-3">
+        <UsersIcon size={13} className="text-accent" /> Reporting line
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1.5">Reports to</div>
+          {hasManager ? (
+            <Link
+              to={`/members/${data.manager!.id}`}
+              className="flex items-center gap-3 rounded-xl border border-border hover:border-accent/40 hover:bg-bg/30 p-2.5 transition-colors"
+            >
+              <Avatar name={data.manager!.name} email={data.manager!.email} src={data.manager!.avatar_url} size={36} />
+              <div className="min-w-0">
+                <div className="text-[13.5px] font-bold text-text truncate">{data.manager!.name || data.manager!.email}</div>
+                {data.manager!.job_title && <div className="text-[11px] text-muted truncate">{data.manager!.job_title}</div>}
+              </div>
+            </Link>
+          ) : (
+            <div className="text-[12px] text-muted italic px-1">No manager set yet — ask HR to assign one from Members.</div>
+          )}
+        </div>
+        <div>
+          <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1.5">
+            Direct reports{hasReports && <span className="text-muted/70 font-normal"> · {data.reports.length}</span>}
+          </div>
+          {hasReports ? (
+            <div className="flex flex-wrap gap-2">
+              {data.reports.slice(0, 8).map((r) => (
+                <Link
+                  key={r.id}
+                  to={`/members/${r.id}`}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-border bg-bg/30 hover:border-accent/40 px-2 py-1 transition-colors"
+                  title={r.job_title || r.email}
+                >
+                  <Avatar name={r.name} email={r.email} src={r.avatar_url} size={22} />
+                  <span className="text-[12px] font-semibold text-text truncate max-w-[140px]">
+                    {r.name || r.email}
+                  </span>
+                </Link>
+              ))}
+              {data.reports.length > 8 && (
+                <span className="self-center text-[11px] text-muted">+{data.reports.length - 8} more</span>
+              )}
+            </div>
+          ) : (
+            <div className="text-[12px] text-muted italic px-1">Nobody reports to you yet.</div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ProfileTab() {
   const qc = useQueryClient();
   const currentUser = useAuth((s) => s.user);
@@ -3277,6 +3350,9 @@ function ProfileTab() {
           (/members/:id) where the workload metrics already live. The CTA in
           the hero ("View public profile →") deep-links there for editing
           identity and managing two-factor auth. */}
+
+      {/* Reporting line — only renders when something to show. */}
+      <ReportingLineCard />
 
       {/* ============ Update cadence — full-width meter ============ */}
       <section className="bg-surface border border-border rounded-2xl p-5">

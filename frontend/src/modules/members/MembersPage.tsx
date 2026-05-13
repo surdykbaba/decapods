@@ -27,6 +27,10 @@ type Member = {
   created_at: string;
   roles: string[];
   job_title?: string;
+  // Reporting line — null when not yet assigned. The List endpoint
+  // surfaces the manager's name + email so the column doesn't need a
+  // second fetch.
+  manager?: { id: string; name: string; email: string } | null;
   last_seen_at: string | null;
   presence: Presence;
   seconds_since: number;
@@ -255,7 +259,10 @@ export function MembersPage() {
   });
 
   const update = useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: Partial<Member> }) =>
+    // Patch type is loose because the form ships manager_id as a string
+    // (empty = clear), which isn't on the Member type. The backend
+    // accepts the bag as-is.
+    mutationFn: ({ id, patch }: { id: string; patch: Record<string, any> }) =>
       api(`/api/v1/members/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
     onSuccess: () => {
       toast.success("Member updated");
@@ -502,6 +509,7 @@ export function MembersPage() {
         <EditMemberDialog
           member={editing}
           roles={roles}
+          allMembers={data?.items ?? []}
           submitting={update.isPending}
           onClose={() => setEditing(null)}
           onSave={(patch) => update.mutate({ id: editing.id, patch })}
@@ -673,6 +681,20 @@ function MemberTable({
                         <a href={`mailto:${m.email}`} className="text-[11.5px] text-muted hover:text-accent truncate inline-flex items-center gap-1">
                           <Mail size={10} /> {m.email}
                         </a>
+                        {/* Reporting line — a thin secondary row that
+                            only renders for members whose manager has
+                            been set. Click jumps to the manager's
+                            profile so HR can walk the org tree from
+                            either direction. */}
+                        {m.manager && (
+                          <Link
+                            to={`/members/${m.manager.id}`}
+                            className="text-[10.5px] text-muted/80 hover:text-accent truncate inline-flex items-center gap-1 mt-0.5"
+                            title={`Reports to ${m.manager.name || m.manager.email}`}
+                          >
+                            ↗ {m.manager.name || m.manager.email}
+                          </Link>
+                        )}
                       </div>
                     </div>
                   </td>
@@ -1048,18 +1070,28 @@ function ManualResult({
 }
 
 function EditMemberDialog({
-  member, roles, submitting, onClose, onSave,
+  member, roles, allMembers, submitting, onClose, onSave,
 }: {
   member: Member;
   roles: Role[];
+  // Full member list — drives the manager picker. The dialog filters
+  // it down to active members and excludes the row being edited.
+  allMembers: Member[];
   submitting: boolean;
   onClose: () => void;
-  onSave: (patch: { name?: string; status?: MemberStatus; roles?: string[]; job_title?: string }) => void;
+  onSave: (patch: { name?: string; status?: MemberStatus; roles?: string[]; job_title?: string; manager_id?: string }) => void;
 }) {
   const [name, setName]   = useState(member.name);
   const [status, setStatus] = useState<MemberStatus>(member.status);
   const [picked, setPicked] = useState<string[]>([...member.roles]);
   const [jobTitle, setJobTitle] = useState(member.job_title ?? "");
+  const [managerId, setManagerId] = useState<string>(member.manager?.id ?? "");
+  // Filter out self + disabled rows so the picker reads as "people who
+  // can actually manage". Sorted alphabetically — finding a name in a
+  // 30-member list is faster left-to-right than scrolling by activity.
+  const managerCandidates = allMembers
+    .filter((m) => m.id !== member.id && m.status === "active")
+    .sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
   const toggle = (r: string) =>
     setPicked((p) => p.includes(r) ? p.filter((x) => x !== r) : [...p, r]);
   return (
@@ -1086,6 +1118,24 @@ function EditMemberDialog({
               placeholder="e.g. Senior Product Engineer"
             />
             <div className="text-[11px] text-muted mt-1">What the team sees in the directory. Distinct from access roles below.</div>
+          </label>
+          <label className="block">
+            <div className="label">Reports to</div>
+            <select
+              className="input"
+              value={managerId}
+              onChange={(e) => setManagerId(e.target.value)}
+            >
+              <option value="">— No manager set</option>
+              {managerCandidates.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name || m.email}{m.job_title ? ` · ${m.job_title}` : ""}
+                </option>
+              ))}
+            </select>
+            <div className="text-[11px] text-muted mt-1">
+              Drives OKR rollup, leave routing, and the My Team filter. Cycles (A→B→A) are rejected automatically.
+            </div>
           </label>
           <label className="block">
             <div className="label">Status</div>
@@ -1120,7 +1170,15 @@ function EditMemberDialog({
         <footer className="flex items-center justify-end gap-2 p-4 border-t border-border bg-bg">
           <button onClick={onClose} className="btn-ghost">Cancel</button>
           <SmartButton variant="primary" loading={submitting}
-            onClick={() => onSave({ name: name.trim(), status, roles: picked, job_title: jobTitle.trim() })}>
+            onClick={() => onSave({
+              name: name.trim(),
+              status,
+              roles: picked,
+              job_title: jobTitle.trim(),
+              // Send empty string to clear; otherwise the manager UUID.
+              // The backend treats "" as nil, anything else as a uuid.
+              manager_id: managerId,
+            })}>
             Save changes
           </SmartButton>
         </footer>

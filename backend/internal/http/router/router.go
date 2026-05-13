@@ -234,6 +234,9 @@ func New(d Deps) http.Handler {
 	members := handlers.NewMembers(d.DB).WithMailer(earlyMailer, d.Cfg)
 	authed.GET("/members",                   members.List)
 	authed.GET("/members/roles",             members.ListRoles)
+	// Reporting hierarchy — everyone can read their own line; the
+	// PATCH /members/:id route (governance:write) is what sets it.
+	authed.GET("/me/manager",                members.Manager)
 	authed.GET("/members/:id/profile",       members.Profile)
 	authed.POST("/members",                  mw.RequirePermission("governance:write"), members.Create)
 	authed.PATCH("/members/:id",             mw.RequirePermission("governance:write"), members.Update)
