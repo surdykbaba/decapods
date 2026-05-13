@@ -74,7 +74,6 @@ export function MyCheckinsTab() {
   });
 
   const items = data?.items ?? [];
-  const insights = data?.insights;
 
   // Today's row, if any. Drives the header CTA — first-time users get a
   // "Check in for today" primary button; if today already has content the
@@ -104,30 +103,6 @@ export function MyCheckinsTab() {
     const ageDays = (Date.now() - d) / 86_400_000;
     return ageDays >= 0 && ageDays <= 14;
   };
-
-  // Current streak — consecutive days from today backwards that are NOT
-  // missed. items[0] is today.
-  const streak = useMemo(() => {
-    let n = 0;
-    for (const r of items) {
-      if (r.missed) break;
-      n++;
-    }
-    return n;
-  }, [items]);
-
-  const compliancePct = useMemo(() => {
-    if (!insights) return 0;
-    const t = insights.done + insights.missed;
-    return t === 0 ? 0 : Math.round((insights.done / t) * 100);
-  }, [insights]);
-
-  const topMood = useMemo(() => {
-    if (!insights?.mood_counts) return null;
-    const entries = Object.entries(insights.mood_counts);
-    if (entries.length === 0) return null;
-    return entries.sort((a, b) => b[1] - a[1])[0];
-  }, [insights]);
 
   // Rhythm — oldest → newest for the strip. We fill in any missing dates in
   // the window with synthetic "missed" rows so the user can see real gaps
@@ -346,37 +321,10 @@ export function MyCheckinsTab() {
         </div>
       )}
 
-      {/* Insight strip */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Tile
-          icon={<Flame size={14} />}
-          tone={streak >= 5 ? "good" : streak > 0 ? "warn" : "bad"}
-          label="Current streak"
-          value={`${streak}d`}
-          sub={streak >= 5 ? "Keep it going" : streak > 0 ? "Stay on it" : "Check in today"}
-        />
-        <Tile
-          icon={<Activity size={14} />}
-          tone={compliancePct >= 80 ? "good" : compliancePct >= 50 ? "warn" : "bad"}
-          label="Compliance"
-          value={`${compliancePct}%`}
-          sub={`${insights?.done ?? 0} done · ${insights?.missed ?? 0} missed`}
-        />
-        <Tile
-          icon={<Smile size={14} />}
-          tone="info"
-          label="Most logged mood"
-          value={topMood ? topMood[0] : "—"}
-          sub={topMood ? `${topMood[1]} day${topMood[1] === 1 ? "" : "s"}` : "No moods logged yet"}
-        />
-        <Tile
-          icon={<ListChecks size={14} />}
-          tone="good"
-          label="Tasks shipped"
-          value={String(insights?.tasks_done ?? 0)}
-          sub="In this window"
-        />
-      </div>
+      {/* Insight strip removed — the Smart facts chips above already carry
+          the same signal when there's a story to tell, and the rhythm strip
+          below shows the at-a-glance pattern. Four big tiles screaming "0d
+          streak · 0% compliance" added noise without action. */}
 
       {/* Rhythm strip — one square per day in the window, oldest left → newest
           right. Colour encodes whether the day was checked in, and the click
@@ -1092,31 +1040,3 @@ function TodayHero({
   );
 }
 
-function Tile({
-  icon, label, value, sub, tone,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  sub: string;
-  tone: "good" | "warn" | "bad" | "info";
-}) {
-  const bubble = {
-    good: "bg-success/10 text-success",
-    warn: "bg-warn/10 text-warn",
-    bad:  "bg-danger/10 text-danger",
-    info: "bg-accent-soft text-accent",
-  }[tone];
-  return (
-    <div className="bg-surface border border-border rounded-2xl p-4 flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg ${bubble}`}>
-          {icon}
-        </span>
-        <span className="text-[10.5px] font-bold uppercase tracking-wider text-muted">{label}</span>
-      </div>
-      <div className="text-[1.5rem] font-extrabold text-text leading-none">{value}</div>
-      <div className="text-[11.5px] text-muted leading-snug">{sub}</div>
-    </div>
-  );
-}
