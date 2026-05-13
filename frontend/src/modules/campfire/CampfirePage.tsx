@@ -2054,69 +2054,278 @@ function HelpWall({ currentUserId }: { currentUserId: string }) {
   );
 }
 
+// HELP_KIND_SMARTS — per-kind copy + template scaffold. Picking a kind
+// rewires:
+//   • Title placeholder so the prompt matches the request type ("I'm
+//     blocked on …" vs "Please review …").
+//   • Body template (Markdown-y skeleton) that primes the user to write
+//     the context the responder will need. Tap "Use template" to drop
+//     it into the body — never overwrites existing content.
+//   • Default urgency: Need help / I'm blocked default to High, review
+//     defaults to Medium, management decision starts at Medium.
+const HELP_KIND_SMARTS: Record<string, {
+  titleHint: string;
+  template: string;
+  defaultUrgency: "low" | "medium" | "high" | "blocking";
+}> = {
+  help: {
+    titleHint: "What you need help with — keep it scannable",
+    template: "**What I'm trying to do**\n…\n\n**Where I'm stuck**\n…\n\n**What I've already tried**\n…",
+    defaultUrgency: "medium",
+  },
+  blocked: {
+    titleHint: "What's blocking you — name the dependency",
+    template: "**Blocker**\n…\n\n**Impact if not resolved by today**\n…\n\n**Who I think can unblock me**\n@",
+    defaultUrgency: "high",
+  },
+  review: {
+    titleHint: "What needs review (PR title, doc name)",
+    template: "**Link**\n…\n\n**What changed**\n…\n\n**Reviewer focus**\n…\n\n**Needed by**\n…",
+    defaultUrgency: "medium",
+  },
+  devops: {
+    titleHint: "What needs DevOps attention",
+    template: "**Environment**\n(prod / staging / local)\n\n**Symptom**\n…\n\n**When it started**\n…\n\n**Relevant logs / runbook**\n…",
+    defaultUrgency: "high",
+  },
+  management: {
+    titleHint: "What decision needs leadership",
+    template: "**Decision needed**\n…\n\n**Options I see**\n1. …\n2. …\n\n**My recommendation**\n…\n\n**Why this can't wait**\n…",
+    defaultUrgency: "medium",
+  },
+};
+
+const URGENCY_META: Record<"low" | "medium" | "high" | "blocking", {
+  label: string; cls: string; eta: string;
+}> = {
+  low:      { label: "Low",      cls: "bg-bg/60 text-muted border-border",         eta: "respond when you can — today is fine" },
+  medium:   { label: "Medium",   cls: "bg-accent-soft text-accent border-accent/30", eta: "ideally within a few hours" },
+  high:     { label: "High",     cls: "bg-warn/15 text-warn border-warn/30",       eta: "ideally within an hour" },
+  blocking: { label: "Blocking", cls: "bg-danger/15 text-danger border-danger/30", eta: "I'm stopped — please respond ASAP" },
+};
+
 function HelpComposer({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [kind, setKind] = useState("help");
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [urgency, setUrgency] = useState<"low" | "medium" | "high" | "blocking">("medium");
+  const [projectId, setProjectId] = useState("");
+
+  const smart = HELP_KIND_SMARTS[kind] ?? HELP_KIND_SMARTS.help;
+
+  // Project picker — surfaces the same active-project list other dialogs
+  // use, so the request can carry the project context in the body.
+  const { data: projectsData } = useQuery<{ items: { id: string; name: string; code: string }[] }>({
+    queryKey: ["help-projects-picker"],
+    queryFn: () => api("/api/v1/projects?status=active"),
+    staleTime: 5 * 60_000,
+  });
+
+  // Active members list for the @mention suggester. Cheap; cached.
+  const { data: membersData } = useQuery<{ items: Member[] }>({
+    queryKey: ["help-members-picker"],
+    queryFn: () => api("/api/v1/members?status=active"),
+    staleTime: 5 * 60_000,
+  });
+
+  // Switching kind: bump urgency to the kind's default, ONLY if the
+  // user hasn't already touched the urgency picker. We track that with
+  // a separate flag so a manual change sticks across kind switches.
+  const [urgencyTouched, setUrgencyTouched] = useState(false);
+  useEffect(() => {
+    if (!urgencyTouched) setUrgency(smart.defaultUrgency);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind]);
+
+  function applyTemplate() {
+    if (body.trim().length === 0) {
+      setBody(smart.template);
+    } else {
+      setBody((b) => b + (b.endsWith("\n") ? "" : "\n\n") + smart.template);
+    }
+  }
+
+  // Compose the body that actually ships — prepend an urgency tag + an
+  // optional project chip so the Help-wall card surfaces them on the
+  // same row that already renders.
+  function composedBody(): string {
+    const parts: string[] = [];
+    const urgLabel = URGENCY_META[urgency].label;
+    parts.push(`**Urgency:** ${urgLabel}`);
+    if (projectId) {
+      const p = projectsData?.items.find((x) => x.id === projectId);
+      if (p) parts.push(`**Project:** ${p.code} · ${p.name}`);
+    }
+    if (parts.length > 0) parts.push("");
+    parts.push(body.trim());
+    return parts.join("\n");
+  }
+
   const create = useMutation({
     mutationFn: () =>
       api("/api/v1/campfire/help", {
-        method: "POST", body: JSON.stringify({ kind, title: title.trim(), body: body.trim() }),
+        method: "POST",
+        body: JSON.stringify({ kind, title: title.trim(), body: composedBody() }),
       }),
-    onSuccess: () => { toast.success("Help request posted"); onCreated(); },
+    onSuccess: () => { toast.success("Help request posted", URGENCY_META[urgency].eta); onCreated(); },
     onError: (e: Error) => toast.error("Could not post", e.message),
   });
 
+  const titleTooShort = title.trim().length > 0 && title.trim().length < 6;
+  const titleHint = !title.trim()
+    ? null
+    : titleTooShort
+    ? "Add a couple more words — vague titles get fewer responses."
+    : null;
+
   return (
     <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={onClose}>
-      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
         <header className="px-5 py-4 border-b border-border flex items-center justify-between">
-          <h3 className="text-base font-bold">Post a request</h3>
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider text-accent font-bold">Help wall</div>
+            <h3 className="text-base font-bold text-text mt-0.5">Post a request</h3>
+          </div>
           <button onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted"><X size={16} /></button>
         </header>
-        <div className="p-5 space-y-4">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-1.5">
-            {Object.entries(HELP_KINDS).map(([k, meta]) => {
-              const Icon = meta.icon;
-              const active = kind === k;
-              return (
+
+        <div className="p-5 space-y-4 flex-1 overflow-y-auto">
+          {/* Kind chips — same vocabulary, but the active state now
+              picks up the kind's tint instead of the same accent so
+              the eye scans "this is help" vs "this is a blocker". */}
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1.5">What kind of ask is this?</div>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-1.5">
+              {Object.entries(HELP_KINDS).map(([k, meta]) => {
+                const Icon = meta.icon;
+                const active = kind === k;
+                return (
+                  <button
+                    key={k}
+                    onClick={() => setKind(k)}
+                    type="button"
+                    className={`flex flex-col items-center gap-1 px-2 py-2 rounded-lg border text-[10px] font-semibold transition-colors press-fx ${
+                      active ? `border-accent ${meta.tint} shadow-soft` : "border-border text-muted hover:bg-bg/40"
+                    }`}
+                  >
+                    <Icon size={14} />
+                    <span className="leading-tight text-center">{meta.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Title + smart inline hint */}
+          <div>
+            <input
+              autoFocus
+              className="input"
+              placeholder={smart.titleHint}
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+            {titleHint && <div className="text-[10.5px] text-warn mt-1">{titleHint}</div>}
+          </div>
+
+          {/* Urgency picker with copy on response expectations */}
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mb-1.5">Urgency</div>
+            <div className="flex flex-wrap gap-1.5">
+              {(Object.keys(URGENCY_META) as Array<keyof typeof URGENCY_META>).map((u) => (
                 <button
-                  key={k}
-                  onClick={() => setKind(k)}
-                  className={`flex flex-col items-center gap-1 px-2 py-2 rounded-lg border text-[10px] font-semibold ${
-                    active ? "border-accent bg-accent-soft text-accent" : "border-border text-muted hover:bg-bg/40"
+                  key={u}
+                  type="button"
+                  onClick={() => { setUrgency(u); setUrgencyTouched(true); }}
+                  className={`text-[11px] font-bold px-2.5 py-1 rounded-full border ${
+                    urgency === u ? URGENCY_META[u].cls : "bg-bg/40 text-muted border-border hover:border-accent/40"
                   }`}
                 >
-                  <Icon size={14} />
-                  <span className="leading-tight text-center">{meta.label}</span>
+                  {URGENCY_META[u].label}
                 </button>
-              );
-            })}
+              ))}
+            </div>
+            <div className="text-[11px] text-muted mt-1.5">{URGENCY_META[urgency].eta}</div>
           </div>
-          <input
-            className="input"
-            placeholder="One-line summary of what you need"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-          <textarea
-            className="input min-h-[100px]"
-            placeholder="Context, links, what you've already tried…"
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-          />
+
+          {/* Project + member-mention shortcut row */}
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <div className="label">Tied to project <span className="text-muted font-normal">(optional)</span></div>
+              <select className="input" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+                <option value="">—</option>
+                {(projectsData?.items ?? []).map((p) => (
+                  <option key={p.id} value={p.id}>{p.code} · {p.name}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <div className="label">@mention a teammate <span className="text-muted font-normal">(optional)</span></div>
+              <select
+                className="input"
+                value=""
+                onChange={(e) => {
+                  const id = e.target.value;
+                  if (!id) return;
+                  const m = membersData?.items.find((x) => x.id === id);
+                  if (!m) return;
+                  const handle = (m.email || "").split("@")[0];
+                  setBody((b) => (b ? b + " " : "") + `@${handle}`);
+                  // Reset the select to placeholder.
+                  (e.target as HTMLSelectElement).value = "";
+                }}
+              >
+                <option value="">Pick someone…</option>
+                {(membersData?.items ?? []).map((m) => (
+                  <option key={m.id} value={m.id}>{m.name || m.email}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {/* Body + "Use template" affordance */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <div className="label">Details</div>
+              <button
+                type="button"
+                onClick={applyTemplate}
+                className="text-[11px] font-semibold text-accent hover:underline normal-case"
+              >
+                ✨ Use {smart.defaultUrgency === "blocking" ? "blocker" : kind} template →
+              </button>
+            </div>
+            <textarea
+              className="input min-h-[140px] text-[13px] font-mono"
+              placeholder="Context, links, what you've already tried…"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+            />
+            <div className="flex items-center justify-between text-[10.5px] text-muted mt-1">
+              <span>{body.length === 0 ? "Tip: the more context, the faster the response." : `${body.length} characters · markdown supported`}</span>
+              {body.length > 0 && body.length < 60 && (
+                <span className="text-warn font-semibold">Short for a help request — add a link or what you've tried.</span>
+              )}
+            </div>
+          </div>
         </div>
-        <footer className="px-5 py-3 border-t border-border flex justify-end gap-2">
-          <button onClick={onClose} className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text">Cancel</button>
-          <SmartButton
-            variant="primary"
-            disabled={!title.trim() || create.isPending}
-            loadingLabel="Posting…"
-            icon={<Send size={14} />}
-            onClick={() => create.mutate()}
-          >
-            Post request
-          </SmartButton>
+
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-between gap-2">
+          <span className="text-[11px] text-muted hidden sm:block">
+            Posts to the Help wall · everyone in the workspace can see it.
+          </span>
+          <div className="flex items-center gap-2">
+            <button onClick={onClose} className="text-sm px-3 py-2 rounded-lg text-muted hover:text-text">Cancel</button>
+            <SmartButton
+              variant="primary"
+              disabled={!title.trim() || create.isPending}
+              loadingLabel="Posting…"
+              icon={<Send size={14} />}
+              onClick={() => create.mutate()}
+            >
+              Post {URGENCY_META[urgency].label.toLowerCase()} request
+            </SmartButton>
+          </div>
         </footer>
       </div>
     </div>
