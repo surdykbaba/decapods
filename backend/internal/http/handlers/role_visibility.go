@@ -42,6 +42,7 @@ var NavSections = []struct {
 	{"attendance",    "Attendance"},
 	{"campfire",      "Campfire"},
 	{"legals",        "Legals"},
+	{"okrs",          "OKRs"},
 	{"settings",      "Settings"},
 }
 
@@ -85,6 +86,11 @@ var DefaultRoleVisibility = map[string][]string{
 	// only by default; widen via Settings → Role visibility for teams that
 	// want every member to read policies and templates.
 	"legals":       {"super_admin", "ceo", "coo", "hr", "hr_manager", "compliance_officer", "finance", "auditor"},
+	// OKRs — open to anyone who can be a key-result owner. Mirrors the
+	// rbac.go matrix: every role with okr:read or okr:write. The handler
+	// gates writes (create/update KRs, log check-ins) separately, so
+	// readers can browse without being able to change a target.
+	"okrs":         {"super_admin", "ceo", "coo", "finance", "hr", "hr_manager", "business_dev", "delivery_manager", "project_manager", "engineer", "designer", "qa", "auditor", "compliance_officer"},
 }
 
 type roleVisibilityResponse struct {
