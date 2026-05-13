@@ -5,6 +5,7 @@ import { Sun, Flame, Clock, AlertCircle, X, Send, Plane, ChevronRight, Link2, Pa
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toast } from "@/lib/toast";
+import { checkinPhrasing } from "@/lib/checkinLabels";
 
 type HuddleTask = {
   id: string;
@@ -260,23 +261,23 @@ export function MorningHuddle() {
             </div>
 
             <div>
-              <div className="text-sm font-semibold text-text mb-2">What did you work on yesterday?</div>
+              <div className="text-sm font-semibold text-text mb-2">{checkinPhrasing().recapLabel}</div>
               <textarea
                 value={yesterday}
                 onChange={(e) => setYesterday(e.target.value)}
                 rows={3}
-                placeholder="Quick recap — what shipped, what stalled, where you handed off."
+                placeholder={checkinPhrasing().recapPlaceholder}
                 className="input w-full resize-none"
               />
             </div>
 
             <div>
-              <div className="text-sm font-semibold text-text mb-2">What are you working on today?</div>
+              <div className="text-sm font-semibold text-text mb-2">{checkinPhrasing().planLabel}</div>
               <textarea
                 value={focus}
                 onChange={(e) => setFocus(e.target.value)}
                 rows={4}
-                placeholder="One or two things you're picking up — what should the team know?"
+                placeholder={checkinPhrasing().planPlaceholder}
                 className="input w-full resize-none"
                 autoFocus
               />

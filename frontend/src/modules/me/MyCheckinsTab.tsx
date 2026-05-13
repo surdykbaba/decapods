@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { toast } from "@/lib/toast";
+import { checkinPhrasing } from "@/lib/checkinLabels";
 
 // Mood semantics — used to colour the rhythm strip + derive "best day" facts.
 // Anything in POSITIVE_MOODS counts toward "great day" signals; NEGATIVE_MOODS
@@ -801,6 +802,9 @@ function CheckinEditor({
 }) {
   const qc = useQueryClient();
   const isToday = row.day === new Date().toISOString().slice(0, 10);
+  // Time-of-day-aware phrasing. Only swap labels when filling out today's
+  // slot — historical back-fills keep the neutral "that day" framing below.
+  const phrasing = checkinPhrasing();
   const [step, setStep] = useState<WizardStep>(0);
   const [mood, setMood] = useState(row.mood ?? "");
   const [yesterday, setYesterday] = useState(row.yesterday_note ?? "");
@@ -1012,7 +1016,7 @@ function CheckinEditor({
             <div className="space-y-5">
               <div>
                 <div className="text-sm font-semibold text-text mb-1 flex items-center justify-between gap-2">
-                  <span>Yesterday — what shipped</span>
+                  <span>{isToday ? phrasing.recapLabel : "Yesterday — what shipped"}</span>
                   {canUsePriorPlan && (
                     <button
                       type="button"
@@ -1029,7 +1033,7 @@ function CheckinEditor({
                   onChange={(e) => setYesterday(e.target.value)}
                   rows={3}
                   className="input w-full resize-none"
-                  placeholder="What did you finish, hand off, or get stuck on?"
+                  placeholder={isToday ? phrasing.recapPlaceholder : "What did you finish, hand off, or get stuck on?"}
                   autoFocus
                 />
                 <div className="text-[10.5px] text-muted/80 mt-1 text-right">{yesterday.trim().length} chars</div>
@@ -1037,7 +1041,7 @@ function CheckinEditor({
 
               <div>
                 <div className="text-sm font-semibold text-text mb-1 flex items-center justify-between gap-2">
-                  <span>{isToday ? "Today — what's on" : "That day — what you were on"}</span>
+                  <span>{isToday ? phrasing.planLabel : "That day — what you were on"}</span>
                   {/* Smart-fill — only when today's morning slot is being
                       filled and the field is empty. Drafts a bulleted list
                       of the user's open priorities so the wizard never
@@ -1061,7 +1065,7 @@ function CheckinEditor({
                   placeholder={
                     tone === "rough"
                       ? "Even one small thing counts — what's the first achievable next move?"
-                      : "One or two things you're owning today."
+                      : (isToday ? phrasing.planPlaceholder : "One or two things you were on.")
                   }
                 />
                 <div className="text-[10.5px] text-muted/80 mt-1 text-right">{focus.trim().length} chars</div>
