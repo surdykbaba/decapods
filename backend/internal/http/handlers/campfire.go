@@ -8,6 +8,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -201,7 +202,9 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 			meta                              map[string]any
 			pinned                            bool
 			created                           time.Time
-			commentCount                      int
+			// Postgres COUNT(*) is bigint; see the long note in ListRooms.
+			// Plain int silently drops the row on some pgx setups.
+			commentCount                      int64
 		)
 		if err := rows.Scan(&id, &authorID, &authorName, &authorEmail, &kind,
 			&title, &body, &meta, &pinned, &created, &commentCount); err == nil {
@@ -823,12 +826,19 @@ func (h *Campfire) ListRooms(c *gin.Context) {
 	}
 	defer rows.Close()
 	out := []gin.H{}
+	scanErrs := 0
+	var lastScanErr string
 	for rows.Next() {
 		var (
 			id                       uuid.UUID
 			slug, name, desc         string
 			def, isPrivate, isOwner  bool
-			count, memberCount       int
+			// PostgreSQL COUNT(*) returns bigint. Scanning into Go's int
+			// silently fails on some pgx configs — and because the loop's
+			// `if err == nil` swallows the row, the user sees an empty
+			// channel list even though the rows exist and pass visibility.
+			// This was the long-running "my channels don't show up" bug.
+			count, memberCount       int64
 			last                     *time.Time
 		)
 		if err := rows.Scan(&id, &slug, &name, &desc, &def, &isPrivate, &count, &last, &memberCount, &isOwner); err == nil {
@@ -838,7 +848,15 @@ func (h *Campfire) ListRooms(c *gin.Context) {
 				"member_count": memberCount,
 				"message_count": count, "last_message_at": last,
 			})
+		} else {
+			scanErrs++
+			lastScanErr = err.Error()
 		}
+	}
+	// Surface scan failures via response header so a future "channels missing"
+	// report is debuggable from the browser without DB access.
+	if scanErrs > 0 {
+		c.Header("X-Channel-Scan-Errors", fmt.Sprintf("%d (last: %s)", scanErrs, lastScanErr))
 	}
 	c.JSON(200, gin.H{"items": out})
 }
