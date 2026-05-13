@@ -76,6 +76,10 @@ func (a *Auth) Login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "token issue"})
 		return
 	}
+	// Stamp last_login_at so the Members directory's "Last login" column
+	// reflects reality. Fire-and-forget — we don't want a directory-column
+	// write to hold up auth. Errors are logged in the access log already.
+	_, _ = a.db.Exec(c, `UPDATE users SET last_login_at = now() WHERE id = $1`, userID)
 	audit.WriteHTTP(c, a.db, c, tenantID, &userID, "auth.login.success", "user", userID,
 		map[string]any{"email": req.Email, "roles": roles})
 	c.JSON(http.StatusOK, tok)
@@ -118,6 +122,8 @@ func (a *Auth) VerifyMFA(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "token issue"})
 		return
 	}
+	// Same last_login_at stamp as the password path — see Login() above.
+	_, _ = a.db.Exec(c, `UPDATE users SET last_login_at = now() WHERE id = $1`, userID)
 	audit.WriteHTTP(c, a.db, c, tenantID, &userID, "auth.login.success", "user", userID,
 		map[string]any{"via": "mfa", "roles": roles})
 	c.JSON(http.StatusOK, tok)

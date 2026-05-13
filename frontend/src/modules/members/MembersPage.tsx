@@ -647,7 +647,11 @@ function MemberTable({
                           >
                             {m.name || "—"}
                           </Link>
-                          <ExternalEmailBadge email={m.email} size="xs" />
+                          {/* "External" badge removed — every member is by
+                              definition internal; the chip was meaningless
+                              noise next to the name. The badge component is
+                              kept (used elsewhere for invited stakeholders),
+                              just unmounted here. */}
                           {risk.tone && (
                             <span
                               className={`pill text-[10px] uppercase tracking-wide font-bold ${
