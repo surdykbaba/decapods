@@ -82,16 +82,6 @@ body {
      muted colour still keep the visual hierarchy under the heading. */
   .label { @apply text-[13px] capitalize tracking-normal text-text mb-1.5 block font-semibold; }
 
-  /* Auto-capitalise the *visible* text in standard text inputs so a user
-     typing "federal ministry of finance" sees "Federal Ministry Of Finance"
-     without us mangling the stored value. Scoped to type="text" and
-     textareas so emails / passwords / URLs / numbers / dates stay untouched.
-     Opt out per-field with `.no-cap` for slugs, codes, technical strings.
-     autocapitalize=words on the element also nudges the mobile keyboard. */
-  input.input[type="text"]:not(.no-cap),
-  textarea.input:not(.no-cap) {
-    text-transform: capitalize;
-  }
   .h1 { @apply text-[2rem] md:text-[2.4rem] font-extrabold tracking-tight leading-tight; }
   .h2 { @apply text-[1.15rem] font-bold tracking-tight; }
 }
