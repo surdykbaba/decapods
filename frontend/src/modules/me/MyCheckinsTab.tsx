@@ -437,12 +437,21 @@ export function MyCheckinsTab() {
               {m}
             </button>
           ))}
+          {/* Primary slot CTA — used to be a tiny "Add notes" link, lost
+              against the emoji row. Now a real "Check in now" pill that
+              opens the full editor (mood + shipped + next + attachments).
+              Auto-flips to "Edit today's check-in" once the current slot
+              is logged so the affordance stays useful for amending. */}
           <button
             type="button"
             onClick={() => setEditingDay(todayRow)}
-            className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-accent hover:underline ml-auto"
+            className="ml-auto inline-flex items-center gap-1.5 text-[12.5px] font-bold text-white bg-accent hover:bg-[rgb(var(--accent-hover))] px-4 py-1.5 rounded-full shadow-soft press-fx"
+            title={currentSlotDone
+              ? `${SLOT_LABEL[currentSlot]} already logged — open the editor to amend.`
+              : `Open the full editor: mood + what you shipped + what's next`}
           >
-            <Pencil size={11} /> Add notes
+            <Sparkles size={12} />
+            {currentSlotDone ? "Edit today's check-in" : "Check in now"}
           </button>
         </div>
       </section>

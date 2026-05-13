@@ -14,7 +14,7 @@ import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
   Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
-  Sparkles, Bell, XCircle, Pencil, Smile,
+  Sparkles, Bell, XCircle, Pencil,
   Mail as MailIcon, Paperclip, Reply, AtSign, Users as UsersIcon, AlertCircle,
   RefreshCw, ExternalLink,
 } from "lucide-react";
@@ -192,13 +192,10 @@ export function MyWorkPage() {
     { key: "profile",   label: "Profile",   icon: Github,         badge: badges.profile,   badgeTone: "danger" },
   ];
 
-  // "Check in" CTA in the page header — always reachable, regardless of
-  // which sub-tab is active. Clicking jumps to Check-ins where the slot
-  // logic + quick mood live. Smarter than a separate dialog because the
-  // sub-page already shows slot status and notes editor.
-  function jumpToCheckIn() {
-    setTab("checkins");
-  }
+  // The header "Check in" CTA used to live here. Removed at the user's
+  // request — the Check-ins tab already exposes a primary "Check in
+  // now" button in the slot card, and the duplicate up here was
+  // crowding the avatar / online badge in the top-right corner.
 
   return (
     <div className="space-y-5">
@@ -210,14 +207,6 @@ export function MyWorkPage() {
             Your tasks, mood and time — everything you own, none of the org-wide noise.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={jumpToCheckIn}
-          className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 shadow-soft"
-          title="Update your mood (three times a day: morning, afternoon, evening)"
-        >
-          <Smile size={14} /> Check in
-        </button>
       </header>
 
       <nav className="flex flex-wrap gap-1 p-1 bg-surface border border-border rounded-full w-fit">
