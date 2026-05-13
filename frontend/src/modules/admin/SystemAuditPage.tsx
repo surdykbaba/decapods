@@ -8,6 +8,7 @@ import {
   Search, ScrollText, ChevronDown, ChevronRight,
   ShieldCheck, Globe, Monitor, Filter,
 } from "lucide-react";
+import { SortHeader, type SortState } from "@/components/TableTools";
 
 type AuditRow = {
   id: string;
@@ -86,7 +87,29 @@ export function SystemAuditPage() {
     refetchInterval: 30_000,
   });
 
-  const rows = data?.items ?? [];
+  type AuditSort = "when" | "actor" | "action" | "entity" | "ip";
+  const [sort, setSort] = useState<SortState<AuditSort>>({ col: "when", dir: "desc" });
+  function toggleSort(col: AuditSort) {
+    setSort((p) => p.col === col ? { col, dir: p.dir === "asc" ? "desc" : "asc" } : { col, dir: col === "when" ? "desc" : "asc" });
+  }
+  // Server-side paginated; sort is applied to the visible page only. With a
+  // 50-row page that's enough for "show me failures first on this page"
+  // without paying a query round-trip per click.
+  const rawRows = data?.items ?? [];
+  const rows = useMemo(() => {
+    const xs = [...rawRows];
+    const mul = sort.dir === "asc" ? 1 : -1;
+    xs.sort((a, b) => {
+      switch (sort.col) {
+        case "when":   return mul * (new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        case "actor":  return mul * (a.actor_name || a.actor_email || "").localeCompare(b.actor_name || b.actor_email || "");
+        case "action": return mul * a.action.localeCompare(b.action);
+        case "entity": return mul * a.entity.localeCompare(b.entity);
+        case "ip":     return mul * (a.ip || "").localeCompare(b.ip || "");
+      }
+    });
+    return xs;
+  }, [rawRows, sort]);
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const firstShown = total === 0 ? 0 : page * PAGE_SIZE + 1;
@@ -185,11 +208,11 @@ export function SystemAuditPage() {
               <thead className="bg-bg/40 text-[11px] uppercase tracking-wider text-muted">
                 <tr>
                   <th className="text-left px-3 py-2 font-semibold w-6"></th>
-                  <th className="text-left px-3 py-2 font-semibold">When</th>
-                  <th className="text-left px-3 py-2 font-semibold">Actor</th>
-                  <th className="text-left px-3 py-2 font-semibold">Action</th>
-                  <th className="text-left px-3 py-2 font-semibold">Entity</th>
-                  <th className="text-left px-3 py-2 font-semibold">IP</th>
+                  <SortHeader col="when"   label="When"   sort={sort} onSort={toggleSort} />
+                  <SortHeader col="actor"  label="Actor"  sort={sort} onSort={toggleSort} />
+                  <SortHeader col="action" label="Action" sort={sort} onSort={toggleSort} />
+                  <SortHeader col="entity" label="Entity" sort={sort} onSort={toggleSort} />
+                  <SortHeader col="ip"     label="IP"     sort={sort} onSort={toggleSort} />
                   <th className="text-left px-3 py-2 font-semibold">Client</th>
                   <th className="text-left px-3 py-2 font-semibold">Endpoint</th>
                 </tr>

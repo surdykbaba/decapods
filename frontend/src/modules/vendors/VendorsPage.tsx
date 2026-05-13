@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useCallback, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -8,6 +8,7 @@ import {
   Handshake, Plus, Search, ShieldCheck, ShieldAlert, Clock, CheckCircle2,
   Globe, Mail, Phone, X, LayoutGrid, Rows3, AlertTriangle, Send, Copy, Link as LinkIcon,
 } from "lucide-react";
+import { SortHeader, TablePager, usePagedSort, type SortState } from "@/components/TableTools";
 
 type VendorStatus = "draft" | "onboarded" | "sla_signed" | "suspended";
 type RiskLevel = "low" | "medium" | "high" | "critical";
@@ -96,26 +97,47 @@ function fmtRel(iso: string | null): string {
 }
 
 function VendorTable({ rows }: { rows: VendorRow[] }) {
+  type VendorSort = "name" | "kind" | "contact" | "category" | "status" | "risk" | "projects" | "outstanding" | "activity";
+  const compare = useCallback((a: VendorRow, b: VendorRow, s: SortState<VendorSort>) => {
+    const mul = s.dir === "asc" ? 1 : -1;
+    switch (s.col) {
+      case "name":        return mul * a.name.localeCompare(b.name);
+      case "kind":        return mul * a.kind.localeCompare(b.kind);
+      case "contact":     return mul * (a.contact_name || "").localeCompare(b.contact_name || "");
+      case "category":    return mul * (a.service_category || "").localeCompare(b.service_category || "");
+      case "status":      return mul * a.status.localeCompare(b.status);
+      case "risk":        return mul * a.risk_level.localeCompare(b.risk_level);
+      case "projects":    return mul * (a.assigned_projects_count - b.assigned_projects_count);
+      case "outstanding": return mul * (a.outstanding_balance - b.outstanding_balance);
+      case "activity":    return mul * (new Date(a.last_activity_at ?? a.created_at).getTime() - new Date(b.last_activity_at ?? b.created_at).getTime());
+    }
+  }, []);
+  const ps = usePagedSort<VendorRow, VendorSort>({
+    rows,
+    storageKey: "vendors-page-size",
+    defaultSort: { col: "activity", dir: "desc" },
+    compare,
+  });
   return (
     <div className="bg-surface border border-border rounded-2xl overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
             <tr>
-              <th className="text-left px-4 py-3">Vendor</th>
-              <th className="text-left px-3 py-3">Type</th>
-              <th className="text-left px-3 py-3">Contact</th>
-              <th className="text-left px-3 py-3">Category</th>
-              <th className="text-left px-3 py-3">Status</th>
-              <th className="text-left px-3 py-3">Risk</th>
-              <th className="text-right px-3 py-3">Projects</th>
-              <th className="text-right px-3 py-3">Outstanding</th>
-              <th className="text-left px-3 py-3">Last activity</th>
+              <SortHeader col="name"        label="Vendor"        sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="kind"        label="Type"          sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="contact"     label="Contact"       sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="category"    label="Category"      sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="status"      label="Status"        sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="risk"        label="Risk"          sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="projects"    label="Projects"      sort={ps.sort} onSort={(c) => ps.toggleSort(c)} align="right" />
+              <SortHeader col="outstanding" label="Outstanding"   sort={ps.sort} onSort={(c) => ps.toggleSort(c)} align="right" />
+              <SortHeader col="activity"    label="Last activity" sort={ps.sort} onSort={(c) => ps.toggleSort(c)} />
               <th className="px-3 py-3"></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((v) => {
+            {ps.pageRows.map((v) => {
               const sm = STATUS_META[v.status];
               const rm = RISK_META[v.risk_level];
               return (
@@ -151,6 +173,17 @@ function VendorTable({ rows }: { rows: VendorRow[] }) {
           </tbody>
         </table>
       </div>
+      <TablePager
+        total={ps.total}
+        pageSize={ps.pageSize}
+        pickPageSize={ps.pickPageSize}
+        page={ps.page}
+        setPage={ps.setPage}
+        totalPages={ps.totalPages}
+        firstShown={ps.firstShown}
+        lastShown={ps.lastShown}
+        label="vendor"
+      />
     </div>
   );
 }

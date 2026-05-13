@@ -1,9 +1,10 @@
-import { useState, useMemo } from "react";
+import { useCallback, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { SmartButton } from "@/components/SmartButton";
 import { toast } from "@/lib/toast";
+import { SortHeader, TablePager, usePagedSort, type SortState } from "@/components/TableTools";
 import {
   Network, Plus, Search, ShieldCheck, ShieldAlert, Clock, CheckCircle2,
   X, LayoutGrid, Rows3, AlertTriangle, Globe, Mail, Phone, UserCircle2,
@@ -274,26 +275,46 @@ function FilterSelect({
 }
 
 function AgentTable({ rows }: { rows: AgentRow[] }) {
+  type AgentSort = "name" | "type" | "region" | "owner" | "status" | "risk" | "engagements" | "activity";
+  const compare = useCallback((a: AgentRow, b: AgentRow, s: SortState<AgentSort>) => {
+    const mul = s.dir === "asc" ? 1 : -1;
+    switch (s.col) {
+      case "name":        return mul * a.name.localeCompare(b.name);
+      case "type":        return mul * a.agent_type.localeCompare(b.agent_type);
+      case "region":      return mul * (a.region || a.country || "").localeCompare(b.region || b.country || "");
+      case "owner":       return mul * (a.relationship_owner_name || "").localeCompare(b.relationship_owner_name || "");
+      case "status":      return mul * a.status.localeCompare(b.status);
+      case "risk":        return mul * a.risk_level.localeCompare(b.risk_level);
+      case "engagements": return mul * (a.active_engagements_count - b.active_engagements_count);
+      case "activity":    return mul * ((a.last_activity_at ? new Date(a.last_activity_at).getTime() : 0) - (b.last_activity_at ? new Date(b.last_activity_at).getTime() : 0));
+    }
+  }, []);
+  const ps = usePagedSort<AgentRow, AgentSort>({
+    rows,
+    storageKey: "agents-page-size",
+    defaultSort: { col: "activity", dir: "desc" },
+    compare,
+  });
   return (
     <div className="bg-surface border border-border rounded-2xl overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
             <tr>
-              <th className="text-left px-4 py-3">Agent</th>
-              <th className="text-left px-3 py-3">Type</th>
-              <th className="text-left px-3 py-3">Region</th>
-              <th className="text-left px-3 py-3">Sectors</th>
-              <th className="text-left px-3 py-3">Owner</th>
-              <th className="text-left px-3 py-3">Status</th>
-              <th className="text-left px-3 py-3">Risk</th>
-              <th className="text-right px-3 py-3">Engagements</th>
-              <th className="text-left px-3 py-3">Last activity</th>
+              <SortHeader col="name"        label="Agent"         sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="type"        label="Type"          sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="region"      label="Region"        sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <th className="text-left px-3 py-3 font-semibold">Sectors</th>
+              <SortHeader col="owner"       label="Owner"         sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="status"      label="Status"        sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="risk"        label="Risk"          sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="engagements" label="Engagements"   sort={ps.sort} onSort={(c) => ps.toggleSort(c)} align="right" />
+              <SortHeader col="activity"    label="Last activity" sort={ps.sort} onSort={(c) => ps.toggleSort(c)} />
               <th className="px-3 py-3"></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((a) => {
+            {ps.pageRows.map((a) => {
               const sm = STATUS_META[a.status];
               const rm = RISK_META[a.risk_level];
               return (
@@ -339,6 +360,17 @@ function AgentTable({ rows }: { rows: AgentRow[] }) {
           </tbody>
         </table>
       </div>
+      <TablePager
+        total={ps.total}
+        pageSize={ps.pageSize}
+        pickPageSize={ps.pickPageSize}
+        page={ps.page}
+        setPage={ps.setPage}
+        totalPages={ps.totalPages}
+        firstShown={ps.firstShown}
+        lastShown={ps.lastShown}
+        label="agent"
+      />
     </div>
   );
 }

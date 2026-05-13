@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Card } from "@/components/ui";
 import { Archive, RotateCcw, X, AlertTriangle, ShieldCheck, Lock } from "lucide-react";
+import { SortHeader, TablePager, usePagedSort, type SortState } from "@/components/TableTools";
 
 type ArchivedProject = {
   id: string;
@@ -72,6 +73,23 @@ export function ArchivedProjectsPage() {
 
   const items = data?.items ?? [];
 
+  type SortCol = "name" | "status" | "budget" | "archived";
+  const compare = useCallback((a: ArchivedProject, b: ArchivedProject, s: SortState<SortCol>) => {
+    const mul = s.dir === "asc" ? 1 : -1;
+    switch (s.col) {
+      case "name":     return mul * (a.name || a.code).localeCompare(b.name || b.code);
+      case "status":   return mul * a.status.localeCompare(b.status);
+      case "budget":   return mul * (a.budget - b.budget);
+      case "archived": return mul * (new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());
+    }
+  }, []);
+  const ps = usePagedSort<ArchivedProject, SortCol>({
+    rows: items,
+    storageKey: "archived-projects-page-size",
+    defaultSort: { col: "archived", dir: "desc" },
+    compare,
+  });
+
   return (
     <div className="space-y-5 max-w-4xl">
       <header>
@@ -97,15 +115,15 @@ export function ArchivedProjectsPage() {
           <table className="w-full text-sm">
             <thead className="text-xs text-muted">
               <tr className="border-b border-border">
-                <th className="text-left font-medium px-3 py-2">Project</th>
-                <th className="text-left font-medium px-3 py-2 w-36">Stage at archive</th>
-                <th className="text-right font-medium px-3 py-2 w-28">Budget</th>
-                <th className="text-left font-medium px-3 py-2 w-36">Archived</th>
+                <SortHeader col="name"     label="Project"          sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+                <SortHeader col="status"   label="Stage at archive" sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} className="w-36" />
+                <SortHeader col="budget"   label="Budget"           sort={ps.sort} onSort={(c) => ps.toggleSort(c)}         className="w-28" align="right" />
+                <SortHeader col="archived" label="Archived"         sort={ps.sort} onSort={(c) => ps.toggleSort(c)}         className="w-36" />
                 <th className="w-32"></th>
               </tr>
             </thead>
             <tbody>
-              {items.map((p) => (
+              {ps.pageRows.map((p) => (
                 <tr key={p.id} className="border-b border-border last:border-0">
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-2">
@@ -131,6 +149,17 @@ export function ArchivedProjectsPage() {
               ))}
             </tbody>
           </table>
+          <TablePager
+            total={ps.total}
+            pageSize={ps.pageSize}
+            pickPageSize={ps.pickPageSize}
+            page={ps.page}
+            setPage={ps.setPage}
+            totalPages={ps.totalPages}
+            firstShown={ps.firstShown}
+            lastShown={ps.lastShown}
+            label="project"
+          />
         </Card>
       )}
 

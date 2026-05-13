@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -9,6 +9,7 @@ import {
   Users, Search, Mail, Phone, Briefcase, FolderKanban, Pencil, Trash2, X,
   LayoutGrid, Rows3, UserCheck, UserPlus,
 } from "lucide-react";
+import { SortHeader, TablePager, usePagedSort, type SortState } from "@/components/TableTools";
 
 type Stakeholder = {
   id: string;
@@ -249,23 +250,41 @@ function EmptyState({ totalItems }: { totalItems: number }) {
 function StakeholderTable({
   rows, onEdit, onRemove,
 }: { rows: Stakeholder[]; onEdit: (s: Stakeholder) => void; onRemove: (id: string) => void }) {
+  type SortCol = "name" | "role" | "kind" | "contact" | "entity" | "added";
+  const compare = useCallback((a: Stakeholder, b: Stakeholder, s: SortState<SortCol>) => {
+    const mul = s.dir === "asc" ? 1 : -1;
+    switch (s.col) {
+      case "name":    return mul * a.name.localeCompare(b.name);
+      case "role":    return mul * a.role.localeCompare(b.role);
+      case "kind":    return mul * a.kind.localeCompare(b.kind);
+      case "contact": return mul * (a.email || a.phone).localeCompare(b.email || b.phone);
+      case "entity":  return mul * a.entity_name.localeCompare(b.entity_name);
+      case "added":   return mul * (new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    }
+  }, []);
+  const ps = usePagedSort<Stakeholder, SortCol>({
+    rows,
+    storageKey: "stakeholders-page-size",
+    defaultSort: { col: "added", dir: "desc" },
+    compare,
+  });
   return (
     <div className="bg-surface border border-border rounded-2xl overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
             <tr>
-              <th className="text-left px-4 py-3">Name</th>
-              <th className="text-left px-3 py-3">Role</th>
-              <th className="text-left px-3 py-3">Kind</th>
-              <th className="text-left px-3 py-3">Contact</th>
-              <th className="text-left px-3 py-3">Linked to</th>
-              <th className="text-left px-3 py-3">Added</th>
+              <SortHeader col="name"    label="Name"      sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="role"    label="Role"      sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="kind"    label="Kind"      sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="contact" label="Contact"   sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="entity"  label="Linked to" sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+              <SortHeader col="added"   label="Added"     sort={ps.sort} onSort={(c) => ps.toggleSort(c)} />
               <th className="px-3 py-3"></th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((s) => {
+            {ps.pageRows.map((s) => {
               const km = KIND_META[s.kind];
               const entityHref = s.entity_type === "project"
                 ? `/projects/${s.entity_id}`
@@ -310,6 +329,17 @@ function StakeholderTable({
           </tbody>
         </table>
       </div>
+      <TablePager
+        total={ps.total}
+        pageSize={ps.pageSize}
+        pickPageSize={ps.pickPageSize}
+        page={ps.page}
+        setPage={ps.setPage}
+        totalPages={ps.totalPages}
+        firstShown={ps.firstShown}
+        lastShown={ps.lastShown}
+        label="stakeholder"
+      />
     </div>
   );
 }

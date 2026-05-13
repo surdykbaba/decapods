@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
@@ -10,6 +10,7 @@ import {
   ArrowDownToLine, Send, Ban, ChevronRight, AlertTriangle, Briefcase,
   KeyRound, Edit3, Info,
 } from "lucide-react";
+import { SortHeader, TablePager, usePagedSort, type SortState } from "@/components/TableTools";
 
 type InvoiceStatus = "draft" | "issued" | "partially_paid" | "paid" | "void";
 
@@ -210,77 +211,14 @@ export function InvoicesPage() {
       </div>
 
       {/* Invoice table */}
-      <div className="bg-surface border border-border rounded-2xl overflow-hidden">
-        {isLoading ? (
-          <div className="p-10 text-center text-muted">Loading invoices…</div>
-        ) : filtered.length === 0 ? (
-          <div className="p-10 text-center">
-            <div className="w-12 h-12 mx-auto rounded-full bg-accent-soft text-accent grid place-items-center mb-2">
-              <Receipt size={20} />
-            </div>
-            <div className="text-base font-bold text-text">
-              {items.length === 0 ? "No invoices yet" : "Nothing matches"}
-            </div>
-            <p className="text-sm text-muted mt-1 max-w-md mx-auto">
-              {items.length === 0
-                ? billable.length > 0
-                  ? "There's billable work waiting at the top of this page — draft your first invoice from the queue."
-                  : "Invoices appear here when they're created from a project. The pipeline at risk on the finance page shows what's still in flight."
-                : "Try clearing the filters or search."}
-            </p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
-                <tr>
-                  <th className="text-left px-4 py-3">Number</th>
-                  <th className="text-left px-3 py-3">Project</th>
-                  <th className="text-left px-3 py-3">Status</th>
-                  <th className="text-right px-3 py-3">Amount</th>
-                  <th className="text-right px-3 py-3">Paid</th>
-                  <th className="text-right px-3 py-3">Outstanding</th>
-                  <th className="text-left px-3 py-3">Issued</th>
-                  <th className="text-left px-3 py-3">Due</th>
-                  <th className="px-3 py-3"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((i) => {
-                  const meta = STATUS_META[i.status];
-                  const overdue = !!(i.due_on && new Date(i.due_on) < new Date() && i.outstanding > 0);
-                  return (
-                    <tr key={i.id} className="border-t border-border hover:bg-bg/40 transition-colors">
-                      <td className="px-4 py-3 font-mono font-bold text-text">{i.number}</td>
-                      <td className="px-3 py-3">
-                        {i.project_id ? (
-                          <Link to={`/projects/${i.project_id}`} className="inline-flex items-center gap-1.5 text-accent hover:underline">
-                            <FolderKanban size={12} /> {i.project_name}
-                          </Link>
-                        ) : <span className="text-muted">—</span>}
-                        {i.project_code && <div className="text-[10.5px] text-muted">{i.project_code}</div>}
-                      </td>
-                      <td className="px-3 py-3"><span className={`pill ${meta.cls}`}>{meta.label}</span></td>
-                      <td className="px-3 py-3 text-right font-semibold text-text">{fmtMoney(i.amount, i.currency)}</td>
-                      <td className="px-3 py-3 text-right text-success">{fmtMoney(i.paid, i.currency)}</td>
-                      <td className={`px-3 py-3 text-right font-semibold ${i.outstanding > 0 ? "text-warn" : "text-muted"}`}>
-                        {fmtMoney(i.outstanding, i.currency)}
-                      </td>
-                      <td className="px-3 py-3 text-[12px] text-muted whitespace-nowrap">{fmtDate(i.issued_on)}</td>
-                      <td className={`px-3 py-3 text-[12px] whitespace-nowrap ${overdue ? "text-danger font-semibold" : "text-muted"}`}>
-                        {fmtDate(i.due_on)}{overdue && <span className="ml-1">·overdue</span>}
-                      </td>
-                      <td className="px-3 py-3 text-right whitespace-nowrap">
-                        <RowActions invoice={i} onRecord={() => setRecordFor(i)} onStatus={(s) => setStatus.mutate({ id: i.id, status: s })} />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <InvoiceTable
+        filtered={filtered}
+        items={items}
+        billable={billable}
+        isLoading={isLoading}
+        onRecord={(i) => setRecordFor(i)}
+        onStatus={(id, s) => setStatus.mutate({ id, status: s })}
+      />
 
       {createFor && (
         <CreateInvoiceDialog
@@ -308,6 +246,127 @@ export function InvoicesPage() {
         />
       )}
     </div>
+  );
+}
+
+// Pulled out so the page body stays readable and so we can colocate the
+// table's sort + pagination wiring. Same shape as before; just sorted +
+// paged client-side.
+function InvoiceTable({
+  filtered, items, billable, isLoading, onRecord, onStatus,
+}: {
+  filtered: Invoice[];
+  items: Invoice[];
+  billable: Billable[];
+  isLoading: boolean;
+  onRecord: (i: Invoice) => void;
+  onStatus: (id: string, status: "draft" | "issued" | "void") => void;
+}) {
+  type InvoiceSort = "number" | "project" | "status" | "amount" | "paid" | "outstanding" | "issued" | "due";
+  const compare = useCallback((a: Invoice, b: Invoice, s: SortState<InvoiceSort>) => {
+    const mul = s.dir === "asc" ? 1 : -1;
+    const dateMs = (iso: string | null) => iso ? new Date(iso).getTime() : 0;
+    switch (s.col) {
+      case "number":      return mul * a.number.localeCompare(b.number);
+      case "project":     return mul * a.project_name.localeCompare(b.project_name);
+      case "status":      return mul * a.status.localeCompare(b.status);
+      case "amount":      return mul * (a.amount - b.amount);
+      case "paid":        return mul * (a.paid - b.paid);
+      case "outstanding": return mul * (a.outstanding - b.outstanding);
+      case "issued":      return mul * (dateMs(a.issued_on) - dateMs(b.issued_on));
+      case "due":         return mul * (dateMs(a.due_on) - dateMs(b.due_on));
+    }
+  }, []);
+  const ps = usePagedSort<Invoice, InvoiceSort>({
+    rows: filtered,
+    storageKey: "invoices-page-size",
+    defaultSort: { col: "issued", dir: "desc" },
+    compare,
+  });
+
+  return (
+      <div className="bg-surface border border-border rounded-2xl overflow-hidden">
+        {isLoading ? (
+          <div className="p-10 text-center text-muted">Loading invoices…</div>
+        ) : filtered.length === 0 ? (
+          <div className="p-10 text-center">
+            <div className="w-12 h-12 mx-auto rounded-full bg-accent-soft text-accent grid place-items-center mb-2">
+              <Receipt size={20} />
+            </div>
+            <div className="text-base font-bold text-text">
+              {items.length === 0 ? "No invoices yet" : "Nothing matches"}
+            </div>
+            <p className="text-sm text-muted mt-1 max-w-md mx-auto">
+              {items.length === 0
+                ? billable.length > 0
+                  ? "There's billable work waiting at the top of this page — draft your first invoice from the queue."
+                  : "Invoices appear here when they're created from a project. The pipeline at risk on the finance page shows what's still in flight."
+                : "Try clearing the filters or search."}
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-bg/40 text-[10.5px] uppercase tracking-wider font-bold text-muted">
+                <tr>
+                  <SortHeader col="number"      label="Number"      sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+                  <SortHeader col="project"     label="Project"     sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+                  <SortHeader col="status"      label="Status"      sort={ps.sort} onSort={(c) => ps.toggleSort(c, "asc")} />
+                  <SortHeader col="amount"      label="Amount"      sort={ps.sort} onSort={(c) => ps.toggleSort(c)} align="right" />
+                  <SortHeader col="paid"        label="Paid"        sort={ps.sort} onSort={(c) => ps.toggleSort(c)} align="right" />
+                  <SortHeader col="outstanding" label="Outstanding" sort={ps.sort} onSort={(c) => ps.toggleSort(c)} align="right" />
+                  <SortHeader col="issued"      label="Issued"      sort={ps.sort} onSort={(c) => ps.toggleSort(c)} />
+                  <SortHeader col="due"         label="Due"         sort={ps.sort} onSort={(c) => ps.toggleSort(c)} />
+                  <th className="px-3 py-3"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {ps.pageRows.map((i) => {
+                  const meta = STATUS_META[i.status];
+                  const overdue = !!(i.due_on && new Date(i.due_on) < new Date() && i.outstanding > 0);
+                  return (
+                    <tr key={i.id} className="border-t border-border hover:bg-bg/40 transition-colors">
+                      <td className="px-4 py-3 font-mono font-bold text-text">{i.number}</td>
+                      <td className="px-3 py-3">
+                        {i.project_id ? (
+                          <Link to={`/projects/${i.project_id}`} className="inline-flex items-center gap-1.5 text-accent hover:underline">
+                            <FolderKanban size={12} /> {i.project_name}
+                          </Link>
+                        ) : <span className="text-muted">—</span>}
+                        {i.project_code && <div className="text-[10.5px] text-muted">{i.project_code}</div>}
+                      </td>
+                      <td className="px-3 py-3"><span className={`pill ${meta.cls}`}>{meta.label}</span></td>
+                      <td className="px-3 py-3 text-right font-semibold text-text">{fmtMoney(i.amount, i.currency)}</td>
+                      <td className="px-3 py-3 text-right text-success">{fmtMoney(i.paid, i.currency)}</td>
+                      <td className={`px-3 py-3 text-right font-semibold ${i.outstanding > 0 ? "text-warn" : "text-muted"}`}>
+                        {fmtMoney(i.outstanding, i.currency)}
+                      </td>
+                      <td className="px-3 py-3 text-[12px] text-muted whitespace-nowrap">{fmtDate(i.issued_on)}</td>
+                      <td className={`px-3 py-3 text-[12px] whitespace-nowrap ${overdue ? "text-danger font-semibold" : "text-muted"}`}>
+                        {fmtDate(i.due_on)}{overdue && <span className="ml-1">·overdue</span>}
+                      </td>
+                      <td className="px-3 py-3 text-right whitespace-nowrap">
+                        <RowActions invoice={i} onRecord={() => onRecord(i)} onStatus={(s) => onStatus(i.id, s)} />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <TablePager
+          total={ps.total}
+          pageSize={ps.pageSize}
+          pickPageSize={ps.pickPageSize}
+          page={ps.page}
+          setPage={ps.setPage}
+          totalPages={ps.totalPages}
+          firstShown={ps.firstShown}
+          lastShown={ps.lastShown}
+          label="invoice"
+        />
+      </div>
   );
 }
 
