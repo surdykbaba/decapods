@@ -41,6 +41,7 @@ var NavSections = []struct {
 	{"leave",         "Leave"},
 	{"attendance",    "Attendance"},
 	{"campfire",      "Campfire"},
+	{"legals",        "Legals"},
 	{"settings",      "Settings"},
 }
 
@@ -80,6 +81,10 @@ var DefaultRoleVisibility = map[string][]string{
 	// "forbidden" page they can't action. Workspaces that need broader read
 	// access can widen this via Settings → Role visibility.
 	"settings":     {"super_admin", "ceo", "coo", "hr", "hr_manager", "compliance_officer"},
+	// Legals — statutory + compliance document warehouse. Governance-class
+	// only by default; widen via Settings → Role visibility for teams that
+	// want every member to read policies and templates.
+	"legals":       {"super_admin", "ceo", "coo", "hr", "hr_manager", "compliance_officer", "finance", "auditor"},
 }
 
 type roleVisibilityResponse struct {

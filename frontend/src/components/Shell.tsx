@@ -5,7 +5,7 @@ import {
   Sun, Moon, LogOut, ChevronDown,
   Handshake, UserCog, Folder, Plane,
   ShieldCheck, Menu, X, ClipboardCheck, Lock,
-  Smile,
+  Smile, Scale,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useMemo, useState } from "react";
@@ -43,6 +43,11 @@ const navTop: NavItem[] = [
   { section: "relationships", to: "/relationships", label: "Relationships", icon: Handshake },
   { section: "finance",      to: "/finance",      label: "Finance",      icon: Banknote },
   { section: "files",        to: "/files",        label: "Files & media", icon: Folder },
+  // Legals — workspace statutory + compliance warehouse (NDAs, employee
+  // contracts, vendor MSAs, client SOWs, policies). Governance roles only
+  // by default; widen via Settings → Role visibility if every member
+  // should be able to read policy templates.
+  { section: "legals",       to: "/legals",       label: "Legals",       icon: Scale },
   { section: "leave",        to: "/leave",        label: "Leave",        icon: Plane },
   { section: "attendance",   to: "/attendance",   label: "Attendance & check-ins", icon: ClipboardCheck },
   // Campfire intentionally lives in the top-bar as an animated flame badge —
