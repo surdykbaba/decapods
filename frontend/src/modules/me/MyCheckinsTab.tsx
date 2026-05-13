@@ -419,41 +419,68 @@ export function MyCheckinsTab() {
         {/* Quick mood — only the CURRENT slot can log; future slots are
             disabled and past slots can't be back-filled. Visible whether or
             not the current slot is done (when done, buttons are disabled). */}
-        <div className="flex items-center gap-2 flex-wrap pt-1">
-          <span className="text-[11px] text-muted">
-            {currentSlotDone
-              ? `${SLOT_LABEL[currentSlot]} already logged — try again at the next slot.`
-              : `Tap a mood to log your ${SLOT_LABEL[currentSlot].toLowerCase()} check-in:`}
-          </span>
-          {MOODS.map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => quickMood.mutate(m)}
-              disabled={currentSlotDone || quickMood.isPending}
-              className="text-xl px-2 py-1 rounded-lg border border-transparent hover:border-accent/40 hover:bg-accent-soft/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              title={currentSlotDone ? `${SLOT_LABEL[currentSlot]} slot already used` : `Log ${m}`}
-            >
-              {m}
-            </button>
-          ))}
-          {/* Primary slot CTA — used to be a tiny "Add notes" link, lost
-              against the emoji row. Now a real "Check in now" pill that
-              opens the full editor (mood + shipped + next + attachments).
-              Auto-flips to "Edit today's check-in" once the current slot
-              is logged so the affordance stays useful for amending. */}
-          <button
-            type="button"
-            onClick={() => setEditingDay(todayRow)}
-            className="ml-auto inline-flex items-center gap-1.5 text-[12.5px] font-bold text-white bg-accent hover:bg-[rgb(var(--accent-hover))] px-4 py-1.5 rounded-full shadow-soft press-fx"
-            title={currentSlotDone
-              ? `${SLOT_LABEL[currentSlot]} already logged — open the editor to amend.`
-              : `Open the full editor: mood + what you shipped + what's next`}
-          >
-            <Sparkles size={12} />
-            {currentSlotDone ? "Edit today's check-in" : "Check in now"}
-          </button>
-        </div>
+        {(() => {
+          // When the current slot is done, lock the quick-pick row AND the
+          // primary CTA until the next slot's window opens. We don't allow
+          // amending a slot once it's saved — the rule is "a pulse, not a
+          // journal". The user gets back when their next window arrives.
+          //
+          // Next-slot opening time is fixed by SLOT_LABEL boundaries:
+          //   morning   slot open  → afternoon opens at 12:00
+          //   afternoon slot open  → evening   opens at 17:00
+          //   evening   slot open  → next morning at 00:00 (i.e. tomorrow)
+          //
+          // We display the wall-clock time in the user's locale so a
+          // person in Lagos sees "12:00" and one in NYC sees the same.
+          const NEXT_SLOT_HOUR: Record<CheckinSlot, number> = { morning: 12, afternoon: 17, evening: 24 };
+          const nextHour = NEXT_SLOT_HOUR[currentSlot];
+          const nextSlotName: string = currentSlot === "morning"   ? "afternoon"
+                                     : currentSlot === "afternoon" ? "evening"
+                                     :                                "morning";
+          const nextWhen = nextHour >= 24
+            ? "tomorrow morning"
+            : `${String(nextHour).padStart(2, "0")}:00`;
+          return (
+            <div className="flex items-center gap-2 flex-wrap pt-1">
+              <span className="text-[11px] text-muted">
+                {currentSlotDone
+                  ? <>✅ {SLOT_LABEL[currentSlot]} check-in logged · next window <span className="font-semibold text-text">{nextSlotName}</span> {nextWhen === "tomorrow morning" ? "tomorrow morning" : `at ${nextWhen}`}</>
+                  : `Tap a mood to log your ${SLOT_LABEL[currentSlot].toLowerCase()} check-in:`}
+              </span>
+              {!currentSlotDone && MOODS.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => quickMood.mutate(m)}
+                  disabled={quickMood.isPending}
+                  className="text-xl px-2 py-1 rounded-lg border border-transparent hover:border-accent/40 hover:bg-accent-soft/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={`Log ${m}`}
+                >
+                  {m}
+                </button>
+              ))}
+              {/* Primary slot CTA. Disabled the moment the current slot
+                  is done; back to enabled once the next window opens.
+                  The label flips to a quiet "Slot locked" state so the
+                  user understands the rule rather than wondering why
+                  the button stopped working. */}
+              <button
+                type="button"
+                onClick={() => setEditingDay(todayRow)}
+                disabled={currentSlotDone}
+                className="ml-auto inline-flex items-center gap-1.5 text-[12.5px] font-bold text-white bg-accent hover:bg-[rgb(var(--accent-hover))] px-4 py-1.5 rounded-full shadow-soft press-fx disabled:bg-muted/50 disabled:cursor-not-allowed disabled:shadow-none"
+                title={currentSlotDone
+                  ? `Already checked in for the ${SLOT_LABEL[currentSlot].toLowerCase()} slot — back at ${nextWhen} for ${nextSlotName}.`
+                  : `Open the full editor: mood + what you shipped + what's next`}
+              >
+                <Sparkles size={12} />
+                {currentSlotDone
+                  ? `Locked until ${nextWhen === "tomorrow morning" ? "tomorrow" : nextWhen}`
+                  : "Check in now"}
+              </button>
+            </div>
+          );
+        })()}
       </section>
 
       {/* Smart facts — auto-derived nudges. Only chips with backing signal
