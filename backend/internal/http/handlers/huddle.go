@@ -45,11 +45,22 @@ type huddleResp struct {
 	FocusNote       string             `json:"focus_note,omitempty"`
 	YesterdayNote   string             `json:"yesterday_note,omitempty"`
 	Attachments     []huddleAttachment `json:"attachments"`
+	// SlotsDone — which of the three daily check-in slots (morning,
+	// afternoon, evening) the caller has filled today. The SPA uses this
+	// to disable the slot button once used and to render the "did /
+	// missed / open" pill row.
+	SlotsDone       []string           `json:"slots_done"`
 	StandupAt       string             `json:"standup_at"`        // HH:MM, tenant-configurable
 	TasksDueToday   []huddleTask       `json:"tasks_due_today"`
 	TasksOverdue    []huddleTask       `json:"tasks_overdue"`
 	ApprovalsWaiting int                `json:"approvals_waiting"`
 	OnLeaveToday    bool               `json:"on_leave_today"`
+}
+
+// validCheckinSlot — the three accepted slot strings. Anything else is
+// treated as "no slot" (legacy clients) so we don't reject those POSTs.
+func validCheckinSlot(s string) bool {
+	return s == "morning" || s == "afternoon" || s == "evening"
 }
 
 // Get returns today's brief for the caller. Pulls the user's open tasks
@@ -69,17 +80,20 @@ func (h *Huddle) Get(c *gin.Context) {
 		TasksDueToday: []huddleTask{},
 		TasksOverdue:  []huddleTask{},
 		Attachments:   []huddleAttachment{},
+		SlotsDone:     []string{},
 	}
 
 	// Existing check-in for today?
 	var (
 		mood, focus, yesterday *string
 		attachments            []byte
+		slotsDone              []string
 	)
 	if err := h.db.QueryRow(c, `
-		SELECT mood, focus_note, yesterday_note, COALESCE(attachments, '[]'::jsonb)
+		SELECT mood, focus_note, yesterday_note, COALESCE(attachments, '[]'::jsonb),
+		       COALESCE(slots_done, '{}')
 		  FROM daily_checkins
-		 WHERE user_id=$1 AND day=$2::date`, uid, today).Scan(&mood, &focus, &yesterday, &attachments); err == nil {
+		 WHERE user_id=$1 AND day=$2::date`, uid, today).Scan(&mood, &focus, &yesterday, &attachments, &slotsDone); err == nil {
 		out.DoneToday = true
 		if mood != nil {
 			out.Mood = *mood
@@ -91,6 +105,9 @@ func (h *Huddle) Get(c *gin.Context) {
 			out.YesterdayNote = *yesterday
 		}
 		_ = json.Unmarshal(attachments, &out.Attachments)
+		if slotsDone != nil {
+			out.SlotsDone = slotsDone
+		}
 	}
 
 	// On approved leave today?
@@ -164,6 +181,11 @@ func (h *Huddle) Save(c *gin.Context) {
 		// last 14 days so a user can recall + flesh out a recent check-in
 		// they rushed through, but can't fabricate ancient history.
 		Day             string              `json:"day"`
+		// Optional. "morning" | "afternoon" | "evening". When provided we
+		// enforce the "three times per day, can't repeat a slot" rule —
+		// re-saving the same slot returns 409. Legacy clients that omit
+		// this field still work and update the row without slot tracking.
+		Slot            string              `json:"slot"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -203,6 +225,34 @@ func (h *Huddle) Save(c *gin.Context) {
 		}
 	}
 	day := req.Day
+	req.Slot = strings.TrimSpace(req.Slot)
+	// Normalise empty / unknown slot strings to "" (legacy mode). Only the
+	// three named slots feed the dedupe + slots_done tracking.
+	if !validCheckinSlot(req.Slot) {
+		req.Slot = ""
+	}
+
+	// Enforce one save per slot per day. If the same slot has already been
+	// logged today, refuse the save and surface the current slots_done set
+	// so the SPA can flip the UI without a second round-trip.
+	if req.Slot != "" {
+		var existing []string
+		_ = h.db.QueryRow(c, `
+			SELECT COALESCE(slots_done, '{}') FROM daily_checkins
+			 WHERE user_id=$1 AND day=$2::date`, uid, day).Scan(&existing)
+		for _, s := range existing {
+			if s == req.Slot {
+				c.JSON(http.StatusConflict, gin.H{
+					"error":      "this slot is already logged for today",
+					"code":       "slot_already_done",
+					"slot":       req.Slot,
+					"slots_done": existing,
+				})
+				return
+			}
+		}
+	}
+
 	// Cross-posts to Campfire are only sensible for today's check-in.
 	// Back-filling a yesterday entry shouldn't blast the team an "update".
 	postableToCampfire := req.PostToCampfire && day == today
@@ -229,12 +279,20 @@ func (h *Huddle) Save(c *gin.Context) {
 	}
 
 	posted := campfirePostID != nil
+	// Slot append: if a valid slot was given, seed slots_done with it on
+	// INSERT and union it in on UPDATE. The slot-already-done conflict
+	// case was rejected above, so by the time we get here the slot is
+	// guaranteed to be additive.
+	slotsSeed := "{}"
+	if req.Slot != "" {
+		slotsSeed = "{" + req.Slot + "}"
+	}
 	if _, err := h.db.Exec(c, `
 		INSERT INTO daily_checkins (tenant_id, user_id, day, mood, focus_note,
 		                            yesterday_note, attachments,
-		                            posted_to_campfire, campfire_post_id)
+		                            posted_to_campfire, campfire_post_id, slots_done)
 		VALUES ($1,$2,$3::date, NULLIF($4,''), NULLIF($5,''),
-		        NULLIF($6,''), $7::jsonb, $8, $9)
+		        NULLIF($6,''), $7::jsonb, $8, $9, $10::text[])
 		ON CONFLICT (user_id, day) DO UPDATE SET
 		  mood              = COALESCE(NULLIF(EXCLUDED.mood, ''), daily_checkins.mood),
 		  focus_note        = COALESCE(NULLIF(EXCLUDED.focus_note, ''), daily_checkins.focus_note),
@@ -244,9 +302,14 @@ func (h *Huddle) Save(c *gin.Context) {
 		                          THEN EXCLUDED.attachments
 		                        ELSE daily_checkins.attachments
 		                      END,
+		  slots_done        = CASE
+		                        WHEN array_length(EXCLUDED.slots_done, 1) IS NOT NULL
+		                          THEN (SELECT ARRAY(SELECT DISTINCT unnest(daily_checkins.slots_done || EXCLUDED.slots_done)))
+		                        ELSE daily_checkins.slots_done
+		                      END,
 		  posted_to_campfire = daily_checkins.posted_to_campfire OR EXCLUDED.posted_to_campfire,
 		  campfire_post_id  = COALESCE(daily_checkins.campfire_post_id, EXCLUDED.campfire_post_id)`,
-		tid, uid, day, req.Mood, req.FocusNote, req.YesterdayNote, string(attachJSON), posted, campfirePostID); err != nil {
+		tid, uid, day, req.Mood, req.FocusNote, req.YesterdayNote, string(attachJSON), posted, campfirePostID, slotsSeed); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

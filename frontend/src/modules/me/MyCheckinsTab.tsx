@@ -19,6 +19,37 @@ const NEGATIVE_MOODS = new Set(["😕", "😩"]);
 const MOODS = ["😄", "🙂", "😐", "😕", "😩"] as const;
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 
+// Daily check-in slot model — three windows, one check-in each.
+//
+//   morning   00:00 → 12:00
+//   afternoon 12:00 → 17:00
+//   evening   17:00 → 24:00
+//
+// "Missed the period" means the slot rolled past without a save; the user
+// can't backfill it (the rule is about a live pulse, not a journal). They
+// just check in during whatever window they're in now.
+export type CheckinSlot = "morning" | "afternoon" | "evening";
+const SLOT_ORDER: readonly CheckinSlot[] = ["morning", "afternoon", "evening"] as const;
+const SLOT_LABEL: Record<CheckinSlot, string> = {
+  morning:   "Morning",
+  afternoon: "Afternoon",
+  evening:   "Evening",
+};
+const SLOT_EMOJI: Record<CheckinSlot, string> = {
+  morning:   "🌅",
+  afternoon: "☀️",
+  evening:   "🌙",
+};
+// currentCheckinSlot — bucket the user's local clock into one of the three
+// windows. Local time on purpose: a user checking in at 6pm in Lagos should
+// land in "evening" regardless of what UTC thinks.
+export function currentCheckinSlot(now: Date = new Date()): CheckinSlot {
+  const h = now.getHours();
+  if (h < 12) return "morning";
+  if (h < 17) return "afternoon";
+  return "evening";
+}
+
 type Attachment = { kind: "link" | "file"; name: string; url: string };
 
 type Row = {
@@ -82,6 +113,26 @@ export function MyCheckinsTab() {
     refetchInterval: 5 * 60_000,
     staleTime: 60_000,
   });
+
+  // Today-specific huddle fetch — gives us slots_done so we can enforce
+  // the "three per day, no repeats" rule and render slot status pills.
+  // Separate from the daily-checkins list (which only knows about mood +
+  // notes for the day, not which slots were used).
+  const { data: huddleData } = useQuery<{ slots_done?: string[] }>({
+    queryKey: ["me-huddle"],
+    queryFn: () => api("/api/v1/me/huddle"),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+  const slotsDone = useMemo<Set<CheckinSlot>>(() => {
+    const set = new Set<CheckinSlot>();
+    (huddleData?.slots_done ?? []).forEach((s) => {
+      if (s === "morning" || s === "afternoon" || s === "evening") set.add(s);
+    });
+    return set;
+  }, [huddleData]);
+  const currentSlot = currentCheckinSlot();
+  const currentSlotDone = slotsDone.has(currentSlot);
 
   const items = data?.items ?? [];
 
@@ -263,14 +314,29 @@ export function MyCheckinsTab() {
         yesterday_note: todayRow.yesterday_note ?? "",
         attachments: todayRow.attachments ?? [],
         post_to_campfire: false,
+        // Stamp the slot so the backend can enforce "one per slot" and
+        // append to slots_done.
+        slot: currentSlot,
       }),
     }),
     onSuccess: (_d, mood) => {
-      toast.success(`Logged ${mood}`, "Open the editor to add what you shipped + what's next.");
+      toast.success(`Logged ${mood} for ${SLOT_LABEL[currentSlot].toLowerCase()}`, "Open the editor to add what you shipped + what's next.");
       qc.invalidateQueries({ queryKey: ["me", "daily-checkins"] });
       qc.invalidateQueries({ queryKey: ["me-huddle"] });
     },
-    onError: (e: any) => toast.error("Could not save mood", e?.message),
+    onError: (e: any) => {
+      // Slot-already-done conflict → friendly nudge instead of raw 409.
+      const body = e?.body as { code?: string; slot?: string } | undefined;
+      if (body?.code === "slot_already_done") {
+        toast.error(
+          "Already logged this slot",
+          `You've already checked in this ${body.slot} — wait for the next slot to update again.`,
+        );
+        qc.invalidateQueries({ queryKey: ["me-huddle"] });
+        return;
+      }
+      toast.error("Could not save mood", e?.message);
+    },
   });
 
   return (
@@ -304,7 +370,82 @@ export function MyCheckinsTab() {
           The mutation, types and TodayHero component itself are kept
           (referenced via void below) in case we revive a smarter
           Today affordance later. */}
-      {(() => { void TodayHero; void todayHasContent; void quickMood; return null; })()}
+      {(() => { void TodayHero; void todayHasContent; return null; })()}
+
+      {/* Today's slot row — three slots (Morning / Afternoon / Evening),
+          one check-in each. The pill for the CURRENT slot is interactive:
+          clicking it logs the chosen mood for that slot. Slots already
+          filled today render as ✓ green, missed past slots as dim grey,
+          the still-open current slot in accent. Future slots stay grey
+          until their window opens. */}
+      <section className="bg-surface border border-border rounded-2xl p-4 space-y-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="text-[12px] font-bold text-text inline-flex items-center gap-1.5">
+            <CheckCircle2 size={12} className="text-accent" /> Today's check-ins
+            <span className="font-normal text-muted">· up to 3 per day</span>
+          </div>
+          <div className="text-[11px] text-muted">
+            {slotsDone.size}/3 done · current slot: <span className="font-semibold text-text">{SLOT_LABEL[currentSlot]}</span>
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-2">
+          {SLOT_ORDER.map((s) => {
+            const done = slotsDone.has(s);
+            const isCurrent = s === currentSlot;
+            // "Missed" — slots earlier than current and not done. They
+            // can't be back-filled; the rule is a live pulse, not a journal.
+            const earlierIdx = SLOT_ORDER.indexOf(s);
+            const currentIdx = SLOT_ORDER.indexOf(currentSlot);
+            const missed = !done && earlierIdx < currentIdx;
+            const tone = done ? "bg-success/10 text-success border-success/30"
+                       : isCurrent ? "bg-accent-soft text-accent border-accent"
+                       : missed ? "bg-bg text-muted/60 border-border"
+                       : "bg-bg text-muted border-border";
+            return (
+              <div key={s} className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 ${tone}`}>
+                <div className="min-w-0">
+                  <div className="text-[11px] font-bold uppercase tracking-wider inline-flex items-center gap-1.5">
+                    <span>{SLOT_EMOJI[s]}</span> {SLOT_LABEL[s]}
+                  </div>
+                  <div className="text-[10.5px] opacity-80 mt-0.5">
+                    {done ? "Checked in" : missed ? "Missed" : isCurrent ? "Open now" : "Not yet"}
+                  </div>
+                </div>
+                {done && <CheckCircle2 size={14} />}
+              </div>
+            );
+          })}
+        </div>
+        {/* Quick mood — only the CURRENT slot can log; future slots are
+            disabled and past slots can't be back-filled. Visible whether or
+            not the current slot is done (when done, buttons are disabled). */}
+        <div className="flex items-center gap-2 flex-wrap pt-1">
+          <span className="text-[11px] text-muted">
+            {currentSlotDone
+              ? `${SLOT_LABEL[currentSlot]} already logged — try again at the next slot.`
+              : `Tap a mood to log your ${SLOT_LABEL[currentSlot].toLowerCase()} check-in:`}
+          </span>
+          {MOODS.map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => quickMood.mutate(m)}
+              disabled={currentSlotDone || quickMood.isPending}
+              className="text-xl px-2 py-1 rounded-lg border border-transparent hover:border-accent/40 hover:bg-accent-soft/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+              title={currentSlotDone ? `${SLOT_LABEL[currentSlot]} slot already used` : `Log ${m}`}
+            >
+              {m}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setEditingDay(todayRow)}
+            className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-accent hover:underline ml-auto"
+          >
+            <Pencil size={11} /> Add notes
+          </button>
+        </div>
+      </section>
 
       {/* Smart facts — auto-derived nudges. Only chips with backing signal
           appear, so the strip is empty when there isn't a story to tell. */}
@@ -580,11 +721,16 @@ export function MyCheckinsTab() {
           return new Date(t - 86_400_000).toISOString().slice(0, 10);
         })();
         const prior = items.find((r) => r.day === prevISO) ?? null;
+        // Slot stamping — only today's check-in is slot-aware. Back-fills
+        // (any day other than today) save without a slot so the "one per
+        // slot" rule doesn't accidentally bite recall-mode edits.
+        const isToday = editingDay.day === todayISO;
         return (
           <CheckinEditor
             row={editingDay}
             priorRow={prior}
             onClose={() => setEditingDay(null)}
+            slot={isToday && !currentSlotDone ? currentSlot : undefined}
           />
         );
       })()}
@@ -607,11 +753,15 @@ type WizardStep = 0 | 1 | 2;
 const STEP_TITLES = ["How are you feeling?", "What's the story?", "Anything to attach?"] as const;
 
 function CheckinEditor({
-  row, priorRow, onClose,
+  row, priorRow, onClose, slot,
 }: {
   row: Row;
   priorRow: Row | null;
   onClose: () => void;
+  // Optional slot. When set, the save payload includes it so the backend
+  // can enforce the "three times per day, can't repeat a slot" rule and
+  // append to slots_done. Today-only — back-fills don't carry a slot.
+  slot?: "morning" | "afternoon" | "evening";
 }) {
   const qc = useQueryClient();
   const isToday = row.day === new Date().toISOString().slice(0, 10);
@@ -647,15 +797,30 @@ function CheckinEditor({
         yesterday_note: yesterday.trim(),
         attachments,
         post_to_campfire: false, // back-fills never blast Campfire
+        // Only stamp slot on today's check-in. The "three per day, no
+        // repeats" rule lives on today; back-fills are unconstrained.
+        ...(isToday && slot ? { slot } : {}),
       }),
     }),
     onSuccess: () => {
-      toast.success("Check-in saved", `Logged for ${fmtDay(row.day)}.`);
+      const slotLabel = slot ? ` (${slot})` : "";
+      toast.success("Check-in saved", `Logged for ${fmtDay(row.day)}${slotLabel}.`);
       qc.invalidateQueries({ queryKey: ["me", "daily-checkins"] });
       qc.invalidateQueries({ queryKey: ["me-huddle"] });
       onClose();
     },
-    onError: (e: any) => toast.error("Could not save", e?.message),
+    onError: (e: any) => {
+      // 409 slot_already_done → friendly message instead of raw "conflict"
+      const body = e?.body as { code?: string; slot?: string } | undefined;
+      if (body?.code === "slot_already_done") {
+        toast.error(
+          "Already logged this slot",
+          `You've already checked in this ${body.slot} — wait for the next slot to update again.`,
+        );
+        return;
+      }
+      toast.error("Could not save", e?.message);
+    },
   });
 
   function addLink() {

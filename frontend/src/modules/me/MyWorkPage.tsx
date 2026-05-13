@@ -14,7 +14,7 @@ import {
   CheckCircle2, Clock, AlertTriangle, ListChecks, FileText, Inbox, Github,
   PauseCircle, MessageSquare, ArrowRight, Plus, Calendar, Activity, Zap, X,
   Folder, ChevronRight, ChevronDown, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
-  Sparkles, Bell, XCircle, Pencil,
+  Sparkles, Bell, XCircle, Pencil, Smile,
   Mail as MailIcon, Paperclip, Reply, AtSign, Users as UsersIcon, AlertCircle,
   RefreshCw, ExternalLink,
 } from "lucide-react";
@@ -47,16 +47,6 @@ type WorkResponse = {
   projects: ProjectRow[];
 };
 
-type UpdateRow = {
-  id: string;
-  kind: "daily" | "weekly" | "blocker" | "accomplishment" | "next_action" | "risk";
-  title: string;
-  body?: string;
-  for_date: string;
-  created_at: string;
-  project_name?: string;
-};
-
 type Profile = {
   id: string;
   email: string;
@@ -85,9 +75,9 @@ const STATUS_COLOR: Record<TaskRow["status"], string> = {
 };
 const PRIORITY_LABEL = ["", "Lowest", "Low", "Medium", "High", "Highest"];
 
-type Tab = "dashboard" | "tasks" | "updates" | "inbox" | "checkins" | "profile";
+type Tab = "dashboard" | "tasks" | "inbox" | "checkins" | "profile";
 
-const VALID_TABS: Tab[] = ["dashboard", "tasks", "updates", "inbox", "checkins", "profile"];
+const VALID_TABS: Tab[] = ["dashboard", "tasks", "inbox", "checkins", "profile"];
 
 export function MyWorkPage() {
   const [params, setParams] = useSearchParams();
@@ -178,9 +168,6 @@ export function MyWorkPage() {
     // My tasks — only the *overdue* slice. Active total is workload info,
     // not a "you owe someone something" signal, so it doesn't earn a chip.
     const tasksCount = c ? c.overdue_tasks : 0;
-    // Updates — pending daily updates not yet submitted. Whatever number the
-    // API hands us is by definition actionable: each row is "submit me".
-    const updatesCount = c ? c.pending_updates : 0;
     // Profile — MFA setup pending only when the admin has marked the user
     // mfa_required.
     const profileCount = profileData?.mfa_required && !profileData?.mfa_enabled ? 1 : 0;
@@ -192,7 +179,6 @@ export function MyWorkPage() {
     return {
       dashboard: todayCount,
       tasks:     tasksCount,
-      updates:   updatesCount,
       inbox:     inboxCount,
       profile:   profileCount,
     };
@@ -201,11 +187,18 @@ export function MyWorkPage() {
   const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; badge?: number; badgeTone?: "danger" | "warn" | "accent" }[] = [
     { key: "dashboard", label: "Today",     icon: Zap,            badge: badges.dashboard, badgeTone: "danger" },
     { key: "tasks",     label: "My tasks",  icon: ListChecks,     badge: badges.tasks,     badgeTone: "danger" },
-    { key: "updates",   label: "Updates",   icon: MessageSquare,  badge: badges.updates,   badgeTone: "warn"   },
     { key: "inbox",     label: "Inbox",     icon: Inbox,          badge: badges.inbox,     badgeTone: "accent" },
     { key: "checkins",  label: "Check-ins", icon: Calendar,       badge: 0 },
     { key: "profile",   label: "Profile",   icon: Github,         badge: badges.profile,   badgeTone: "danger" },
   ];
+
+  // "Check in" CTA in the page header — always reachable, regardless of
+  // which sub-tab is active. Clicking jumps to Check-ins where the slot
+  // logic + quick mood live. Smarter than a separate dialog because the
+  // sub-page already shows slot status and notes editor.
+  function jumpToCheckIn() {
+    setTab("checkins");
+  }
 
   return (
     <div className="space-y-5">
@@ -214,9 +207,17 @@ export function MyWorkPage() {
           <div className="text-[11px] uppercase tracking-wider text-accent font-bold">My work</div>
           <h1 className="h1 mt-1">Hi {(user?.name?.split(" ")[0]) || "there"} 👋</h1>
           <p className="text-sm text-muted mt-1">
-            Your tasks, updates, and time — everything you own, none of the org-wide noise.
+            Your tasks, mood and time — everything you own, none of the org-wide noise.
           </p>
         </div>
+        <button
+          type="button"
+          onClick={jumpToCheckIn}
+          className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 shadow-soft"
+          title="Update your mood (three times a day: morning, afternoon, evening)"
+        >
+          <Smile size={14} /> Check in
+        </button>
       </header>
 
       <nav className="flex flex-wrap gap-1 p-1 bg-surface border border-border rounded-full w-fit">
@@ -252,7 +253,6 @@ export function MyWorkPage() {
 
       {tab === "dashboard" && <DashboardTab />}
       {tab === "tasks"     && <TasksTab />}
-      {tab === "updates"   && <UpdatesTab />}
       {tab === "inbox"     && <InboxTab />}
       {tab === "checkins"  && <MyCheckinsTab />}
       {tab === "profile"   && <ProfileTab />}
@@ -1421,168 +1421,6 @@ function TaskDialog({ task, onClose }: { task: TaskRow; onClose: () => void }) {
   );
 }
 
-/* ---------- Updates ---------- */
-
-const UPDATE_KINDS: { key: UpdateRow["kind"]; label: string; tone: string }[] = [
-  { key: "daily",          label: "Daily standup",     tone: "bg-accent-soft text-accent" },
-  { key: "weekly",         label: "Weekly summary",    tone: "bg-accent-soft text-accent" },
-  { key: "accomplishment", label: "Accomplishment",    tone: "bg-success/15 text-success" },
-  { key: "next_action",    label: "Next action",       tone: "bg-bg text-muted" },
-  { key: "blocker",        label: "Blocker",           tone: "bg-danger/10 text-danger" },
-  { key: "risk",           label: "Risk observed",     tone: "bg-warn/15 text-warn" },
-];
-
-function UpdatesTab() {
-  const qc = useQueryClient();
-  const [params, setParams] = useSearchParams();
-  const [composeOpen, setComposeOpen] = useState(false);
-  const { data, isLoading } = useQuery<{ items: UpdateRow[] }>({
-    queryKey: ["me", "updates"], queryFn: () => api("/api/v1/me/updates"),
-  });
-  const items = data?.items ?? [];
-
-  // Deep-link: /my-work?tab=updates&new=1 (from the daily-update attention bell)
-  // auto-opens the composer once, then strips the flag from the URL.
-  useEffect(() => {
-    if (params.get("new") === "1") {
-      setComposeOpen(true);
-      const next = new URLSearchParams(params);
-      next.delete("new");
-      setParams(next, { replace: true });
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="h2">Daily &amp; weekly updates</h2>
-          <p className="text-xs text-muted mt-0.5">Standups, blockers, accomplishments — searchable, timestamped.</p>
-        </div>
-        <button onClick={() => setComposeOpen(true)} className="btn-primary">
-          <Plus size={14} /> Submit update
-        </button>
-      </div>
-
-      {isLoading ? (
-        <div className="text-muted">Loading…</div>
-      ) : items.length === 0 ? (
-        <EmptyHint
-          icon={<MessageSquare size={22} className="text-muted" />}
-          title="No updates yet"
-          body="Drop a quick standup or weekly summary so the team has visibility into your work."
-        />
-      ) : (
-        <ul className="space-y-3">
-          {items.map((u) => {
-            const meta = UPDATE_KINDS.find((k) => k.key === u.kind);
-            return (
-              <li key={u.id} className="bg-surface border border-border rounded-2xl p-4">
-                <div className="flex items-center gap-2 mb-1.5">
-                  <span className={`pill ${meta?.tone}`}>{meta?.label ?? u.kind}</span>
-                  <span className="text-xs text-muted">{new Date(u.for_date).toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" })}</span>
-                  {u.project_name && <span className="text-xs text-muted">· {u.project_name}</span>}
-                </div>
-                <div className="text-[15px] font-bold text-text">{u.title}</div>
-                {u.body && <p className="text-sm text-muted mt-1 whitespace-pre-wrap leading-relaxed">{u.body}</p>}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      {composeOpen && (
-        <ComposeUpdateDialog
-          onClose={() => setComposeOpen(false)}
-          onSaved={() => {
-            qc.invalidateQueries({ queryKey: ["me", "updates"] });
-            qc.invalidateQueries({ queryKey: ["me", "work"] });
-            setComposeOpen(false);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-function ComposeUpdateDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [kind, setKind] = useState<UpdateRow["kind"]>("daily");
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-
-  const submit = useMutation({
-    mutationFn: () => api("/api/v1/me/updates", {
-      method: "POST",
-      body: JSON.stringify({ kind, title: title.trim(), body }),
-    }),
-    onSuccess: onSaved,
-    onError: (e: any) => setErr(e?.message ?? "Failed to save"),
-  });
-
-  return (
-    <div className="fixed inset-0 bg-black/40 z-50 grid place-items-center p-4" role="dialog" aria-modal="true" onClick={onClose}>
-      <div className="bg-surface rounded-2xl shadow-card w-full max-w-lg" onClick={(e) => e.stopPropagation()}>
-        <header className="flex items-center justify-between p-5 border-b border-border">
-          <h2 className="text-lg font-bold text-text">New update</h2>
-          <button onClick={onClose} className="text-muted hover:text-text"><X size={18} /></button>
-        </header>
-        <div className="p-5 space-y-4">
-          <div>
-            <div className="label">Type</div>
-            <div className="grid grid-cols-3 gap-2">
-              {UPDATE_KINDS.map((k) => (
-                <button
-                  key={k.key}
-                  onClick={() => setKind(k.key)}
-                  className={`px-2.5 py-2 rounded-lg border text-xs font-semibold transition-colors ${
-                    kind === k.key ? "border-accent bg-accent-soft text-accent" : "border-border text-muted hover:bg-bg"
-                  }`}
-                >
-                  {k.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <label className="block">
-            <div className="label">Headline</div>
-            <input
-              className="input"
-              maxLength={160}
-              value={title}
-              autoFocus
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="What's the one-line summary?"
-            />
-          </label>
-          <label className="block">
-            <div className="label">Details (optional)</div>
-            <textarea
-              className="input min-h-[120px]"
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              placeholder="What did you do, what's next, what's blocking?"
-            />
-          </label>
-          {err && <div className="text-sm text-danger">{err}</div>}
-        </div>
-        <footer className="flex justify-end gap-2 p-4 border-t border-border bg-bg">
-          <button onClick={onClose} className="btn-outline">Cancel</button>
-          <SmartButton
-            variant="primary"
-            disabled={!title.trim()}
-            loadingLabel="Saving…"
-            successLabel="Submitted"
-            onClick={() => submit.mutateAsync()}
-          >
-            Submit
-          </SmartButton>
-        </footer>
-      </div>
-    </div>
-  );
-}
 
 /* ---------- Inbox ---------- */
 
@@ -1665,6 +1503,22 @@ function InboxTab() {
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  // Page-size picker — the inbox pulls 50 messages and the row list
+  // grows past a comfortable scroll on small screens. Persist the
+  // choice so a user who likes a denser view doesn't reset it every
+  // visit. "all" returns every row in the filtered window.
+  type PageSize = 10 | 20 | 50 | 100 | "all";
+  const [pageSize, setPageSize] = useState<PageSize>(() => {
+    const v = localStorage.getItem("me:inbox:page_size");
+    if (v === "all") return "all";
+    const n = Number(v);
+    return ([10, 20, 50, 100] as const).includes(n as any) ? (n as PageSize) : 20;
+  });
+  const [page, setPage] = useState(1);
+  useEffect(() => { localStorage.setItem("me:inbox:page_size", String(pageSize)); }, [pageSize]);
+  // Reset to page 1 when the filter or search changes — otherwise the
+  // user can land on page 4 of a list that suddenly has 1 page of rows.
+  useEffect(() => { setPage(1); }, [filter, search, pageSize]);
 
   const items = data?.items ?? [];
 
@@ -1827,16 +1681,63 @@ function InboxTab() {
             </p>
           </div>
         ) : (
-          <ul className="divide-y divide-border">
-            {filtered.map((m) => (
-              <InboxRow
-                key={m.id}
-                m={m}
-                workspaceDomain={workspaceDomain}
-                onOpen={() => setOpenId(m.id)}
-              />
-            ))}
-          </ul>
+          (() => {
+            const size = pageSize === "all" ? filtered.length : pageSize;
+            const totalPages = pageSize === "all" ? 1 : Math.max(1, Math.ceil(filtered.length / size));
+            const safePage = Math.min(page, totalPages);
+            const start = (safePage - 1) * size;
+            const slice = pageSize === "all" ? filtered : filtered.slice(start, start + size);
+            const showFrom = filtered.length === 0 ? 0 : start + 1;
+            const showTo = pageSize === "all" ? filtered.length : Math.min(start + size, filtered.length);
+            return (
+              <>
+                <ul className="divide-y divide-border animate-fade-in">
+                  {slice.map((m) => (
+                    <InboxRow
+                      key={m.id}
+                      m={m}
+                      workspaceDomain={workspaceDomain}
+                      onOpen={() => setOpenId(m.id)}
+                    />
+                  ))}
+                </ul>
+                <footer className="px-3 sm:px-5 py-3 border-t border-border flex items-center justify-between gap-3 flex-wrap text-[12px]">
+                  <div className="flex items-center gap-2 text-muted">
+                    <span>Showing {showFrom}–{showTo} of {filtered.length}</span>
+                    <span className="hidden sm:inline">·</span>
+                    <label className="hidden sm:inline-flex items-center gap-1.5">
+                      Rows per page
+                      <select
+                        value={String(pageSize)}
+                        onChange={(e) => setPageSize(e.target.value === "all" ? "all" : (Number(e.target.value) as PageSize))}
+                        className="bg-surface border border-border rounded-md px-1.5 py-1 text-[12px] no-cap"
+                      >
+                        {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+                        <option value="all">All</option>
+                      </select>
+                    </label>
+                  </div>
+                  {pageSize !== "all" && totalPages > 1 && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setPage((p) => Math.max(1, p - 1))}
+                        disabled={safePage <= 1}
+                        className="px-2 py-1 rounded-md text-muted hover:text-text hover:bg-bg/40 disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
+                      >‹ Prev</button>
+                      <span className="px-2 text-muted">
+                        Page <span className="font-semibold text-text">{safePage}</span> of {totalPages}
+                      </span>
+                      <button
+                        onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                        disabled={safePage >= totalPages}
+                        className="px-2 py-1 rounded-md text-muted hover:text-text hover:bg-bg/40 disabled:opacity-40 disabled:hover:bg-transparent transition-colors"
+                      >Next ›</button>
+                    </div>
+                  )}
+                </footer>
+              </>
+            );
+          })()
         )}
       </section>
 
