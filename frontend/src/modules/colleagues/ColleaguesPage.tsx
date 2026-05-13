@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Smile, Search, Mail, MessageCircle, Sparkles, Award,
   Users as UsersIcon, Hash, Calendar, X as XIcon, Megaphone,
+  LayoutGrid, List as ListIcon,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Avatar } from "@/components/Avatar";
@@ -154,6 +155,16 @@ export function ColleaguesPage() {
   const [roleFilter, setRoleFilter] = useState<string>(initialRole);
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState<string | null>(null);
+  // Grid vs list view. Grid is the rich card with role chips + footer
+  // — great for browsing. List is one row per colleague — denser, easier
+  // to scan when you have 30+ teammates. Persisted to localStorage so
+  // the user's choice survives reloads.
+  type View = "grid" | "list";
+  const [view, setView] = useState<View>(() => {
+    const v = localStorage.getItem("colleagues:view");
+    return v === "list" ? "list" : "grid";
+  });
+  useEffect(() => { localStorage.setItem("colleagues:view", view); }, [view]);
 
   const { data, isLoading } = useQuery<Resp>({
     queryKey: ["colleagues", "list"],
@@ -253,14 +264,43 @@ export function ColleaguesPage() {
             </select>
           </div>
         )}
-        <div className="ml-auto relative">
-          <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search name, email, role"
-            className="pl-7 pr-3 py-1.5 text-[12px] bg-bg/40 border border-border rounded-full w-56 no-cap"
-          />
+        <div className="ml-auto flex items-center gap-2">
+          <div className="relative">
+            <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search name, email, role"
+              className="pl-7 pr-3 py-1.5 text-[12px] bg-bg/40 border border-border rounded-full w-56 no-cap"
+            />
+          </div>
+          {/* View toggle — grid for browsing, list for dense scanning.
+              Persists to localStorage so the user's preference survives
+              navigations. */}
+          <div className="inline-flex items-center bg-bg/40 border border-border rounded-full p-0.5">
+            <button
+              onClick={() => setView("grid")}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11.5px] font-semibold transition-colors press-fx ${
+                view === "grid" ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+              }`}
+              title="Grid view"
+              aria-label="Grid view"
+              aria-pressed={view === "grid"}
+            >
+              <LayoutGrid size={11} /> Grid
+            </button>
+            <button
+              onClick={() => setView("list")}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11.5px] font-semibold transition-colors press-fx ${
+                view === "list" ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+              }`}
+              title="List view"
+              aria-label="List view"
+              aria-pressed={view === "list"}
+            >
+              <ListIcon size={11} /> List
+            </button>
+          </div>
         </div>
       </div>
 
@@ -283,11 +323,19 @@ export function ColleaguesPage() {
             {filter !== "all" ? "Try clearing the filter or search." : "Once HR invites more teammates, they'll appear here."}
           </p>
         </div>
-      ) : (
+      ) : view === "grid" ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 animate-stagger">
           {filtered.map((c) => (
             <ColleagueCard key={c.id} c={c} onOpen={() => setOpenId(c.id)} />
           ))}
+        </div>
+      ) : (
+        <div className="bg-surface border border-border rounded-2xl overflow-hidden animate-fade-in">
+          <ul className="divide-y divide-border">
+            {filtered.map((c) => (
+              <ColleagueRow key={c.id} c={c} onOpen={() => setOpenId(c.id)} />
+            ))}
+          </ul>
         </div>
       )}
 
@@ -436,6 +484,66 @@ function ColleagueCard({ c, onOpen }: { c: Colleague; onOpen: () => void }) {
         )}
       </footer>
     </button>
+  );
+}
+
+// ColleagueRow — dense single-line variant for list view. Same data as
+// the card, just laid out horizontally: avatar · name + email · role
+// chips · presence pill · joined date · "New" badge. Click target is
+// the whole row, hover lights up the accent border on the left.
+function ColleagueRow({ c, onOpen }: { c: Colleague; onOpen: () => void }) {
+  const presenceCls = PRESENCE_DOT[c.presence] ?? "bg-muted/40";
+  const presenceLabel = PRESENCE_LABEL[c.presence] ?? c.presence;
+  return (
+    <li>
+      <button
+        onClick={onOpen}
+        className="w-full text-left px-3 sm:px-4 py-3 flex items-center gap-3 hover:bg-bg/40 focus:outline-none focus:bg-accent-soft/40 transition-colors group"
+      >
+        {/* Accent rail — invisible by default, slides in on hover. Pure
+            decoration, gives the row a "primary action" feel. */}
+        <span aria-hidden className="hidden sm:block absolute left-0 w-0.5 h-8 bg-accent rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+        <div className="relative shrink-0">
+          <Avatar name={c.name} email={c.email} size={36} />
+          <span
+            className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-surface ${presenceCls}`}
+            title={presenceLabel}
+          />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[13.5px] font-bold text-text truncate">{c.name || c.email.split("@")[0]}</span>
+            {isNewThisWeek(c) && (
+              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-accent-soft text-accent text-[9.5px] font-bold">
+                <Sparkles size={8} /> NEW
+              </span>
+            )}
+          </div>
+          <div className="text-[11.5px] text-muted truncate">{c.email}</div>
+        </div>
+        <div className="hidden md:flex items-center gap-1 shrink-0 max-w-[200px] overflow-hidden">
+          {c.roles.slice(0, 2).map((r) => (
+            <span key={r} className="text-[10.5px] font-semibold px-1.5 py-0.5 rounded-full bg-bg/60 text-muted border border-border whitespace-nowrap">
+              {labelRole(r)}
+            </span>
+          ))}
+          {c.roles.length > 2 && (
+            <span className="text-[10.5px] font-semibold text-muted/70">+{c.roles.length - 2}</span>
+          )}
+        </div>
+        <div className="hidden lg:block text-[11px] text-muted whitespace-nowrap shrink-0">
+          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full ${presenceCls} bg-opacity-10`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${presenceCls}`} />
+            {presenceLabel}
+          </span>
+        </div>
+        <div className="hidden sm:block text-[11px] text-muted whitespace-nowrap shrink-0 w-[120px] text-right">
+          <span className="inline-flex items-center gap-1 justify-end">
+            <Calendar size={10} /> {fmtJoined(c.created_at).replace("Joined ", "")}
+          </span>
+        </div>
+      </button>
+    </li>
   );
 }
 
