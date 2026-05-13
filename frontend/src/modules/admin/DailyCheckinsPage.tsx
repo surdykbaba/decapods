@@ -11,7 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Navigate } from "react-router-dom";
 import {
   ShieldCheck, AlertCircle, Link2, CheckCircle2, Filter, Flame,
-  Smile, ListChecks, Activity,
+  Smile, ListChecks, Activity, ArrowUp, ArrowDown,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -62,6 +62,10 @@ type Resp = {
 };
 
 const ROLES_ALLOWED = ["super_admin", "hr", "ceo", "coo"];
+
+// Sort vocabulary for the Check-ins compliance table.
+type SortCol = "name" | "streak" | "last_mood" | "done" | "missed" | "tasks" | "compliance";
+type SortDir = "asc" | "desc";
 const PAGE_SIZE_OPTIONS = [10, 20, 30, 50, 100, 0] as const; // 0 = "All"
 
 function fmtDay(iso: string): string {
@@ -83,9 +87,24 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
   const [page, setPage] = useState(0);
   const [drilldown, setDrilldown] = useState<Compliance | null>(null);
 
-  // Reset to first page whenever the active filter set changes — staying on
-  // page 5 of an empty filtered list is hostile UX.
-  useEffect(() => { setPage(0); }, [userFilter, missedOnly, windowDays, pageSize]);
+  // Column sort — defaults to "missed desc" so the people who need an HR
+  // nudge sit at the top, matching the existing server-side ordering.
+  // Clicking a header toggles asc / desc.
+  const [sort, setSort] = useState<{ col: SortCol; dir: SortDir }>({ col: "missed", dir: "desc" });
+  function toggleSort(col: SortCol) {
+    setSort((prev) =>
+      prev.col === col
+        ? { col, dir: prev.dir === "asc" ? "desc" : "asc" }
+        // Sensible defaults per column type — names start asc (A-Z),
+        // numeric columns start desc (biggest first) so the first click
+        // is what people usually want.
+        : { col, dir: col === "name" || col === "last_mood" ? "asc" : "desc" },
+    );
+  }
+
+  // Reset to first page whenever the active filter / sort set changes —
+  // staying on page 5 of an empty filtered list is hostile UX.
+  useEffect(() => { setPage(0); }, [userFilter, missedOnly, windowDays, pageSize, sort.col, sort.dir]);
 
   const { data } = useQuery<Resp>({
     enabled: allowed,
@@ -107,8 +126,31 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
   });
 
   const items = data?.items ?? [];
-  const compliance = data?.compliance ?? [];
   const total = data?.total ?? 0;
+  // Apply the active column sort on top of the server-side default
+  // ("missed desc"). Sort runs client-side over the full compliance set so
+  // pagination always sees the same ordering the user picked.
+  const compliance = useMemo(() => {
+    const xs = [...(data?.compliance ?? [])];
+    const mul = sort.dir === "asc" ? 1 : -1;
+    const compliancePct = (p: Compliance) => {
+      const t = p.done + p.missed;
+      return t === 0 ? 0 : p.done / t;
+    };
+    const cmp = (a: Compliance, b: Compliance): number => {
+      switch (sort.col) {
+        case "name":       return mul * (a.user_name || a.email).localeCompare(b.user_name || b.email);
+        case "streak":     return mul * (a.streak - b.streak);
+        case "last_mood":  return mul * (a.last_mood ?? "").localeCompare(b.last_mood ?? "");
+        case "done":       return mul * (a.done - b.done);
+        case "missed":     return mul * (a.missed - b.missed);
+        case "tasks":      return mul * (a.tasks_done - b.tasks_done);
+        case "compliance": return mul * (compliancePct(a) - compliancePct(b));
+      }
+    };
+    xs.sort(cmp);
+    return xs;
+  }, [data?.compliance, sort]);
   // Pagination now scopes the *compliance summary* (one row per member).
   // Day-by-day rows live in the drill-down drawer so they don't need their
   // own page strip.
@@ -181,20 +223,20 @@ export function CheckinsPanel({ embedded = false }: { embedded?: boolean }) {
             <ListChecks size={14} className="text-accent" /> Check-ins
           </div>
           <div className="text-[11px] text-muted">
-            Sorted by most missed first · click a row for the day-by-day timeline
+            Click any column to sort · click a row for the day-by-day timeline
           </div>
         </header>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-bg/40 text-[11px] uppercase tracking-wider text-muted">
               <tr>
-                <th className="text-left px-4 py-2 font-semibold">Member</th>
-                <th className="text-left px-4 py-2 font-semibold">Streak</th>
-                <th className="text-left px-4 py-2 font-semibold">Last mood</th>
-                <th className="text-left px-4 py-2 font-semibold">Checked in</th>
-                <th className="text-left px-4 py-2 font-semibold">Missed</th>
-                <th className="text-left px-4 py-2 font-semibold">Tasks shipped</th>
-                <th className="text-left px-4 py-2 font-semibold">Compliance</th>
+                <SortHeader col="name"       label="Member"        sort={sort} onSort={toggleSort} />
+                <SortHeader col="streak"     label="Streak"        sort={sort} onSort={toggleSort} />
+                <SortHeader col="last_mood"  label="Last mood"     sort={sort} onSort={toggleSort} />
+                <SortHeader col="done"       label="Checked in"    sort={sort} onSort={toggleSort} />
+                <SortHeader col="missed"     label="Missed"        sort={sort} onSort={toggleSort} />
+                <SortHeader col="tasks"      label="Tasks shipped" sort={sort} onSort={toggleSort} />
+                <SortHeader col="compliance" label="Compliance"    sort={sort} onSort={toggleSort} />
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -519,5 +561,37 @@ function InsightTile({
       <div className="text-[1.5rem] font-extrabold text-text leading-none">{value}</div>
       <div className="text-[11.5px] text-muted leading-snug">{sub}</div>
     </div>
+  );
+}
+
+// SortHeader — one <th> that doubles as the sort toggle for its column.
+// Active column shows the direction arrow + accent colour so the table's
+// current ordering reads at a glance. Inactive columns show a faint up
+// arrow as an affordance hint (click me to sort).
+function SortHeader({
+  col, label, sort, onSort,
+}: {
+  col: SortCol;
+  label: string;
+  sort: { col: SortCol; dir: SortDir };
+  onSort: (col: SortCol) => void;
+}) {
+  const active = sort.col === col;
+  return (
+    <th className="text-left px-4 py-2 font-semibold select-none">
+      <button
+        type="button"
+        onClick={() => onSort(col)}
+        className={`inline-flex items-center gap-1 hover:text-text transition-colors ${
+          active ? "text-accent" : "text-muted"
+        }`}
+        title={`Sort by ${label.toLowerCase()}`}
+      >
+        {label}
+        {active
+          ? (sort.dir === "asc" ? <ArrowUp size={10} /> : <ArrowDown size={10} />)
+          : <ArrowUp size={10} className="opacity-30" />}
+      </button>
+    </th>
   );
 }
