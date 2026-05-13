@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Scale, Search, Plus, Upload, FileText, Download, ExternalLink, Link as LinkIcon,
@@ -465,6 +465,41 @@ async function downloadAuth(e: React.MouseEvent, id: string, filename: string) {
   }
 }
 
+// CATEGORY_SMARTS — per-category metadata that shapes the dialog.
+//
+//   linkVerb     — verb to use in the tied-to picker copy (employee
+//                  contracts say "Tied to employee", vendor MSAs say
+//                  "Tied to vendor", etc).
+//   tiedKind     — which optional relation surface to show: project,
+//                  user (member), vendor, or none.
+//   defaultTerm  — default expiry-in-months suggestion. NDAs default to
+//                  24 months, MSAs to 12, policies have no expiry.
+//                  null means "no auto-expiry".
+//   refPrefix    — auto-suggest reference-number prefix when the user
+//                  clicks the "auto" affordance.
+//   hint         — a one-line copy that explains what this category is
+//                  for, surfaced under the category select on each
+//                  switch so a new admin doesn't have to guess.
+type CatSmart = {
+  linkVerb: string;
+  tiedKind: "project" | "user" | "vendor" | "none";
+  defaultTerm: number | null; // months
+  refPrefix: string;
+  hint: string;
+};
+const CATEGORY_SMARTS: Record<string, CatSmart> = {
+  nda:               { linkVerb: "Tied to counterparty", tiedKind: "vendor",  defaultTerm: 24, refPrefix: "NDA",  hint: "Two-way confidentiality — typical term 2 years." },
+  employee_contract: { linkVerb: "Tied to employee",     tiedKind: "user",    defaultTerm: null, refPrefix: "EMP",  hint: "Open-ended employment contract — no expiry by default." },
+  client_contract:   { linkVerb: "Tied to project",      tiedKind: "project", defaultTerm: 12, refPrefix: "CC",   hint: "Per-project client engagement — usually 12-month terms." },
+  vendor_msa:        { linkVerb: "Tied to vendor",       tiedKind: "vendor",  defaultTerm: 12, refPrefix: "MSA",  hint: "Master Services Agreement — 12 months, renewable." },
+  sow:               { linkVerb: "Tied to project",      tiedKind: "project", defaultTerm: 6,  refPrefix: "SOW",  hint: "Statement of Work — scoped to a single project window." },
+  ip_assignment:     { linkVerb: "Tied to employee",     tiedKind: "user",    defaultTerm: null, refPrefix: "IP",   hint: "IP rights assignment — usually permanent, no expiry." },
+  policy:            { linkVerb: "Tied to (optional)",   tiedKind: "none",    defaultTerm: null, refPrefix: "POL",  hint: "Internal workspace policy — workspace-wide, no expiry." },
+  regulatory:        { linkVerb: "Tied to (optional)",   tiedKind: "none",    defaultTerm: 12, refPrefix: "REG",  hint: "Regulatory filing or registration — usually annual renewal." },
+  insurance:         { linkVerb: "Tied to (optional)",   tiedKind: "none",    defaultTerm: 12, refPrefix: "INS",  hint: "Insurance certificate — typically 12-month policy term." },
+  other:             { linkVerb: "Tied to (optional)",   tiedKind: "none",    defaultTerm: null, refPrefix: "DOC",  hint: "Any other compliance document." },
+};
+
 function UploadDialog({
   categories, onClose, onCreated,
 }: {
@@ -483,14 +518,121 @@ function UploadDialog({
   const [externalURL, setExternalURL] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [projectId, setProjectId] = useState("");
+  const [userId, setUserId] = useState("");
+  const [vendorId, setVendorId] = useState("");
   const [pending, setPending] = useState(false);
+  const [renewalReminder, setRenewalReminder] = useState(true);
 
-  // Project + member dropdowns — lazy-fetched.
+  const smart = CATEGORY_SMARTS[category] ?? CATEGORY_SMARTS.other;
+
+  // Project / member / vendor pickers — lazy-fetched once each, cached
+  // for 5 minutes. We always pull all three so toggling categories
+  // doesn't restart the loading state.
   const { data: projectsData } = useQuery<{ items: { id: string; name: string; code: string }[] }>({
     queryKey: ["legals-projects-picker"],
     queryFn: () => api("/api/v1/projects?status=active"),
     staleTime: 5 * 60_000,
   });
+  const { data: membersData } = useQuery<{ items: { id: string; name: string; email: string; status: string }[] }>({
+    queryKey: ["legals-members-picker"],
+    queryFn: () => api("/api/v1/members?status=active"),
+    staleTime: 5 * 60_000,
+  });
+  const { data: vendorsData } = useQuery<{ items: { id: string; name: string }[] }>({
+    queryKey: ["legals-vendors-picker"],
+    queryFn: () => api("/api/v1/vendors"),
+    staleTime: 5 * 60_000,
+  });
+
+  // Existing legal docs — drives the counterparty autocomplete list so
+  // users don't end up with "Acme Corp" + "Acme Corp Ltd." + "ACME"
+  // sprinkled around. We fetch the latest 100 and dedupe.
+  const { data: existingDocs } = useQuery<{ items: { party: string }[] }>({
+    queryKey: ["legals-existing-parties"],
+    queryFn: () => api("/api/v1/legals"),
+    staleTime: 60_000,
+  });
+  const partySuggestions = useMemo(() => {
+    const s = new Set<string>();
+    (existingDocs?.items ?? []).forEach((d) => { if (d.party) s.add(d.party); });
+    (vendorsData?.items ?? []).forEach((v) => { if (v.name) s.add(v.name); });
+    return Array.from(s).sort();
+  }, [existingDocs?.items, vendorsData?.items]);
+
+  // When the user changes the tied-to relation we keep the other two
+  // cleared so we never send a multi-relation row to the backend.
+  function setTiedTo(kind: CatSmart["tiedKind"], id: string) {
+    if (kind === "project") { setProjectId(id); setUserId(""); setVendorId(""); }
+    else if (kind === "user") { setUserId(id); setProjectId(""); setVendorId(""); }
+    else if (kind === "vendor") { setVendorId(id); setProjectId(""); setUserId(""); }
+  }
+
+  // When a file is picked, try to extract a sensible title + category +
+  // counterparty from the filename. Common conventions:
+  //   MSA_AcmeCorp_2026.pdf       → MSA / Acme Corp
+  //   NDA - Sample Ltd v2.docx    → NDA / Sample Ltd
+  //   employment-jane-doe.pdf     → Employee contract / Jane Doe
+  // The goal isn't perfection — just to save four field-touches on the
+  // 80% case.
+  function inferFromFilename(name: string) {
+    const stem = name.replace(/\.(pdf|docx?|txt|rtf|md|odt)$/i, "");
+    const cleaned = stem.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+    if (!title) setTitle(toTitleCase(cleaned));
+    // Category detection
+    const lower = cleaned.toLowerCase();
+    let inferredCat: string | null = null;
+    if (/\bnda\b/.test(lower) || lower.includes("non disclosure")) inferredCat = "nda";
+    else if (/\bmsa\b/.test(lower) || lower.includes("master services")) inferredCat = "vendor_msa";
+    else if (/\bsow\b/.test(lower) || lower.includes("statement of work")) inferredCat = "sow";
+    else if (lower.includes("employment") || lower.includes("employee")) inferredCat = "employee_contract";
+    else if (lower.includes("policy")) inferredCat = "policy";
+    else if (/\bip\b/.test(lower) || lower.includes("assignment")) inferredCat = "ip_assignment";
+    else if (lower.includes("insurance")) inferredCat = "insurance";
+    if (inferredCat && !category) setCategory(inferredCat);
+    else if (inferredCat) setCategory(inferredCat);
+    // Counterparty: the longest capitalised run after dropping the
+    // category token is usually the party name.
+    if (!party) {
+      const tokens = cleaned.split(" ").filter((t) =>
+        t.length > 1
+        && !/^\d+$/.test(t)
+        && !["nda", "msa", "sow", "ip", "v1", "v2", "v3", "draft", "final", "signed"].includes(t.toLowerCase())
+      );
+      if (tokens.length > 0) setParty(toTitleCase(tokens.join(" ")));
+    }
+  }
+
+  // Suggest a reference number based on the category prefix + a sequence
+  // anchored on the year. Doesn't conflict-check against existing rows
+  // — the user can edit; uniqueness isn't enforced at the schema layer
+  // anyway. Format: NDA-2026-001.
+  function suggestRefNo() {
+    const seq = String(((existingDocs?.items?.length ?? 0) % 1000) + 1).padStart(3, "0");
+    setRefNo(`${smart.refPrefix}-${new Date().getFullYear()}-${seq}`);
+  }
+
+  // Expiry presets — quick chips that add N months to the effective
+  // date (or to today if no effective set yet).
+  function setExpiryFromMonths(months: number | null) {
+    if (months == null) { setExpDate(""); return; }
+    const base = effDate ? new Date(effDate + "T00:00:00") : new Date();
+    base.setMonth(base.getMonth() + months);
+    setExpDate(base.toISOString().slice(0, 10));
+  }
+
+  // When the user picks a category and effective/expires are still blank,
+  // populate them with sensible defaults: effective = today, expires
+  // = today + category-default term.
+  useEffect(() => {
+    if (!effDate && !expDate && smart.defaultTerm) {
+      const today = new Date().toISOString().slice(0, 10);
+      setEffDate(today);
+      const end = new Date();
+      end.setMonth(end.getMonth() + smart.defaultTerm);
+      setExpDate(end.toISOString().slice(0, 10));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [category]);
 
   async function submit(ev: React.FormEvent) {
     ev.preventDefault();
@@ -508,7 +650,12 @@ function UploadDialog({
       if (notes.trim()) form.append("notes", notes.trim());
       if (externalURL.trim()) form.append("external_url", externalURL.trim());
       if (projectId) form.append("project_id", projectId);
+      if (userId) form.append("user_id", userId);
+      if (vendorId) form.append("vendor_id", vendorId);
       if (file) form.append("file", file);
+      // Renewal reminder tag — the dashboard can filter by it later.
+      // For now it's a tags entry; a future cron job can fan reminders.
+      if (renewalReminder && expDate) form.append("tags", "renewal-reminder");
       const res = await authedFetch("/api/v1/legals", { method: "POST", body: form });
       if (!res.ok) throw new Error(await res.text());
       toast.success("Document uploaded");
@@ -520,93 +667,271 @@ function UploadDialog({
     }
   }
 
+  // Live preview model for the bottom card.
+  const expDays = expDate ? Math.round((new Date(expDate + "T00:00:00").getTime() - Date.now()) / 86_400_000) : null;
+
   return (
     <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
       <form
         onSubmit={submit}
-        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col"
+        className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-2xl max-h-[92vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="px-5 py-4 border-b border-border flex items-center justify-between">
-          <h2 className="text-base font-bold text-text inline-flex items-center gap-2">
-            <Upload size={14} className="text-accent" /> New legal document
-          </h2>
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider text-accent font-bold">Legals</div>
+            <h2 className="text-base font-bold text-text inline-flex items-center gap-2 mt-0.5">
+              <Upload size={14} className="text-accent" /> New legal document
+            </h2>
+          </div>
           <button type="button" onClick={onClose} className="p-1.5 rounded hover:bg-bg text-muted">
             <XIcon size={14} />
           </button>
         </header>
-        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {/* File upload moved to the top — drag-and-drop friendly area
+              with filename-driven autofill so the user gets four fields
+              filled for free on the common case. */}
+          <div>
+            <div className="label inline-flex items-center gap-1.5">
+              <Upload size={11} /> File <span className="text-muted font-normal">— drop a PDF / Word doc, we'll auto-fill the rest</span>
+            </div>
+            <label className={`block border border-dashed rounded-xl p-3 transition-colors cursor-pointer ${file ? "border-accent bg-accent-soft/30" : "border-border bg-bg/30 hover:border-accent/40"}`}>
+              <input
+                type="file"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setFile(f);
+                  if (f) inferFromFilename(f.name);
+                }}
+              />
+              {file ? (
+                <div className="flex items-center gap-2 text-[12.5px]">
+                  <FileText size={14} className="text-accent shrink-0" />
+                  <span className="font-semibold text-text truncate flex-1">{file.name}</span>
+                  <span className="text-muted text-[11px]">{(file.size / 1024).toFixed(0)} KB</span>
+                  <button type="button" onClick={(ev) => { ev.preventDefault(); setFile(null); }} className="text-muted hover:text-danger ml-1">
+                    <XIcon size={12} />
+                  </button>
+                </div>
+              ) : (
+                <div className="text-center py-3 text-[12.5px] text-muted">
+                  <Upload size={18} className="mx-auto mb-1 opacity-60" />
+                  Click to select — or paste an external link further down for SharePoint / Box folders.
+                </div>
+              )}
+            </label>
+          </div>
+
+          {/* Category — with a one-line smart hint per category so a new
+              admin understands what each one is for. */}
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <div className="label">Category</div>
               <select className="input" value={category} onChange={(e) => setCategory(e.target.value)}>
                 {Object.entries(categories).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
               </select>
+              <div className="text-[10.5px] text-muted mt-1 italic leading-snug">{smart.hint}</div>
             </label>
             <label className="block">
-              <div className="label">Reference no <span className="text-muted">(optional)</span></div>
-              <input className="input" value={refNo} onChange={(e) => setRefNo(e.target.value)} placeholder="CTR-2026-014" />
+              <div className="label flex items-center justify-between">
+                <span>Reference no <span className="text-muted font-normal">(optional)</span></span>
+                <button type="button" onClick={suggestRefNo} className="text-[10.5px] font-semibold text-accent hover:underline normal-case">
+                  Suggest →
+                </button>
+              </div>
+              <input className="input" value={refNo} onChange={(e) => setRefNo(e.target.value)} placeholder={`${smart.refPrefix}-${new Date().getFullYear()}-001`} />
             </label>
           </div>
+
           <label className="block">
             <div className="label">Title</div>
             <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Master Services Agreement – Acme Corp" autoFocus />
           </label>
+
+          {/* Counterparty + smart tied-to (project / user / vendor based
+              on the category vocabulary). Counterparty input is an
+              <input list> backed by the existing-doc + vendor set. */}
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <div className="label">Counterparty</div>
-              <input className="input" value={party} onChange={(e) => setParty(e.target.value)} placeholder="Acme Corp Ltd" />
+              <input
+                className="input"
+                value={party}
+                onChange={(e) => setParty(e.target.value)}
+                placeholder="Acme Corp Ltd"
+                list="legal-party-suggestions"
+              />
+              <datalist id="legal-party-suggestions">
+                {partySuggestions.map((p) => <option key={p} value={p} />)}
+              </datalist>
+              {partySuggestions.length > 0 && (
+                <div className="text-[10.5px] text-muted mt-1">Start typing — we know {partySuggestions.length} you've used before.</div>
+              )}
             </label>
-            <label className="block">
-              <div className="label">Tied to project <span className="text-muted">(optional)</span></div>
-              <select className="input" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-                <option value="">—</option>
-                {(projectsData?.items ?? []).map((p) => (
-                  <option key={p.id} value={p.id}>{p.code} · {p.name}</option>
-                ))}
-              </select>
-            </label>
+            {smart.tiedKind === "project" && (
+              <label className="block">
+                <div className="label">Tied to project <span className="text-muted font-normal">(optional)</span></div>
+                <select className="input" value={projectId} onChange={(e) => setTiedTo("project", e.target.value)}>
+                  <option value="">—</option>
+                  {(projectsData?.items ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>{p.code} · {p.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {smart.tiedKind === "user" && (
+              <label className="block">
+                <div className="label">Tied to employee <span className="text-muted font-normal">(optional)</span></div>
+                <select className="input" value={userId} onChange={(e) => setTiedTo("user", e.target.value)}>
+                  <option value="">—</option>
+                  {(membersData?.items ?? []).map((m) => (
+                    <option key={m.id} value={m.id}>{m.name || m.email}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {smart.tiedKind === "vendor" && (
+              <label className="block">
+                <div className="label">Tied to vendor <span className="text-muted font-normal">(optional)</span></div>
+                <select className="input" value={vendorId} onChange={(e) => setTiedTo("vendor", e.target.value)}>
+                  <option value="">—</option>
+                  {(vendorsData?.items ?? []).map((v) => (
+                    <option key={v.id} value={v.id}>{v.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {smart.tiedKind === "none" && (
+              <label className="block">
+                <div className="label">Tied to <span className="text-muted font-normal">(optional)</span></div>
+                <select className="input" value={projectId} onChange={(e) => setTiedTo("project", e.target.value)}>
+                  <option value="">— Workspace-wide</option>
+                  {(projectsData?.items ?? []).map((p) => (
+                    <option key={p.id} value={p.id}>Project · {p.code} · {p.name}</option>
+                  ))}
+                </select>
+              </label>
+            )}
           </div>
-          <div className="grid grid-cols-3 gap-3">
-            <label className="block">
-              <div className="label">Effective</div>
-              <input type="date" className="input" value={effDate} onChange={(e) => setEffDate(e.target.value)} />
-            </label>
-            <label className="block">
-              <div className="label">Expires</div>
-              <input type="date" className="input" value={expDate} onChange={(e) => setExpDate(e.target.value)} />
-            </label>
-            <label className="block">
-              <div className="label">Signed</div>
-              <input type="date" className="input" value={signedAt} onChange={(e) => setSignedAt(e.target.value)} />
-            </label>
+
+          {/* Dates row + expiry quick-chips. */}
+          <div>
+            <div className="grid grid-cols-3 gap-3">
+              <label className="block">
+                <div className="label">Effective</div>
+                <input type="date" className="input" value={effDate} onChange={(e) => setEffDate(e.target.value)} />
+              </label>
+              <label className="block">
+                <div className="label">Expires</div>
+                <input type="date" className="input" value={expDate} onChange={(e) => setExpDate(e.target.value)} />
+              </label>
+              <label className="block">
+                <div className="label">Signed</div>
+                <input type="date" className="input" value={signedAt} onChange={(e) => setSignedAt(e.target.value)} />
+              </label>
+            </div>
+            <div className="mt-1.5 flex items-center flex-wrap gap-1.5">
+              <span className="text-[10.5px] uppercase tracking-wider font-bold text-muted mr-1">Term</span>
+              {[
+                { label: "6 mo",   m: 6 },
+                { label: "1 yr",   m: 12 },
+                { label: "2 yrs",  m: 24 },
+                { label: "3 yrs",  m: 36 },
+                { label: "No expiry", m: null },
+              ].map((p) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  onClick={() => setExpiryFromMonths(p.m)}
+                  className="text-[10.5px] font-semibold px-2 py-0.5 rounded-full bg-bg/40 text-muted border border-border hover:border-accent/40 hover:text-accent"
+                >
+                  {p.label}
+                </button>
+              ))}
+              {expDate && (
+                <label className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-muted">
+                  <input type="checkbox" checked={renewalReminder} onChange={(e) => setRenewalReminder(e.target.checked)} />
+                  Remind me to renew
+                </label>
+              )}
+            </div>
           </div>
+
           <label className="block">
-            <div className="label">File</div>
-            <input type="file" className="input file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border file:border-border file:bg-bg/40 file:text-[12px] file:font-semibold" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          </label>
-          <label className="block">
-            <div className="label">…or paste a link <span className="text-muted">(SharePoint / Box / external folder)</span></div>
+            <div className="label">…or paste a link <span className="text-muted font-normal">(SharePoint / Box / external folder)</span></div>
             <input className="input" value={externalURL} onChange={(e) => setExternalURL(e.target.value)} placeholder="https://…" />
           </label>
           <label className="block">
-            <div className="label">Notes <span className="text-muted">(optional)</span></div>
+            <div className="label">Notes <span className="text-muted font-normal">(optional)</span></div>
             <textarea className="input min-h-[60px]" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Key clauses, renewal terms, gotchas…" />
           </label>
+
+          {/* Live preview — mirrors the table row the user will see after
+              save. Reads exactly like the destination so there are no
+              surprises. */}
+          {title.trim() && (
+            <div className="border border-accent/30 bg-accent-soft/20 rounded-xl p-3 animate-fade-in">
+              <div className="text-[10px] uppercase tracking-wider font-bold text-accent mb-1.5">Preview</div>
+              <div className="flex items-start gap-2.5">
+                <span className="inline-flex items-center justify-center w-8 h-8 rounded-lg bg-accent text-white shrink-0">
+                  <FileText size={14} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[13.5px] font-bold text-text truncate">{title.trim()}</div>
+                  <div className="text-[10.5px] text-muted/80 mt-0.5 flex items-center gap-1.5 flex-wrap">
+                    <span className="font-semibold">{categories[category]}</span>
+                    {refNo && <><span>·</span><span className="font-mono">{refNo}</span></>}
+                    {party && <><span>·</span><span>{party}</span></>}
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2 text-[11px] flex-wrap">
+                    {expDate ? (
+                      <span className={`pill text-[10px] uppercase tracking-wider ${
+                        expDays != null && expDays < 0 ? "bg-danger/15 text-danger"
+                        : expDays != null && expDays <= 30 ? "bg-warn/15 text-warn"
+                        : "bg-success/15 text-success"
+                      }`}>
+                        Expires {expDays != null && expDays < 0 ? `${Math.abs(expDays)}d ago` : expDays != null && expDays === 0 ? "today" : expDays != null ? `in ${expDays}d` : ""}
+                      </span>
+                    ) : (
+                      <span className="pill bg-bg/60 text-muted text-[10px] uppercase tracking-wider">No expiry</span>
+                    )}
+                    {!signedAt && <span className="pill bg-warn/15 text-warn text-[10px] uppercase tracking-wider">Unsigned</span>}
+                    {(file || externalURL) && <span className="text-muted">·</span>}
+                    {file && <span className="text-muted text-[10.5px]">📎 {file.name}</span>}
+                    {!file && externalURL && <span className="text-muted text-[10.5px]">🔗 external link</span>}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-        <footer className="px-5 py-3 border-t border-border flex items-center justify-end gap-2">
-          <button type="button" onClick={onClose} className="text-[12.5px] font-semibold text-muted hover:text-text px-3 py-1.5 rounded-lg">Cancel</button>
-          <button
-            type="submit"
-            disabled={pending || !title.trim()}
-            className="text-[12.5px] font-bold bg-accent text-white px-4 py-1.5 rounded-full hover:bg-[rgb(var(--accent-hover))] disabled:opacity-60 press-fx"
-          >
-            {pending ? "Uploading…" : "Save"}
-          </button>
+        <footer className="px-5 py-3 border-t border-border flex items-center justify-between gap-2">
+          <div className="text-[11px] text-muted hidden sm:block">
+            {!file && !externalURL ? "Tip: a file or link is optional — a title is enough to track a contract." : ""}
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={onClose} className="text-[12.5px] font-semibold text-muted hover:text-text px-3 py-1.5 rounded-lg">Cancel</button>
+            <button
+              type="submit"
+              disabled={pending || !title.trim()}
+              className="text-[12.5px] font-bold bg-accent text-white px-4 py-1.5 rounded-full hover:bg-[rgb(var(--accent-hover))] disabled:opacity-60 press-fx"
+            >
+              {pending ? "Uploading…" : "Save document"}
+            </button>
+          </div>
         </footer>
       </form>
     </div>
   );
+}
+
+// toTitleCase — used by the filename autofill. Doesn't try to be clever
+// about acronyms (NDA, MSA, etc) — the category-token strip already
+// removed those before we hit this function.
+function toTitleCase(s: string): string {
+  return s.toLowerCase().replace(/\b([a-z])/g, (m) => m.toUpperCase()).trim();
 }
 
 function DocumentDrawer({
