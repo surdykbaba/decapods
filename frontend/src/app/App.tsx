@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { Shell } from "@/components/Shell";
 import { Toaster } from "@/components/Toaster";
 import { ConfirmHost } from "@/components/ConfirmHost";
+import { PwaHooks } from "@/components/PwaHooks";
 import { RequireAuth } from "@/app/RequireAuth";
 import { LoginPage } from "@/modules/auth/LoginPage";
 import { LockScreen } from "@/modules/auth/LockScreen";
@@ -63,6 +64,7 @@ export function App() {
     <>
     <Toaster />
     <ConfirmHost />
+    <PwaHooks />
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/lock"  element={<LockScreen />} />

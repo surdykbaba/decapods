@@ -20,14 +20,8 @@
   <body class="bg-bg text-text antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
-    <script>
-      // Register the service worker in production builds only — Vite's dev
-      // server doesn't serve /sw.js, and we don't want HMR fighting the SW.
-      if ("serviceWorker" in navigator && location.hostname !== "localhost" && location.hostname !== "127.0.0.1") {
-        window.addEventListener("load", function () {
-          navigator.serviceWorker.register("/sw.js").catch(function () {});
-        });
-      }
-    </script>
+    <!-- Service worker registration is owned by vite-plugin-pwa via
+         useRegisterSW (see components/PwaHooks.tsx). The plugin emits
+         the right script + handles autoUpdate/prompt mode for us. -->
   </body>
 </html>

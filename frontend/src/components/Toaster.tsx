@@ -31,6 +31,15 @@ export function Toaster() {
           <div className="flex-1 min-w-0">
             <div className="text-[14px] font-bold text-text leading-tight">{t.title}</div>
             {t.body && <div className="text-[12.5px] text-muted mt-0.5 leading-snug">{t.body}</div>}
+            {t.action && (
+              <button
+                type="button"
+                onClick={() => { t.action!.onClick(); dismissToast(t.id); }}
+                className="mt-1.5 text-[12px] font-bold underline underline-offset-2 hover:no-underline"
+              >
+                {t.action.label}
+              </button>
+            )}
           </div>
           <button
             onClick={() => dismissToast(t.id)}
