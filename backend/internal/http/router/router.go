@@ -369,6 +369,7 @@ func New(d Deps) http.Handler {
 
 	authed.GET("/campfire/posts",         cf.ListPosts)
 	authed.POST("/campfire/posts",        cf.CreatePost)
+	authed.PATCH("/campfire/posts/:id",   cf.UpdatePost)
 	authed.DELETE("/campfire/posts/:id",  cf.DeletePost)
 	authed.POST("/campfire/posts/:id/pin", mw.RequirePermission("governance:write"), cf.PinPost)
 	authed.GET("/campfire/posts/:id/comments",                cf.ListComments)

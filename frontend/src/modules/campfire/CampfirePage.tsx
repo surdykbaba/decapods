@@ -23,7 +23,7 @@ import {
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
   Wrench, Briefcase, Hash, Plus, Loader2, CalendarDays, Calendar,
   Lock, Users as UsersIcon, X as XIcon, UserPlus as UserPlusIcon, Search as SearchIcon, Check,
-  ChevronLeft, ChevronDown, ChevronUp, Trash2, Link as LinkIcon, Copy, Pencil, Info,
+  ChevronLeft, ChevronDown, ChevronUp, Trash2, Link as LinkIcon, Copy, Pencil, Info, Save,
   BarChart3, CheckCircle2 as CheckCircle, Megaphone as MegaphoneIcon,
 } from "lucide-react";
 
@@ -54,6 +54,7 @@ type Post = {
   meta: Record<string, any> | null;
   pinned: boolean;
   created_at: string;
+  edited_at?: string | null;
   comment_count: number;
   reactions: Reaction[] | null;
 };
@@ -66,6 +67,7 @@ type Comment = {
   author_avatar_url?: string;
   body: string;
   created_at: string;
+  edited_at?: string | null;
   reactions: Reaction[] | null;
 };
 
@@ -406,6 +408,19 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["campfire", "posts"] }),
   });
 
+  const updatePost = useMutation({
+    mutationFn: ({ id, body, title }: { id: string; body: string; title?: string }) =>
+      api(`/api/v1/campfire/posts/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(title !== undefined ? { body, title } : { body }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["campfire", "posts"] });
+      toast.success("Post updated");
+    },
+    onError: (e: any) => toast.error("Could not save", e?.message),
+  });
+
   // Group posts by day for the "Today / Yesterday / Mon 13 May" headers. Pinned
   // posts still float to the top in their own bucket so they always read first.
   const grouped = useMemo(() => groupByDay(posts), [posts]);
@@ -515,6 +530,7 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
                 isAdmin={isAdmin}
                 onPin={(pinned) => togglePin.mutate({ id: p.id, pinned })}
                 onDelete={() => remove.mutate(p.id)}
+                onEdit={(body, title) => updatePost.mutate({ id: p.id, body, title })}
                 terms={smartTerms}
               />
             ))}
@@ -1099,17 +1115,34 @@ function PostCard({
  * up. Body text picks up SmartTerm highlights via highlightBody().
  */
 function TimelinePostCard({
-  post, currentUserId, isAdmin, onPin, onDelete, terms,
+  post, currentUserId, isAdmin, onPin, onDelete, onEdit, terms,
 }: {
   post: Post; currentUserId: string; isAdmin: boolean;
   onPin: (pinned: boolean) => void;
   onDelete: () => void;
+  onEdit: (body: string, title?: string) => void;
   terms: SmartTerm[];
 }) {
   const meta = POST_KINDS[post.kind] ?? POST_KINDS.update;
   const Icon = meta.icon;
   const [showComments, setShowComments] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draftBody, setDraftBody] = useState(post.body);
+  const [draftTitle, setDraftTitle] = useState(post.title ?? "");
   const canDelete = isAdmin || post.author_id === currentUserId;
+  const canEdit   = isAdmin || post.author_id === currentUserId;
+  function startEdit() {
+    setDraftBody(post.body);
+    setDraftTitle(post.title ?? "");
+    setEditing(true);
+  }
+  function saveEdit() {
+    const body = draftBody.trim();
+    if (!body) return;
+    const titleChanged = (post.title ?? "") !== draftTitle.trim();
+    onEdit(body, titleChanged ? draftTitle.trim() : undefined);
+    setEditing(false);
+  }
   return (
     <article className="relative pl-12">
       {/* Avatar dot — sits on the rail with a ring matching the post's
@@ -1124,6 +1157,9 @@ function TimelinePostCard({
             <Icon size={10} /> {meta.label}
           </span>
           <span className="text-[11px] text-muted" title={fullDateTime(post.created_at)}>{relativeTime(post.created_at)}</span>
+          {post.edited_at && (
+            <span className="text-[10.5px] text-muted italic" title={`Edited ${fullDateTime(post.edited_at)}`}>(edited)</span>
+          )}
           <div className="ml-auto flex items-center gap-1">
             {post.pinned && (
               <span className="inline-flex items-center gap-1 text-[10px] font-bold text-accent">
@@ -1139,6 +1175,11 @@ function TimelinePostCard({
                 <Pin size={12} />
               </button>
             )}
+            {canEdit && !editing && (
+              <button onClick={startEdit} className="p-1 rounded hover:bg-bg text-muted hover:text-accent" title="Edit">
+                <Pencil size={12} />
+              </button>
+            )}
             {canDelete && (
               <button onClick={onDelete} className="p-1 rounded hover:bg-bg text-muted hover:text-danger" title="Delete">
                 <X size={12} />
@@ -1146,10 +1187,50 @@ function TimelinePostCard({
             )}
           </div>
         </header>
-        {post.title && <div className="text-sm font-bold text-text mt-1">{highlightBody(post.title, terms)}</div>}
-        <div className="text-[13.5px] text-text/90 mt-1 leading-relaxed whitespace-pre-wrap break-words">
-          {highlightBody(post.body, terms)}
-        </div>
+        {editing ? (
+          <div className="mt-2 space-y-2">
+            {/* Title only edits for kinds that actually use one — preserving the
+                original "had no title" state means saving doesn't accidentally
+                stamp an empty title onto the row. */}
+            {(post.title || post.kind === "announcement" || post.kind === "win") && (
+              <input
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                placeholder="Title (optional)"
+                className="input w-full text-sm font-bold"
+              />
+            )}
+            <textarea
+              value={draftBody}
+              onChange={(e) => setDraftBody(e.target.value)}
+              rows={Math.max(3, Math.min(10, draftBody.split("\n").length + 1))}
+              className="input w-full text-[13.5px] resize-none"
+              autoFocus
+            />
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setEditing(false)}
+                className="text-[12px] font-semibold px-3 py-1.5 rounded-full text-muted hover:text-text"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveEdit}
+                disabled={!draftBody.trim() || (draftBody === post.body && draftTitle === (post.title ?? ""))}
+                className="inline-flex items-center gap-1 text-[12px] font-semibold px-3 py-1.5 rounded-full bg-accent text-white hover:bg-accent/90 disabled:opacity-50"
+              >
+                <Save size={11} /> Save
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            {post.title && <div className="text-sm font-bold text-text mt-1">{highlightBody(post.title, terms)}</div>}
+            <div className="text-[13.5px] text-text/90 mt-1 leading-relaxed whitespace-pre-wrap break-words">
+              {highlightBody(post.body, terms)}
+            </div>
+          </>
+        )}
         {post.kind === "poll" && <PollBody post={post} />}
         <footer className="mt-2 flex items-center gap-1.5 flex-wrap">
           <ReactionStrip targetType="post" targetId={post.id} reactions={post.reactions ?? []} invalidateKey={["campfire", "posts"]} compact />

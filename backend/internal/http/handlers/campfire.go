@@ -184,7 +184,7 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 	rows, err := h.db.Query(c.Request.Context(), `
 		SELECT p.id, p.author_id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
 		       COALESCE(u.avatar_url,''),
-		       p.kind, COALESCE(p.title,''), p.body, p.meta, p.pinned, p.created_at,
+		       p.kind, COALESCE(p.title,''), p.body, p.meta, p.pinned, p.created_at, p.edited_at,
 		       (SELECT COUNT(*) FROM campfire_comments cc WHERE cc.post_id=p.id) AS comment_count
 		FROM campfire_posts p
 		LEFT JOIN users u ON u.id = p.author_id
@@ -208,17 +208,18 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 			meta                                     map[string]any
 			pinned                                   bool
 			created                                  time.Time
+			edited                                   *time.Time
 			// Postgres COUNT(*) is bigint; see the long note in ListRooms.
 			// Plain int silently drops the row on some pgx setups.
 			commentCount                             int64
 		)
 		if err := rows.Scan(&id, &authorID, &authorName, &authorEmail, &authorAvatar, &kind,
-			&title, &body, &meta, &pinned, &created, &commentCount); err == nil {
+			&title, &body, &meta, &pinned, &created, &edited, &commentCount); err == nil {
 			posts = append(posts, gin.H{
 				"id": id, "author_id": authorID, "author_name": authorName, "author_email": authorEmail,
 				"author_avatar_url": authorAvatar,
 				"kind": kind, "title": title, "body": body, "meta": meta,
-				"pinned": pinned, "created_at": created,
+				"pinned": pinned, "created_at": created, "edited_at": edited,
 				"comment_count": commentCount,
 			})
 			postIDs = append(postIDs, id)
@@ -430,6 +431,74 @@ func (h *Campfire) CreatePost(c *gin.Context) {
 	c.JSON(201, gin.H{"id": id})
 }
 
+// UpdatePost lets the author edit their own post body (and title for kinds
+// that use one). Admins with governance:write can edit anyone's — useful for
+// cleaning up content. Anyone else gets 403. Mirrors UpdateComment's access
+// rule so the SPA can use the same pattern.
+func (h *Campfire) UpdatePost(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	postID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	var req struct {
+		Title *string `json:"title"`
+		Body  *string `json:"body"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Body == nil && req.Title == nil {
+		c.JSON(400, gin.H{"error": "nothing to update"})
+		return
+	}
+	if req.Body != nil && strings.TrimSpace(*req.Body) == "" {
+		c.JSON(400, gin.H{"error": "body cannot be empty"})
+		return
+	}
+	var authorID uuid.UUID
+	if err := h.db.QueryRow(c.Request.Context(),
+		`SELECT author_id FROM campfire_posts WHERE id=$1 AND tenant_id=$2`,
+		postID, tid).Scan(&authorID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
+		return
+	}
+	if authorID != uid && !auth.HasPermission(roles, "governance:write") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only edit your own posts"})
+		return
+	}
+	// Build the patch dynamically — title is independent of body so we can
+	// rename a post without forcing the body field on the API surface.
+	sets := []string{"edited_at = now()"}
+	args := []any{}
+	add := func(col string, v any) { args = append(args, v); sets = append(sets, col+"=$"+strconv.Itoa(len(args))) }
+	if req.Body != nil {
+		add("body", strings.TrimSpace(*req.Body))
+	}
+	if req.Title != nil {
+		add("title", strings.TrimSpace(*req.Title))
+	}
+	args = append(args, postID, tid)
+	q := "UPDATE campfire_posts SET " + strings.Join(sets, ", ") +
+		" WHERE id=$" + strconv.Itoa(len(args)-1) + " AND tenant_id=$" + strconv.Itoa(len(args))
+	if _, err := h.db.Exec(c.Request.Context(), q, args...); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	// Re-dispatch @mentions on edits — if the author adds a new @handle,
+	// that person should still get pinged. dispatchMentions has its own
+	// dedupe so previously-mentioned people won't be re-notified.
+	if req.Body != nil {
+		go h.dispatchMentions(context.Background(), tid, uid, *req.Body, "Campfire post", "/campfire")
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
 func (h *Campfire) PinPost(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	id, err := uuid.Parse(c.Param("id"))
@@ -481,7 +550,7 @@ func (h *Campfire) ListComments(c *gin.Context) {
 	rows, err := h.db.Query(c.Request.Context(), `
 		SELECT c.id, c.author_id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
 		       COALESCE(u.avatar_url,''),
-		       c.body, c.created_at
+		       c.body, c.created_at, c.edited_at
 		FROM campfire_comments c
 		LEFT JOIN users u ON u.id = c.author_id
 		WHERE c.tenant_id=$1 AND c.post_id=$2
@@ -499,12 +568,13 @@ func (h *Campfire) ListComments(c *gin.Context) {
 			author                      *uuid.UUID
 			name, email, avatar, body   string
 			created                     time.Time
+			edited                      *time.Time
 		)
-		if err := rows.Scan(&id, &author, &name, &email, &avatar, &body, &created); err == nil {
+		if err := rows.Scan(&id, &author, &name, &email, &avatar, &body, &created, &edited); err == nil {
 			out = append(out, gin.H{
 				"id": id, "author_id": author, "author_name": name, "author_email": email,
 				"author_avatar_url": avatar,
-				"body": body, "created_at": created,
+				"body": body, "created_at": created, "edited_at": edited,
 			})
 			ids = append(ids, id)
 		}
@@ -632,7 +702,7 @@ func (h *Campfire) UpdateComment(c *gin.Context) {
 	}
 	body := strings.TrimSpace(req.Body)
 	if _, err := h.db.Exec(c.Request.Context(), `
-		UPDATE campfire_comments SET body=$1 WHERE id=$2 AND tenant_id=$3`,
+		UPDATE campfire_comments SET body=$1, edited_at=now() WHERE id=$2 AND tenant_id=$3`,
 		body, commentID, tid); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
