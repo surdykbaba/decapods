@@ -30,7 +30,7 @@ export function extractFirstURL(text: string): string | null {
 // renderRich walks the string once, splitting on whichever pattern (URL or
 // mention) hits first. Keeping it linear avoids the classic "two passes
 // double-render" trap and lets us put mention pills *inside* link-free runs.
-function renderRich(text: string): React.ReactNode {
+export function renderRich(text: string): React.ReactNode {
   if (!text) return null;
   const out: React.ReactNode[] = [];
   let i = 0;

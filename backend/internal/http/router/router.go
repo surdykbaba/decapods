@@ -242,6 +242,16 @@ func New(d Deps) http.Handler {
 	// caller is the report's manager (or an admin) so a curious user
 	// can't poke a stranger.
 	authed.POST("/members/:id/nudge",        members.NudgeReport)
+
+	// 1-on-1 surface — single GET that bundles report identity, active-cycle
+	// OKRs, recent daily + OKR check-ins, open/blocked tasks, auto-derived
+	// talking points, the shared notes pane and prior session history.
+	// Auth rule: caller is the report's direct manager (users.manager_id) or
+	// carries governance:write; handler enforces both internally.
+	oneOnOnes := handlers.NewOneOnOnes(d.DB)
+	authed.GET("/one-on-ones/:reportID",         oneOnOnes.Get)
+	authed.PUT("/one-on-ones/:reportID/notes",   oneOnOnes.SaveNotes)
+	authed.POST("/one-on-ones/:reportID/close",  oneOnOnes.CloseSession)
 	authed.GET("/members/:id/profile",       members.Profile)
 	authed.POST("/members",                  mw.RequirePermission("governance:write"), members.Create)
 	authed.PATCH("/members/:id",             mw.RequirePermission("governance:write"), members.Update)

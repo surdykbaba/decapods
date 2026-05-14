@@ -4,7 +4,7 @@
 // the section components keeps the data plumbing visible. If any section grows
 // real complexity (e.g. rooms become a full chat client with threads), it can
 // migrate to its own file without touching the public surface (CampfirePage).
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
@@ -12,7 +12,7 @@ import { useAuth } from "@/lib/auth";
 import { toast } from "@/lib/toast";
 import { SmartButton } from "@/components/SmartButton";
 import { Avatar } from "@/components/Avatar";
-import { SmartBody } from "@/modules/campfire/smartBody";
+import { SmartBody, renderRich } from "@/modules/campfire/smartBody";
 import { MentionInput } from "@/modules/campfire/MentionInput";
 import {
   EmojiPopover, AnimatedSticker, isStickerCode, isCelebratory, celebrateAt,
@@ -1262,6 +1262,15 @@ function highlightBody(text: string, terms: SmartTerm[]): React.ReactNode {
   let i = 0;
   let keyN = 0;
   const push = (node: React.ReactNode) => out.push(<span key={keyN++}>{node}</span>);
+  // Plain-text runs still need URL + @mention linkification — delegate
+  // those slices to renderRich so we don't strip clickable URLs or
+  // mention pills. SmartTerm chips win over URLs/mentions when both
+  // overlap, but in practice they don't (SmartTerms are project codes,
+  // tax codes, doc names — none of which match URL_RE / MENTION_RE).
+  const pushPlain = (slice: string) => {
+    if (!slice) return;
+    out.push(<React.Fragment key={keyN++}>{renderRich(slice)}</React.Fragment>);
+  };
 
   while (i < text.length) {
     // Find the leftmost match across all term patterns.
@@ -1284,10 +1293,10 @@ function highlightBody(text: string, terms: SmartTerm[]): React.ReactNode {
       }
     }
     if (bestTerm == null) {
-      push(text.slice(i));
+      pushPlain(text.slice(i));
       break;
     }
-    if (bestStart > i) push(text.slice(i, bestStart));
+    if (bestStart > i) pushPlain(text.slice(i, bestStart));
     const raw = text.slice(bestStart, bestEnd);
     const cls = bestTerm.tone === "project" ? "bg-accent-soft text-accent border-accent/30"
       : bestTerm.tone === "tax" ? "bg-warn/15 text-warn border-warn/30"

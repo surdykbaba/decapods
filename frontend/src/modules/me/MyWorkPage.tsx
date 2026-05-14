@@ -16,7 +16,7 @@ import {
   Folder, ChevronRight, ChevronDown, ChevronUp, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
   Sparkles, Bell, XCircle, Pencil, Smile,
   Mail as MailIcon, Paperclip, Reply, AtSign, Users as UsersIcon, AlertCircle,
-  RefreshCw, ExternalLink, Flag, Target, AlertOctagon, GripVertical,
+  RefreshCw, ExternalLink, Flag, Target, AlertOctagon, GripVertical, MessageCircle, TrendingUp,
 } from "lucide-react";
 
 type TaskRow = {
@@ -1194,6 +1194,10 @@ function TeamPulseCard() {
   // Track which report cards are expanded inline. Stored as a Set so a
   // manager can drill into multiple reports at once without a modal hop.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Which report (if any) the manager has popped open as a 1-on-1.
+  // Stored as the id only — the dialog refetches the full bundle so
+  // mood notes don't get stale between opens.
+  const [oneOnOneFor, setOneOnOneFor] = useState<{ id: string; name: string; email: string } | null>(null);
   function toggleExpand(id: string) {
     setExpanded((cur) => {
       const next = new Set(cur);
@@ -1280,6 +1284,14 @@ function TeamPulseCard() {
                       ) : (
                         <span className="text-[10px] text-muted font-semibold whitespace-nowrap">No check-in</span>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => setOneOnOneFor({ id: r.id, name: r.name, email: r.email })}
+                        className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-accent-soft text-accent border border-accent/30 text-[10px] font-semibold hover:bg-accent/10 press-fx"
+                        title="Open the 1-on-1 panel"
+                      >
+                        1:1
+                      </button>
                     </div>
                     {!onLeave && (
                       <div className="mt-1.5 flex items-center gap-1.5 flex-wrap text-[10.5px]">
@@ -1367,6 +1379,13 @@ function TeamPulseCard() {
             );
           })}
         </ul>
+      )}
+      {oneOnOneFor && (
+        <OneOnOneDialog
+          reportId={oneOnOneFor.id}
+          reportName={oneOnOneFor.name || oneOnOneFor.email}
+          onClose={() => setOneOnOneFor(null)}
+        />
       )}
     </section>
   );
@@ -1532,6 +1551,270 @@ function MoodPulseCard() {
       </div>
       )}
     </section>
+  );
+}
+
+// OneOnOneDialog — manager + report briefing in one panel. Fetches the
+// bundled feed at open time so the talking points reflect "now" instead
+// of whatever was loaded with the dashboard. Notes are rolling (one row
+// per pair) — manager edits and clicks Save; clicking "Save & close"
+// snapshots the notes into a session row and clears the pane for next
+// time.
+function OneOnOneDialog({
+  reportId, reportName, onClose,
+}: {
+  reportId: string;
+  reportName: string;
+  onClose: () => void;
+}) {
+  type TalkingPoint = { kind: string; label: string; href?: string };
+  type SmallOKR = {
+    id: string; parent_id: string | null; kind: "objective" | "key_result";
+    title: string; confidence: "green" | "amber" | "red";
+    status: "draft" | "in_progress" | "blocked" | "done" | "dropped";
+    progress_pct: number; latest_checkin_at: string | null;
+  };
+  type Daily = { day: string; mood: string; focus_note: string; yesterday_note: string; tasks_done: number };
+  type OKRCheckinSnap = { id: string; okr_id: string; okr_title: string; percent: number; confidence: "green" | "amber" | "red"; status: string; comment: string; created_at: string };
+  type Task = { id: string; title: string; status: string; due_on?: string; project: { id: string; code: string; name: string } };
+  type Bundle = {
+    report: { id: string; name: string; email: string; avatar_url: string; job_title: string; last_seen_at: string | null; on_leave_today: boolean };
+    cycle: { id: string | null; name: string; starts_on: string; ends_on: string };
+    okrs: SmallOKR[];
+    daily_checkins: Daily[];
+    okr_checkins: OKRCheckinSnap[];
+    tasks: Task[];
+    talking_points: TalkingPoint[];
+    notes: { body: string; updated_at: string | null };
+    past_sessions: { id: string; notes: string; held_on: string; created_at: string }[];
+  };
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<Bundle>({
+    queryKey: ["one-on-one", reportId],
+    queryFn: () => api(`/api/v1/one-on-ones/${reportId}`),
+    refetchOnWindowFocus: false,
+  });
+  const [notes, setNotes] = useState("");
+  const [dirty, setDirty] = useState(false);
+  useEffect(() => {
+    if (data?.notes?.body !== undefined && !dirty) {
+      setNotes(data.notes.body);
+    }
+  }, [data?.notes?.body]); // eslint-disable-line react-hooks/exhaustive-deps
+  const save = useMutation({
+    mutationFn: () => api(`/api/v1/one-on-ones/${reportId}/notes`, {
+      method: "PUT", body: JSON.stringify({ body: notes }),
+    }),
+    onSuccess: () => {
+      setDirty(false);
+      qc.invalidateQueries({ queryKey: ["one-on-one", reportId] });
+      toast.success("Notes saved");
+    },
+    onError: (e: any) => toast.error("Couldn't save", e?.message),
+  });
+  const close = useMutation({
+    mutationFn: () => api(`/api/v1/one-on-ones/${reportId}/close`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["one-on-one", reportId] });
+      toast.success("Session closed", "Notes archived; pane cleared for next time.");
+      setNotes("");
+      setDirty(false);
+    },
+    onError: (e: any) => toast.error("Couldn't close", e?.message),
+  });
+
+  const CONFIDENCE_TINT: Record<SmallOKR["confidence"], string> = {
+    green: "bg-success/15 text-success border-success/30",
+    amber: "bg-warn/15 text-warn border-warn/30",
+    red:   "bg-danger/15 text-danger border-danger/30",
+  };
+  const STATUS_TINT: Record<SmallOKR["status"], string> = {
+    draft: "bg-bg text-muted border-border",
+    in_progress: "bg-accent-soft text-accent border-accent/30",
+    blocked: "bg-danger/15 text-danger border-danger/30",
+    done: "bg-success/15 text-success border-success/30",
+    dropped: "bg-bg text-muted border-border",
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 grid place-items-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="bg-surface border border-border rounded-2xl shadow-card w-full max-w-3xl max-h-[92vh] flex flex-col overflow-hidden">
+        <header className="px-5 py-4 border-b border-border flex items-center justify-between gap-2">
+          <div>
+            <div className="text-[10.5px] uppercase tracking-wider text-accent font-bold">1-on-1</div>
+            <h2 className="text-base font-bold text-text mt-0.5 leading-tight">
+              with {data?.report?.name || reportName}
+              {data?.report?.on_leave_today && <span className="ml-2 pill bg-accent-soft text-accent text-[10px]">On leave today</span>}
+            </h2>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-full hover:bg-bg text-muted" aria-label="Close">
+            <X size={16} />
+          </button>
+        </header>
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          {isLoading || !data ? (
+            <div className="text-sm text-muted">Loading…</div>
+          ) : (
+            <>
+              {/* Talking points — auto-derived from the data below. If
+                  empty, render a quiet "nothing screaming for attention"
+                  rather than a blank section. */}
+              <section>
+                <h3 className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2 inline-flex items-center gap-1"><Sparkles size={11} /> Talking points</h3>
+                {data.talking_points.length === 0 ? (
+                  <p className="text-[12.5px] text-muted italic">Nothing screaming for attention. Use the notes pane to set your own agenda.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {data.talking_points.map((tp, i) => (
+                      <li key={i} className="text-[12.5px] text-text flex items-start gap-1.5">
+                        <span className="text-warn mt-0.5">•</span>
+                        {tp.href ? (
+                          <Link to={tp.href} className="hover:underline">{tp.label}</Link>
+                        ) : (
+                          <span>{tp.label}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              {/* OKRs in active cycle */}
+              <section>
+                <h3 className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2 inline-flex items-center gap-1">
+                  <Target size={11} /> OKRs {data.cycle?.name ? `· ${data.cycle.name}` : ""}
+                </h3>
+                {data.okrs.length === 0 ? (
+                  <p className="text-[12.5px] text-muted italic">No OKRs in the active cycle.</p>
+                ) : (
+                  <ul className="space-y-1.5">
+                    {data.okrs.map((o) => (
+                      <li key={o.id} className="bg-bg/40 border border-border rounded-xl px-3 py-2">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {o.kind === "objective" ? <Target size={11} className="text-accent shrink-0" /> : <span className="text-muted text-[11px]">↳</span>}
+                          <span className="text-[12.5px] font-semibold text-text">{o.title}</span>
+                          <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${CONFIDENCE_TINT[o.confidence]}`}>{o.confidence}</span>
+                          <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${STATUS_TINT[o.status]}`}>{o.status.replace("_", " ")}</span>
+                          <span className="ml-auto text-[11px] font-bold text-text">{o.progress_pct}%</span>
+                        </div>
+                        <div className="h-1 mt-1 bg-bg/60 rounded-full overflow-hidden">
+                          <div className={`h-full ${o.progress_pct === 100 ? "bg-success" : o.progress_pct >= 50 ? "bg-accent" : "bg-warn"}`} style={{ width: `${o.progress_pct}%` }} />
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              {/* Recent daily check-ins — last 14 days, newest 5 shown */}
+              <section>
+                <h3 className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2 inline-flex items-center gap-1"><CheckCircle2 size={11} /> Recent daily check-ins</h3>
+                {data.daily_checkins.length === 0 ? (
+                  <p className="text-[12.5px] text-muted italic">No daily check-ins in the past two weeks.</p>
+                ) : (
+                  <ul className="divide-y divide-border/60">
+                    {data.daily_checkins.slice(0, 5).map((d) => (
+                      <li key={d.day} className="py-2 text-[12.5px]">
+                        <div className="flex items-center gap-2">
+                          <span className="text-muted font-mono text-[11px]">{d.day}</span>
+                          {d.mood && <span className="text-base leading-none">{d.mood}</span>}
+                          <span className="ml-auto text-[10.5px] text-muted">{d.tasks_done} done</span>
+                        </div>
+                        {d.focus_note && <div className="mt-1 text-text whitespace-pre-wrap line-clamp-2">{d.focus_note}</div>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
+              {/* Recent OKR check-ins */}
+              {data.okr_checkins.length > 0 && (
+                <section>
+                  <h3 className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2 inline-flex items-center gap-1"><TrendingUp size={11} /> Latest OKR updates</h3>
+                  <ul className="space-y-1.5">
+                    {data.okr_checkins.map((kc) => (
+                      <li key={kc.id} className="bg-bg/40 border border-border rounded-xl px-3 py-2 text-[12.5px]">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-text">{kc.okr_title}</span>
+                          <span className="text-muted">{kc.percent}%</span>
+                          <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${CONFIDENCE_TINT[kc.confidence]}`}>{kc.confidence}</span>
+                          <span className="ml-auto text-[10.5px] text-muted">{new Date(kc.created_at).toLocaleDateString()}</span>
+                        </div>
+                        {kc.comment && <div className="mt-1 text-text italic">"{kc.comment}"</div>}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {/* Open + blocked tasks */}
+              {data.tasks.length > 0 && (
+                <section>
+                  <h3 className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2 inline-flex items-center gap-1"><ListChecks size={11} /> Open + blocked tasks</h3>
+                  <ul className="space-y-1">
+                    {data.tasks.map((t) => (
+                      <li key={t.id} className="text-[12.5px] flex items-center gap-2">
+                        <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${t.status === "blocked" ? "bg-danger/15 text-danger border-danger/30" : "bg-bg text-muted border-border"}`}>{t.status}</span>
+                        <Link to={`/projects/${t.project.id}/tasks/${t.id}`} className="text-text hover:underline truncate">{t.title}</Link>
+                        <span className="text-[10.5px] text-muted ml-auto whitespace-nowrap">{t.project.code}{t.due_on ? ` · ${t.due_on}` : ""}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {/* Shared notes — rolling pane */}
+              <section>
+                <h3 className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2 inline-flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1"><MessageCircle size={11} /> Shared notes</span>
+                  {data.notes?.updated_at && (
+                    <span className="text-[10.5px] text-muted normal-case font-normal italic">Last saved {new Date(data.notes.updated_at).toLocaleString()}</span>
+                  )}
+                </h3>
+                <textarea
+                  value={notes}
+                  onChange={(e) => { setNotes(e.target.value); setDirty(true); }}
+                  rows={6}
+                  className="input w-full text-[13px] resize-none"
+                  placeholder="Notes for this 1-on-1 — agenda, decisions, follow-ups. Both of you see this canvas."
+                />
+              </section>
+
+              {data.past_sessions.length > 0 && (
+                <section>
+                  <h3 className="text-[11px] uppercase tracking-wider font-bold text-muted mb-2">Past 1-on-1s</h3>
+                  <ul className="space-y-1.5">
+                    {data.past_sessions.map((s) => (
+                      <li key={s.id} className="bg-bg/30 border border-border rounded-xl px-3 py-2 text-[12.5px]">
+                        <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted">{s.held_on}</div>
+                        <div className="mt-1 text-text whitespace-pre-wrap line-clamp-4">{s.notes}</div>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </>
+          )}
+        </div>
+        <footer className="px-5 py-3 border-t border-border bg-bg/30 flex items-center justify-end gap-2">
+          <button
+            onClick={() => close.mutate()}
+            disabled={close.isPending || !notes.trim()}
+            className="text-[12px] font-semibold px-3 py-1.5 rounded-full text-muted hover:text-text disabled:opacity-50"
+            title="Archive these notes as a closed session and clear the pane"
+          >
+            Save &amp; close session
+          </button>
+          <button
+            onClick={() => save.mutate()}
+            disabled={!dirty || save.isPending}
+            className="inline-flex items-center gap-1 text-[12px] font-semibold px-3 py-1.5 rounded-full bg-accent text-white hover:bg-accent/90 disabled:opacity-50"
+          >
+            Save notes
+          </button>
+        </footer>
+      </div>
+    </div>
   );
 }
 
