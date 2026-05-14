@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type Members struct {
 	db     *pgxpool.Pool
 	mailer *notifications.Mailer
 	cfg    *config.Config
+	notify *notifications.Engine
 }
 
 func NewMembers(db *pgxpool.Pool) *Members { return &Members{db: db} }
@@ -38,6 +40,15 @@ func NewMembers(db *pgxpool.Pool) *Members { return &Members{db: db} }
 func (h *Members) WithMailer(m *notifications.Mailer, cfg *config.Config) *Members {
 	h.mailer = m
 	h.cfg = cfg
+	return h
+}
+
+// WithEngine attaches the notifications engine so NudgeReport can fire
+// real bell / email notifications. Optional — without it, nudges
+// degrade to a no-op silently (the manager still gets 200 OK so the
+// SPA's toast fires).
+func (h *Members) WithEngine(e *notifications.Engine) *Members {
+	h.notify = e
 	return h
 }
 
@@ -1041,6 +1052,49 @@ func (h *Members) TeamPulse(c *gin.Context) {
 		)
 		if err := rows.Scan(&id, &name, &email, &avatar, &jobTitle,
 			&checkedIn, &onLeave, &openTasks, &overdue, &blocked, &lastSeen); err == nil {
+			// Per-report attention list — top 5 overdue/blocked tasks so
+			// the manager can act without leaving the dashboard. Cheap
+			// query bounded per user; we accept the N+1 because N is
+			// "direct reports" which is small.
+			attention := []gin.H{}
+			if overdue > 0 || blocked > 0 {
+				trows, terr := h.db.Query(c, `
+					SELECT t.id, t.title, t.status, t.due_on,
+					       p.id, p.code, p.name
+					FROM tasks t JOIN projects p ON p.id = t.project_id
+					WHERE t.assignee_id = $1 AND t.deleted_at IS NULL
+					  AND t.status <> 'done'
+					  AND (
+					        t.status = 'blocked'
+					     OR (t.due_on IS NOT NULL AND t.due_on < CURRENT_DATE)
+					      )
+					ORDER BY
+					  -- Blocked first, then oldest overdue.
+					  (t.status = 'blocked') DESC,
+					  t.due_on ASC NULLS LAST
+					LIMIT 5`, id)
+				if terr == nil {
+					defer trows.Close()
+					for trows.Next() {
+						var (
+							tID, projID    uuid.UUID
+							title, tStatus string
+							dueOn          *time.Time
+							projCode, projName string
+						)
+						if err := trows.Scan(&tID, &title, &tStatus, &dueOn, &projID, &projCode, &projName); err == nil {
+							row := gin.H{
+								"id": tID, "title": title, "status": tStatus,
+								"project": gin.H{"id": projID, "code": projCode, "name": projName},
+							}
+							if dueOn != nil {
+								row["due_on"] = dueOn.Format("2006-01-02")
+							}
+							attention = append(attention, row)
+						}
+					}
+				}
+			}
 			reports = append(reports, gin.H{
 				"id": id, "name": name, "email": email,
 				"avatar_url": avatar, "job_title": jobTitle,
@@ -1050,6 +1104,7 @@ func (h *Members) TeamPulse(c *gin.Context) {
 				"overdue_tasks":    overdue,
 				"blocked_tasks":    blocked,
 				"last_seen_at":     lastSeen,
+				"attention":        attention,
 			})
 			r.Total++
 			if checkedIn { r.Checked++ }
@@ -1068,4 +1123,95 @@ func (h *Members) TeamPulse(c *gin.Context) {
 			"overdue":          r.Overdue,
 		},
 	})
+}
+
+// NudgeReport — manager-fires a friendly "hey, check in / unblock this"
+// notification at one of their direct reports. Two safeguards:
+//   1. Caller must actually be the recipient's manager (or governance:
+//      write admin) — we look it up rather than trust the URL.
+//   2. Same-day dedupe key so a frustrated manager mashing the button
+//      doesn't fan a dozen pings.
+//
+// Body shape is intentionally lightweight — kind + optional task_id —
+// so the same endpoint covers "checked in?" and "unblock this task"
+// without needing per-flavour routes.
+func (h *Members) NudgeReport(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	target, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	var req struct {
+		Kind   string `json:"kind"`            // "checkin" | "task" | "general"
+		TaskID string `json:"task_id"`
+		Note   string `json:"note"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	if req.Kind == "" {
+		req.Kind = "general"
+	}
+
+	// Authorisation — manager OR governance:write. Anyone else can't
+	// nudge a stranger.
+	var managerID *uuid.UUID
+	if err := h.db.QueryRow(c, `
+		SELECT manager_id FROM users
+		WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`,
+		target, tid,
+	).Scan(&managerID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "member not found"})
+		return
+	}
+	isManager := managerID != nil && *managerID == uid
+	isAdmin   := authpkg.HasPermission(roles, "governance:write")
+	if !isManager && !isAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only the member's manager or an admin can nudge them"})
+		return
+	}
+
+	// Manager display name for the notification subject.
+	var managerName string
+	_ = h.db.QueryRow(c,
+		`SELECT COALESCE(NULLIF(full_name,''), email::text) FROM users WHERE id=$1`, uid,
+	).Scan(&managerName)
+
+	// Subject + link + dedupe key vary by kind. Keep the copy short —
+	// these land in the bell + email both, and a long subject reads
+	// like spam.
+	// Subject is composed by the notification template using the
+	// "Manager" payload key + the Kind discriminator; we just decide
+	// the link + dedupe so a frustrated manager mashing the button
+	// doesn't fan a dozen pings.
+	link    := "/my-work"
+	dedupe  := "nudge:general:" + uid.String() + ":" + target.String() + ":" + time.Now().UTC().Format("2006-01-02")
+	switch req.Kind {
+	case "checkin":
+		link    = "/my-work?tab=checkins"
+		dedupe  = "nudge:checkin:" + uid.String() + ":" + target.String() + ":" + time.Now().UTC().Format("2006-01-02")
+	case "task":
+		if req.TaskID != "" {
+			link = "/my-work?tab=tasks#" + req.TaskID
+			dedupe = "nudge:task:" + uid.String() + ":" + req.TaskID + ":" + time.Now().UTC().Format("2006-01-02")
+		}
+	}
+
+	if h.notify != nil {
+		h.notify.Notify(c.Request.Context(), notifications.Event{
+			Kind:       "manager.nudge",
+			TenantID:   tid,
+			Recipients: []notifications.Recipient{{UserID: &target}},
+			Payload: map[string]any{
+				"Manager": managerName,
+				"Note":    strings.TrimSpace(req.Note),
+				"Kind":    req.Kind,
+			},
+			DedupeKey: dedupe,
+			Link:      link,
+		})
+	}
+	c.JSON(200, gin.H{"ok": true})
 }

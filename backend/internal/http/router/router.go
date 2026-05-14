@@ -238,6 +238,10 @@ func New(d Deps) http.Handler {
 	// PATCH /members/:id route (governance:write) is what sets it.
 	authed.GET("/me/manager",                members.Manager)
 	authed.GET("/me/team-pulse",             members.TeamPulse)
+	// Manager-fires-friendly-ping at a report. Backend confirms the
+	// caller is the report's manager (or an admin) so a curious user
+	// can't poke a stranger.
+	authed.POST("/members/:id/nudge",        members.NudgeReport)
 	authed.GET("/members/:id/profile",       members.Profile)
 	authed.POST("/members",                  mw.RequirePermission("governance:write"), members.Create)
 	authed.PATCH("/members/:id",             mw.RequirePermission("governance:write"), members.Update)
