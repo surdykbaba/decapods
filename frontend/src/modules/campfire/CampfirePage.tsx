@@ -1211,13 +1211,27 @@ function TimelinePostCard({
   return (
     <article id={`campfire-post-${post.id}`} className="relative pl-12 scroll-mt-24">
       {/* Avatar dot — sits on the rail with a ring matching the post's
-          category tint so a glance scans by kind. */}
-      <div className={`absolute left-0 top-1.5 w-9 h-9 rounded-full ring-2 ring-surface ${meta.ring} shadow-soft`}>
+          category tint so a glance scans by kind. Clickable → opens the
+          author's Campfire timeline (Twitter-style profile feed). */}
+      <Link
+        to={post.author_id ? `/campfire/u/${post.author_id}` : "#"}
+        className={`absolute left-0 top-1.5 w-9 h-9 rounded-full ring-2 ring-surface ${meta.ring} shadow-soft hover:ring-accent transition-shadow`}
+        title={`See ${post.author_name || "this person"}'s Campfire timeline`}
+      >
         <Avatar name={post.author_name} email={post.author_email} src={post.author_avatar_url} size={36} />
-      </div>
+      </Link>
       <div className={`rounded-2xl border ${post.pinned ? "border-accent/40 bg-accent-soft/20" : "border-border bg-surface"} px-4 py-3 hover-lift transition-colors`}>
         <header className="flex items-center gap-2 flex-wrap text-[12.5px]">
-          <span className="font-bold text-text">{post.author_name || post.author_email || "Someone"}</span>
+          {post.author_id ? (
+            <Link
+              to={`/campfire/u/${post.author_id}`}
+              className="font-bold text-text hover:text-accent hover:underline"
+            >
+              {post.author_name || post.author_email || "Someone"}
+            </Link>
+          ) : (
+            <span className="font-bold text-text">{post.author_name || post.author_email || "Someone"}</span>
+          )}
           <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold ${meta.tint}`}>
             <Icon size={10} /> {meta.label}
           </span>

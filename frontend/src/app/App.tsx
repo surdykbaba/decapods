@@ -41,6 +41,7 @@ import { MyWorkPage } from "@/modules/me/MyWorkPage";
 import { FilesPage } from "@/modules/files/FilesPage";
 import { LeavePage } from "@/modules/leave/LeavePage";
 import { CampfirePage } from "@/modules/campfire/CampfirePage";
+import { CampfireUserPage } from "@/modules/campfire/CampfireUserPage";
 import { CampfireJoinPage } from "@/modules/campfire/CampfireJoinPage";
 import { ColleaguesPage } from "@/modules/colleagues/ColleaguesPage";
 import { LegalsPage } from "@/modules/legals/LegalsPage";
@@ -85,6 +86,7 @@ export function App() {
         <Route path="/leave"   element={<LeavePage />} />
         <Route path="/okrs"    element={<OKRsPage />} />
         <Route path="/campfire" element={<CampfirePage />} />
+        <Route path="/campfire/u/:id" element={<CampfireUserPage />} />
         <Route path="/campfire/join/:token" element={<CampfireJoinPage />} />
         <Route path="/colleagues" element={<ColleaguesPage />} />
         <Route path="/legals" element={<LegalsPage />} />
