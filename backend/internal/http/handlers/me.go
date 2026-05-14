@@ -74,9 +74,31 @@ func (h *Me) Work(c *gin.Context) {
 		WHERE p.tenant_id=$1 AND pm.user_id=$2 AND pm.removed_at IS NULL
 		      AND p.deleted_at IS NULL AND p.status NOT IN ('paid','closed')`,
 		tid, uid).Scan(&ct.ActiveProjects)
-	_ = h.db.QueryRow(c, `SELECT COALESCE(SUM(hours),0) FROM time_entries
-		WHERE user_id=$1 AND work_date >= date_trunc('week', CURRENT_DATE)`,
-		uid).Scan(&ct.HoursThisWeek)
+	// Hours-this-week is derived from check-in / check-out timestamps,
+	// not from manual time_entries. Rule:
+	//   - A day only counts if the member logged ALL THREE slots
+	//     (morning, afternoon, evening). Incomplete days contribute 0
+	//     so partial attendance can't masquerade as overtime.
+	//   - Worked hours = evening_timestamp − morning_timestamp, which
+	//     includes any lunch break — matches what the badge would
+	//     record at a physical office.
+	// This makes the "Overtime watch" automatic: no time-entry hygiene
+	// required.
+	_ = h.db.QueryRow(c, `
+		SELECT COALESCE(SUM(
+			CASE WHEN slot_times ? 'morning'
+			      AND slot_times ? 'afternoon'
+			      AND slot_times ? 'evening'
+			      AND (slot_times->>'evening')::timestamptz > (slot_times->>'morning')::timestamptz
+			THEN EXTRACT(EPOCH FROM (
+				(slot_times->>'evening')::timestamptz - (slot_times->>'morning')::timestamptz
+			)) / 3600.0
+			ELSE 0 END
+		), 0)::float8
+		FROM daily_checkins
+		WHERE user_id = $1
+		  AND day >= date_trunc('week', CURRENT_DATE)
+	`, uid).Scan(&ct.HoursThisWeek)
 	// Days since last daily update (proxy for "pending updates")
 	var lastUpdate *time.Time
 	_ = h.db.QueryRow(c, `SELECT MAX(for_date) FROM personal_updates

@@ -38,6 +38,14 @@ func (h *OneOnOnes) authorizeFor1on1(c *gin.Context, reportID uuid.UUID) bool {
 	if auth.HasPermission(roles, "governance:write") {
 		return true
 	}
+	// HR-class roles (workforce:write covers hr + hr_manager) can run a
+	// 1-on-1 with anyone in the workspace — it's part of their job. The
+	// notes pane is keyed on (manager_id, report_id) so HR's notes about
+	// a teammate live under their own row, separate from the line
+	// manager's, with no cross-contamination.
+	if auth.HasPermission(roles, "workforce:write") {
+		return true
+	}
 	var managerID *uuid.UUID
 	if err := h.db.QueryRow(c, `SELECT manager_id FROM users WHERE id=$1 AND tenant_id=$2`, reportID, tid).Scan(&managerID); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "report not found"})

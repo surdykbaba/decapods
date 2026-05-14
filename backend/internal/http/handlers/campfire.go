@@ -179,18 +179,28 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 		limit = v
 	}
 
-	// Pinned first (newest pinned), then chronological. Single query with a
-	// computed sort key.
-	rows, err := h.db.Query(c.Request.Context(), `
+	// Optional author filter — drives the "click a name → see their
+	// Campfire timeline" Twitter-style profile view. When set we drop the
+	// pinned-first ordering because the user wants a pure chronological
+	// stream of one person, not the workspace's top posts.
+	authorFilter := strings.TrimSpace(c.Query("author_id"))
+	args := []any{tid, limit}
+	q := `
 		SELECT p.id, p.author_id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
 		       COALESCE(u.avatar_url,''),
 		       p.kind, COALESCE(p.title,''), p.body, p.meta, p.pinned, p.created_at, p.edited_at,
 		       (SELECT COUNT(*) FROM campfire_comments cc WHERE cc.post_id=p.id) AS comment_count
 		FROM campfire_posts p
 		LEFT JOIN users u ON u.id = p.author_id
-		WHERE p.tenant_id=$1
-		ORDER BY p.pinned DESC, p.created_at DESC
-		LIMIT $2`, tid, limit)
+		WHERE p.tenant_id=$1`
+	if authorFilter != "" {
+		args = append(args, authorFilter)
+		q += " AND p.author_id = $" + strconv.Itoa(len(args)) + "::uuid"
+		q += " ORDER BY p.created_at DESC LIMIT $2"
+	} else {
+		q += " ORDER BY p.pinned DESC, p.created_at DESC LIMIT $2"
+	}
+	rows, err := h.db.Query(c.Request.Context(), q, args...)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -426,7 +436,10 @@ func (h *Campfire) CreatePost(c *gin.Context) {
 	}
 
 	// Fan out @mention pings — author's body is the source of truth.
-	go h.dispatchMentions(context.Background(), tid, uid, req.Body, "Campfire post", "/campfire")
+	// Link carries the post ID so the SPA can scroll the recipient
+	// straight to the mention rather than dumping them at the Campfire
+	// index.
+	go h.dispatchMentions(context.Background(), tid, uid, req.Body, "Campfire post", "/campfire?post="+id.String())
 
 	c.JSON(201, gin.H{"id": id})
 }
@@ -494,7 +507,7 @@ func (h *Campfire) UpdatePost(c *gin.Context) {
 	// that person should still get pinged. dispatchMentions has its own
 	// dedupe so previously-mentioned people won't be re-notified.
 	if req.Body != nil {
-		go h.dispatchMentions(context.Background(), tid, uid, *req.Body, "Campfire post", "/campfire")
+		go h.dispatchMentions(context.Background(), tid, uid, *req.Body, "Campfire post", "/campfire?post="+postID.String())
 	}
 	c.JSON(200, gin.H{"ok": true})
 }
@@ -607,7 +620,12 @@ func (h *Campfire) AddComment(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	go h.dispatchMentions(context.Background(), tid, uid, req.Body, "Campfire comment", "/campfire")
+	// Deep-link the recipient to the parent post (and the new comment
+	// inside it). The SPA reads both query params on mount, scrolls
+	// the post into view, auto-expands its comment thread, and
+	// highlights the matching comment.
+	deepLink := "/campfire?post=" + postID.String() + "&comment=" + id.String()
+	go h.dispatchMentions(context.Background(), tid, uid, req.Body, "Campfire comment", deepLink)
 	go h.notifyCommentReceived(context.Background(), tid, uid, postID, req.Body)
 	c.JSON(201, gin.H{"id": id})
 }
@@ -665,7 +683,7 @@ func (h *Campfire) notifyCommentReceived(ctx context.Context, tid, authorID, pos
 			"Body":   truncate(body, 240),
 		},
 		DedupeKey: "campfire.comment:" + postID.String() + ":" + authorID.String(),
-		Link:      "/campfire",
+		Link:      "/campfire?post=" + postID.String(),
 	})
 }
 
@@ -2123,7 +2141,7 @@ func (h *Campfire) SendMessage(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	go h.dispatchMentions(context.Background(), tid, uid, req.Body, "Campfire room message", "/campfire")
+	go h.dispatchMentions(context.Background(), tid, uid, req.Body, "Campfire room message", "/campfire?room="+roomID.String()+"&message="+id.String())
 	c.JSON(201, gin.H{"id": id})
 }
 

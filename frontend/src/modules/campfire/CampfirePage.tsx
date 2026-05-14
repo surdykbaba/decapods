@@ -5,7 +5,7 @@
 // real complexity (e.g. rooms become a full chat client with threads), it can
 // migrate to its own file without touching the public surface (CampfirePage).
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -224,6 +224,63 @@ export function CampfirePage() {
   const isAdmin = !!user?.roles?.some((r) => r === "super_admin" || r === "ceo" || r === "coo" || r === "hr");
   const [tab, setTab] = useState<Tab>("feed");
   const qc = useQueryClient();
+
+  // Deep-link target. The notification bell hands us /campfire?post=<id>
+  // (and optionally &comment=<id> or &room=<id>&message=<id>) so we
+  // can scroll the mentioned post into view instead of dropping the
+  // user at the top of the feed. Captured once on mount and consumed
+  // by the scroll effect below.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const focusPostId = searchParams.get("post") || "";
+  const focusCommentId = searchParams.get("comment") || "";
+  const focusRoomId = searchParams.get("room") || "";
+
+  // Pick the tab matching the deep link before first paint so the
+  // target node actually mounts before we try to scroll.
+  useEffect(() => {
+    if (focusRoomId) setTab("rooms");
+    else if (focusPostId) setTab("feed");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Scroll + highlight whatever the link points at. Retries a handful
+  // of times because the post list lazy-renders after its query
+  // resolves, so the node won't exist on the first tick.
+  useEffect(() => {
+    if (!focusPostId && !focusCommentId && !focusRoomId) return;
+    let tries = 0;
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const id = focusCommentId
+        ? `campfire-comment-${focusCommentId}`
+        : focusPostId
+          ? `campfire-post-${focusPostId}`
+          : "";
+      const el = id ? document.getElementById(id) : null;
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        // Flash an accent ring so the eye lands on the right item even
+        // if multiple cards happen to share a screen.
+        el.classList.add("ring-2", "ring-accent", "rounded-2xl", "transition");
+        setTimeout(() => el.classList.remove("ring-2", "ring-accent"), 2400);
+        // Clear the query params once we've consumed them so a refresh
+        // doesn't re-jump and a back-nav doesn't re-trigger the flash.
+        const next = new URLSearchParams(searchParams);
+        next.delete("post");
+        next.delete("comment");
+        next.delete("room");
+        next.delete("message");
+        setSearchParams(next, { replace: true });
+        return;
+      }
+      if (tries++ < 20) setTimeout(tick, 150);
+    };
+    // Defer one frame so React commits the tab switch first.
+    setTimeout(tick, 50);
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusPostId, focusCommentId, focusRoomId]);
 
   // Mark the feed as seen the moment the page mounts. The bell's badge resets
   // on its own next refetch (30s), but we also invalidate the query so it
@@ -1125,7 +1182,15 @@ function TimelinePostCard({
 }) {
   const meta = POST_KINDS[post.kind] ?? POST_KINDS.update;
   const Icon = meta.icon;
-  const [showComments, setShowComments] = useState(false);
+  // Auto-expand the comment thread when the URL points at a comment in
+  // this specific post — read the params on first render only so the
+  // post stays expanded after the page hook clears them.
+  const initialShowComments = (() => {
+    if (typeof window === "undefined") return false;
+    const p = new URLSearchParams(window.location.search);
+    return p.get("post") === post.id && !!p.get("comment");
+  })();
+  const [showComments, setShowComments] = useState(initialShowComments);
   const [editing, setEditing] = useState(false);
   const [draftBody, setDraftBody] = useState(post.body);
   const [draftTitle, setDraftTitle] = useState(post.title ?? "");
@@ -1144,7 +1209,7 @@ function TimelinePostCard({
     setEditing(false);
   }
   return (
-    <article className="relative pl-12">
+    <article id={`campfire-post-${post.id}`} className="relative pl-12 scroll-mt-24">
       {/* Avatar dot — sits on the rail with a ring matching the post's
           category tint so a glance scans by kind. */}
       <div className={`absolute left-0 top-1.5 w-9 h-9 rounded-full ring-2 ring-surface ${meta.ring} shadow-soft`}>
@@ -1500,7 +1565,7 @@ function CommentRow({
   });
 
   return (
-    <div className="flex gap-2.5 group">
+    <div id={`campfire-comment-${c.id}`} className="flex gap-2.5 group scroll-mt-24">
       <Avatar name={c.author_name} email={c.author_email} src={c.author_avatar_url} size={28} />
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">

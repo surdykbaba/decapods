@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/decapods/pgdp/backend/internal/digest"
 	"github.com/decapods/pgdp/backend/internal/http/router"
 	"github.com/decapods/pgdp/backend/internal/platform/config"
 	"github.com/decapods/pgdp/backend/internal/platform/db"
@@ -43,16 +44,23 @@ func main() {
 	}
 	defer rdb.Close()
 
-	r := router.New(router.Deps{
+	built := router.New(router.Deps{
 		Cfg:   cfg,
 		Log:   log,
 		DB:    pool,
 		Redis: rdb,
 	})
 
+	// Kick off the in-process weekly-digest scheduler. Cheap goroutine
+	// gated by isSendWindow + a 6-day-since-last-sent guard, so it's
+	// safe to leave on by default.
+	if built.WeeklyDigest != nil {
+		digest.StartScheduler(ctx, built.WeeklyDigest, log)
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           r,
+		Handler:           built.Handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

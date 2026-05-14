@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	digestpkg "github.com/decapods/pgdp/backend/internal/digest"
 	"github.com/decapods/pgdp/backend/internal/http/handlers"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
 	"github.com/decapods/pgdp/backend/internal/notifications"
@@ -21,7 +22,15 @@ type Deps struct {
 	Redis *redis.Client
 }
 
-func New(d Deps) http.Handler {
+// Built bundles everything the caller needs after wiring: the HTTP
+// handler and any background-service singletons (digest sender, etc.)
+// the API process has to keep alive.
+type Built struct {
+	Handler      http.Handler
+	WeeklyDigest *digestpkg.Sender
+}
+
+func New(d Deps) Built {
 	if d.Cfg.Env == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -230,6 +239,20 @@ func New(d Deps) http.Handler {
 	authed.GET("/me/notification-preferences",  prefs.List)
 	authed.PUT("/me/notification-preferences",  prefs.Set)
 	authed.POST("/admin/digests/run",           mw.RequirePermission("governance:write"), prefs.RunDigest)
+
+	// Weekly engagement digest — opt-in Monday-morning report covering
+	// attendance, tasks, hours, OKRs, kudos, help-wall activity. The
+	// scheduler ticks in-process from cmd/api/main.go; these endpoints
+	// expose the prefs toggle, a preview-to-self, and an admin
+	// force-run for first-Monday kick-offs.
+	weeklyDigest := digestpkg.New(d.DB, earlyMailer)
+	digestH := handlers.NewDigest(d.DB, weeklyDigest)
+	authed.GET("/me/digest-prefs",             digestH.GetPrefs)
+	authed.PUT("/me/digest-prefs",             digestH.UpdatePrefs)
+	authed.POST("/me/digest-preview",          digestH.Preview)
+	authed.POST("/admin/weekly-digest/run",    mw.RequirePermission("governance:write"), digestH.AdminRun)
+	// Stash the sender on the gin engine context so cmd/api can pull
+	// it out and start the scheduler without re-wiring the deps.
 
 	members := handlers.NewMembers(d.DB).WithMailer(earlyMailer, d.Cfg).WithEngine(earlyEngine)
 	authed.GET("/members",                   members.List)
@@ -449,5 +472,5 @@ func New(d Deps) http.Handler {
 	authed.GET("/attendance/warnings",         mw.RequirePermission("governance:write"), att.Warnings)
 	authed.POST("/attendance/warnings/:id/ack", mw.RequirePermission("governance:write"), att.AcknowledgeWarning)
 
-	return r
+	return Built{Handler: r, WeeklyDigest: weeklyDigest}
 }
