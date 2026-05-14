@@ -481,7 +481,12 @@ func (h *Campfire) UpdatePost(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
 		return
 	}
-	if authorID != uid && !auth.HasPermission(roles, "governance:write") {
+	// Author-only by policy. Admins do not get an override — moderating
+	// someone else's voice is not a Campfire affordance today. If a
+	// post has to come down, the author removes it (or, as a last
+	// resort, a DB-level intervention with a paper trail).
+	_ = roles
+	if authorID != uid {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you can only edit your own posts"})
 		return
 	}
@@ -538,10 +543,23 @@ func (h *Campfire) DeletePost(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "bad id"})
 		return
 	}
-	// Authors can delete their own; admins (governance:write) can delete any —
-	// that permission is enforced via the route. So here we simply scope by
-	// tenant and let the route guard handle access.
-	_ = uid
+	// Author-only: confirm the caller authored the post before we
+	// touch the row. The route used to assume an upstream guard
+	// existed but no permission gate is attached, so without this
+	// check any authenticated user could delete any post in the
+	// tenant.
+	var authorID uuid.UUID
+	if err := h.db.QueryRow(c.Request.Context(),
+		`SELECT author_id FROM campfire_posts WHERE id=$1 AND tenant_id=$2`,
+		id, tid,
+	).Scan(&authorID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
+		return
+	}
+	if authorID != uid {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only delete your own posts"})
+		return
+	}
 	if _, err := h.db.Exec(c.Request.Context(),
 		`DELETE FROM campfire_posts WHERE id=$1 AND tenant_id=$2`, id, tid); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
@@ -714,7 +732,8 @@ func (h *Campfire) UpdateComment(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "comment not found"})
 		return
 	}
-	if authorID != uid && !auth.HasPermission(roles, "governance:write") {
+	_ = roles
+	if authorID != uid {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you can only edit your own comments"})
 		return
 	}
@@ -748,7 +767,8 @@ func (h *Campfire) DeleteComment(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "comment not found"})
 		return
 	}
-	if authorID != uid && !auth.HasPermission(roles, "governance:write") {
+	_ = roles
+	if authorID != uid {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you can only delete your own comments"})
 		return
 	}

@@ -1107,7 +1107,10 @@ function PostCard({
   const meta = POST_KINDS[post.kind] ?? POST_KINDS.update;
   const Icon = meta.icon;
   const [showComments, setShowComments] = useState(false);
-  const canDelete = isAdmin || post.author_id === currentUserId;
+  // Edit/delete are author-only by design — admins do NOT get an
+  // override. Pinning stays admin-only because that's a visibility
+  // decision, not a content rewrite.
+  const canDelete = post.author_id === currentUserId;
 
   return (
     <article className={`bg-surface border rounded-2xl overflow-hidden ${post.pinned ? "border-accent/40" : "border-border"}`}>
@@ -1194,8 +1197,10 @@ function TimelinePostCard({
   const [editing, setEditing] = useState(false);
   const [draftBody, setDraftBody] = useState(post.body);
   const [draftTitle, setDraftTitle] = useState(post.title ?? "");
-  const canDelete = isAdmin || post.author_id === currentUserId;
-  const canEdit   = isAdmin || post.author_id === currentUserId;
+  // Author-only. Admins keep pin/unpin (visibility) but cannot rewrite
+  // or delete someone else's words.
+  const canDelete = post.author_id === currentUserId;
+  const canEdit   = post.author_id === currentUserId;
   function startEdit() {
     setDraftBody(post.body);
     setDraftTitle(post.title ?? "");
@@ -1484,7 +1489,6 @@ function PollBody({ post }: { post: Post }) {
 function CommentsThread({ postId }: { postId: string }) {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const isAdmin = !!user?.roles?.some((r) => r === "super_admin" || r === "ceo" || r === "coo" || r === "hr");
   const { data } = useQuery<{ items: Comment[] }>({
     queryKey: ["campfire", "post-comments", postId],
     queryFn: () => api(`/api/v1/campfire/posts/${postId}/comments`),
@@ -1510,7 +1514,7 @@ function CommentsThread({ postId }: { postId: string }) {
           key={c.id}
           c={c}
           postId={postId}
-          canEdit={c.author_id === user?.id || isAdmin}
+          canEdit={c.author_id === user?.id}
         />
       ))}
       <div className="flex items-end gap-2">
