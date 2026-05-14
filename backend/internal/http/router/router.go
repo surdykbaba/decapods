@@ -231,7 +231,7 @@ func New(d Deps) http.Handler {
 	authed.PUT("/me/notification-preferences",  prefs.Set)
 	authed.POST("/admin/digests/run",           mw.RequirePermission("governance:write"), prefs.RunDigest)
 
-	members := handlers.NewMembers(d.DB).WithMailer(earlyMailer, d.Cfg)
+	members := handlers.NewMembers(d.DB).WithMailer(earlyMailer, d.Cfg).WithEngine(earlyEngine)
 	authed.GET("/members",                   members.List)
 	authed.GET("/members/roles",             members.ListRoles)
 	// Reporting hierarchy — everyone can read their own line; the

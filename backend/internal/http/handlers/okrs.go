@@ -343,7 +343,7 @@ func (h *OKRs) Create(c *gin.Context) {
 	if status == "" {
 		status = "in_progress"
 	}
-	if status != "draft" && status != "in_progress" && status != "done" && status != "dropped" {
+	if status != "draft" && status != "in_progress" && status != "blocked" && status != "done" && status != "dropped" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
 		return
 	}
@@ -453,7 +453,7 @@ func (h *OKRs) Update(c *gin.Context) {
 	if !pushStr("description", req["description"]) { return }
 	if !pushStr("unit", req["unit"]) { return }
 	if !pushStr("confidence", req["confidence"], "green", "amber", "red") { return }
-	if !pushStr("status", req["status"], "draft", "in_progress", "done", "dropped") { return }
+	if !pushStr("status", req["status"], "draft", "in_progress", "blocked", "done", "dropped") { return }
 	if v, ok := req["current_value"]; ok {
 		pushNum("current_value", v)
 	}
@@ -733,7 +733,7 @@ func (h *OKRs) CreateCheckin(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "confidence must be green / amber / red"})
 		return
 	}
-	if req.Status != "" && req.Status != "draft" && req.Status != "in_progress" && req.Status != "done" && req.Status != "dropped" {
+	if req.Status != "" && req.Status != "draft" && req.Status != "in_progress" && req.Status != "blocked" && req.Status != "done" && req.Status != "dropped" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
 		return
 	}

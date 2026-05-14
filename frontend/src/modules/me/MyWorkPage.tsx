@@ -1164,6 +1164,12 @@ function ProjectRowCard({ p }: { p: ProjectRow }) {
 // the moment a manager_id starts pointing at someone.
 function TeamPulseCard() {
   const [collapsed, toggle] = useCollapsible("team_pulse");
+  const qc = useQueryClient();
+  type AttentionTask = {
+    id: string; title: string; status: string;
+    due_on?: string;
+    project: { id: string; code: string; name: string };
+  };
   type Report = {
     id: string; name: string; email: string;
     avatar_url: string; job_title: string;
@@ -1173,6 +1179,7 @@ function TeamPulseCard() {
     overdue_tasks: number;
     blocked_tasks: number;
     last_seen_at: string | null;
+    attention: AttentionTask[];
   };
   type Summary = {
     total: number; checked_in: number; on_leave: number;
@@ -1183,6 +1190,34 @@ function TeamPulseCard() {
     queryFn: () => api("/api/v1/me/team-pulse"),
     refetchInterval: 5 * 60_000,
     staleTime: 60_000,
+  });
+  // Track which report cards are expanded inline. Stored as a Set so a
+  // manager can drill into multiple reports at once without a modal hop.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  function toggleExpand(id: string) {
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  // Nudge mutation — fires a notification at the report. Optimistic
+  // toast on success; backend de-dupes per-day per-kind so a stuck
+  // manager mashing the button doesn't spam them.
+  const nudge = useMutation({
+    mutationFn: (args: { userID: string; kind: "checkin" | "task" | "general"; taskID?: string }) =>
+      api(`/api/v1/members/${args.userID}/nudge`, {
+        method: "POST",
+        body: JSON.stringify({ kind: args.kind, task_id: args.taskID }),
+      }),
+    onSuccess: (_d, args) => {
+      const verb = args.kind === "checkin" ? "to check in"
+        : args.kind === "task" ? "to unblock the task"
+        : "for a status update";
+      toast.success("Nudge sent", `They'll get a notification ${verb}.`);
+      qc.invalidateQueries({ queryKey: ["me", "team-pulse"] });
+    },
+    onError: (e: any) => toast.error("Couldn't send nudge", e?.message),
   });
   if (!data || data.reports.length === 0) return null;
 
@@ -1223,49 +1258,111 @@ function TeamPulseCard() {
               : issues > 0 ? "bg-warn/5 border-warn/30"
               : r.checked_in_today ? "bg-success/5 border-success/25"
               : "bg-bg/40 border-border";
+            const isOpen = expanded.has(r.id);
+            const hasIssues = !onLeave && issues > 0;
+            const hasAttention = (r.attention?.length ?? 0) > 0;
             return (
               <li key={r.id}>
-                <Link
-                  to={`/members/${r.id}`}
-                  className={`block rounded-xl border px-3 py-2.5 hover-lift transition-colors ${cardTone}`}
-                >
-                  <div className="flex items-start gap-2.5">
-                    <Avatar name={r.name} email={r.email} src={r.avatar_url} size={32} />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[13px] font-bold text-text truncate">{r.name || r.email}</div>
-                      {r.job_title && <div className="text-[10.5px] text-muted truncate">{r.job_title}</div>}
+                <div className={`rounded-xl border ${cardTone} transition-colors`}>
+                  <div className="px-3 py-2.5">
+                    <div className="flex items-start gap-2.5">
+                      <Avatar name={r.name} email={r.email} src={r.avatar_url} size={32} />
+                      <div className="min-w-0 flex-1">
+                        <Link to={`/members/${r.id}`} className="text-[13px] font-bold text-text hover:underline truncate block">
+                          {r.name || r.email}
+                        </Link>
+                        {r.job_title && <div className="text-[10.5px] text-muted truncate">{r.job_title}</div>}
+                      </div>
+                      {onLeave ? (
+                        <span className="pill bg-accent-soft text-accent text-[10px]">On leave</span>
+                      ) : r.checked_in_today ? (
+                        <CheckCircle2 size={14} className="text-success shrink-0" />
+                      ) : (
+                        <span className="text-[10px] text-muted font-semibold whitespace-nowrap">No check-in</span>
+                      )}
                     </div>
-                    {onLeave ? (
-                      <span className="pill bg-accent-soft text-accent text-[10px]">On leave</span>
-                    ) : r.checked_in_today ? (
-                      <CheckCircle2 size={14} className="text-success shrink-0" />
-                    ) : (
-                      <span className="text-[10px] text-muted font-semibold whitespace-nowrap">No check-in</span>
+                    {!onLeave && (
+                      <div className="mt-1.5 flex items-center gap-1.5 flex-wrap text-[10.5px]">
+                        {hasIssues && (
+                          <button
+                            type="button"
+                            onClick={() => toggleExpand(r.id)}
+                            aria-expanded={isOpen}
+                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-warn/10 text-warn border border-warn/25 font-semibold hover:bg-warn/20 press-fx"
+                            title={hasAttention ? (isOpen ? "Hide tasks" : "Show tasks") : "Open this teammate"}
+                          >
+                            {r.blocked_tasks > 0 && <><AlertOctagon size={9} /> {r.blocked_tasks} blocked</>}
+                            {r.blocked_tasks > 0 && r.overdue_tasks > 0 && <span className="mx-0.5">·</span>}
+                            {r.overdue_tasks > 0 && <><Clock size={9} /> {r.overdue_tasks} overdue</>}
+                            {hasAttention && (isOpen
+                              ? <ChevronUp size={10} className="ml-0.5" />
+                              : <ChevronDown size={10} className="ml-0.5" />)}
+                          </button>
+                        )}
+                        {r.open_tasks > 0 && r.blocked_tasks === 0 && r.overdue_tasks === 0 && (
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-bg/60 text-muted border border-border">
+                            <ListChecks size={9} /> {r.open_tasks} open
+                          </span>
+                        )}
+                        {r.open_tasks === 0 && (
+                          <span className="text-success/80 font-semibold">All clear</span>
+                        )}
+                        {!r.checked_in_today && (
+                          <button
+                            type="button"
+                            onClick={() => nudge.mutate({ userID: r.id, kind: "checkin" })}
+                            disabled={nudge.isPending}
+                            className="ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-accent-soft text-accent border border-accent/30 font-semibold hover:bg-accent/10 press-fx disabled:opacity-50"
+                            title="Send a check-in reminder"
+                          >
+                            <Bell size={9} /> Nudge
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
-                  {!onLeave && (
-                    <div className="mt-1.5 flex items-center gap-1.5 flex-wrap text-[10.5px]">
-                      {r.blocked_tasks> 0 && (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-danger/10 text-danger border border-danger/25 font-semibold">
-                          <AlertOctagon size={9} /> {r.blocked_tasks} blocked
-                        </span>
+                  {isOpen && hasAttention && (
+                    <ul className="border-t border-border/70 divide-y divide-border/60 bg-bg/30 rounded-b-xl">
+                      {r.attention.map((t) => {
+                        const isBlocked = t.status === "blocked";
+                        return (
+                          <li key={t.id} className="px-3 py-2 flex items-start gap-2">
+                            <span className={`mt-0.5 shrink-0 ${isBlocked ? "text-danger" : "text-warn"}`}>
+                              {isBlocked ? <AlertOctagon size={11} /> : <Clock size={11} />}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <Link
+                                to={`/projects/${t.project.id}/tasks/${t.id}`}
+                                className="text-[12px] font-semibold text-text hover:underline truncate block"
+                              >
+                                {t.title}
+                              </Link>
+                              <div className="text-[10.5px] text-muted truncate">
+                                <span className="font-mono">{t.project.code}</span>
+                                {t.due_on && <> · due {relTimeShort(t.due_on)}</>}
+                                {isBlocked && <> · <span className="text-danger font-semibold">blocked</span></>}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => nudge.mutate({ userID: r.id, kind: "task", taskID: t.id })}
+                              disabled={nudge.isPending}
+                              className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-accent-soft text-accent border border-accent/30 text-[10px] font-semibold hover:bg-accent/10 press-fx disabled:opacity-50"
+                              title="Send a nudge about this task"
+                            >
+                              <Bell size={9} /> Nudge
+                            </button>
+                          </li>
+                        );
+                      })}
+                      {r.attention.length >= 5 && (
+                        <li className="px-3 py-1.5 text-[10.5px] text-muted text-center">
+                          <Link to={`/members/${r.id}`} className="text-accent hover:underline">View all tasks →</Link>
+                        </li>
                       )}
-                      {r.overdue_tasks > 0 && (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-warn/10 text-warn border border-warn/25 font-semibold">
-                          <Clock size={9} /> {r.overdue_tasks} overdue
-                        </span>
-                      )}
-                      {r.open_tasks > 0 && r.blocked_tasks=== 0 && r.overdue_tasks === 0 && (
-                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-bg/60 text-muted border border-border">
-                          <ListChecks size={9} /> {r.open_tasks} open
-                        </span>
-                      )}
-                      {r.open_tasks === 0 && (
-                        <span className="text-success/80 font-semibold">All clear</span>
-                      )}
-                    </div>
+                    </ul>
                   )}
-                </Link>
+                </div>
               </li>
             );
           })}

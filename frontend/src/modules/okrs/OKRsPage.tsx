@@ -49,7 +49,7 @@ type OKR = {
   current_value: number;
   unit: string;
   confidence: "green" | "amber" | "red";
-  status: "draft" | "in_progress" | "done" | "dropped";
+  status: "draft" | "in_progress" | "blocked" | "done" | "dropped";
   position: number;
   progress_pct: number;
   // Phase 2 — check-in summary.
@@ -66,7 +66,7 @@ type OKRCheckin = {
   current_value: number | null;
   percent: number;
   confidence: "green" | "amber" | "red";
-  status?: "draft" | "in_progress" | "done" | "dropped" | null;
+  status?: "draft" | "in_progress" | "blocked" | "done" | "dropped" | null;
   comment: string;
   created_at: string;
 };
@@ -80,9 +80,14 @@ const CONFIDENCE_META: Record<OKR["confidence"], { label: string; cls: string }>
 const STATUS_META: Record<OKR["status"], { label: string; cls: string }> = {
   draft:       { label: "Draft",       cls: "bg-bg text-muted border-border" },
   in_progress: { label: "In progress", cls: "bg-accent-soft text-accent border-accent/30" },
+  blocked:     { label: "Blocked",     cls: "bg-danger/15 text-danger border-danger/30" },
   done:        { label: "Done",        cls: "bg-success/15 text-success border-success/30" },
   dropped:     { label: "Dropped",     cls: "bg-bg text-muted border-border" },
 };
+
+// Ordered list of statuses for the kanban + status picker — keep
+// dropped last because it's the trash column.
+const STATUS_ORDER: OKR["status"][] = ["draft", "in_progress", "blocked", "done", "dropped"];
 
 // Mechanical pace — compares an OKR's progress against how far the cycle has
 // elapsed. Complements (not replaces) the owner-reported confidence pill:
@@ -129,6 +134,15 @@ export function OKRsPage() {
   // actual admins to ping.
   const isAdmin = !!user?.roles?.some((r) => r === "super_admin" || r === "ceo" || r === "coo" || r === "hr" || r === "hr_manager");
   const [tab, setTab] = useState<"mine" | "workspace">("mine");
+  // View picker — list (default), kanban (group by status), tree
+  // (alignment graph of parent_id relationships). Persisted so the
+  // user's last choice survives reloads.
+  type OKRView = "list" | "kanban" | "tree";
+  const [view, setView] = useState<OKRView>(() => {
+    const v = localStorage.getItem("okrs:view");
+    return v === "kanban" || v === "tree" ? v : "list";
+  });
+  useEffect(() => { localStorage.setItem("okrs:view", view); }, [view]);
   const [activeCycleId, setActiveCycleId] = useState<string | null>(null);
   const [editing, setEditing] = useState<OKR | null>(null);
   const [creating, setCreating] = useState<{ cycleId: string; kind: OKR["kind"]; parentId?: string; seed?: string } | null>(null);
@@ -219,19 +233,39 @@ export function OKRsPage() {
         </div>
       </header>
 
-      {/* Tabs */}
-      <div className="flex gap-1 p-1 bg-surface border border-border rounded-full w-fit">
-        {(["mine", "workspace"] as const).map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-1.5 text-[12.5px] font-semibold rounded-full transition-colors ${
-              tab === t ? "bg-accent text-white" : "text-muted hover:text-text"
-            }`}
-          >
-            {t === "mine" ? "Mine" : "Workspace"}
-          </button>
-        ))}
+      {/* Tabs + view picker */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex gap-1 p-1 bg-surface border border-border rounded-full w-fit">
+          {(["mine", "workspace"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-1.5 text-[12.5px] font-semibold rounded-full transition-colors ${
+                tab === t ? "bg-accent text-white" : "text-muted hover:text-text"
+              }`}
+            >
+              {t === "mine" ? "Mine" : "Workspace"}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-1 p-1 bg-surface border border-border rounded-full w-fit">
+          {([
+            { k: "list",   label: "List" },
+            { k: "kanban", label: "Kanban" },
+            { k: "tree",   label: "Alignment" },
+          ] as const).map(({ k, label }) => (
+            <button
+              key={k}
+              onClick={() => setView(k)}
+              className={`px-3 py-1.5 text-[12px] font-semibold rounded-full transition-colors ${
+                view === k ? "bg-accent text-white" : "text-muted hover:text-text"
+              }`}
+              title={k === "kanban" ? "Group key results by status" : k === "tree" ? "How objectives ladder up" : "Stacked cards"}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Cycle empty-state — actually actionable. Admins get a one-click
@@ -266,21 +300,43 @@ export function OKRsPage() {
           ) : (
             <div className="space-y-4">
               <SummaryBand cycle={cycle} objs={grouped.objs} krsByParent={grouped.krsByParent} />
-              <ul className="space-y-3">
-                {grouped.objs.map((obj) => (
-                  <ObjectiveCard
-                    key={obj.id}
-                    objective={obj}
-                    keyResults={grouped.krsByParent.get(obj.id) ?? []}
-                    canEdit={tab === "mine" || obj.owner_id === user?.id}
-                    elapsedPct={cycleProgress(cycle).elapsedPct}
-                    onEdit={(o) => setEditing(o)}
-                    onAddKR={() => setCreating({ cycleId: cycle.id, kind: "key_result", parentId: obj.id })}
-                    onCheckin={(o) => setCheckingIn(o)}
-                    onHistory={(o) => setHistoryFor(o)}
-                  />
-                ))}
-              </ul>
+              {view === "list" && (
+                <ul className="space-y-3">
+                  {grouped.objs.map((obj) => (
+                    <ObjectiveCard
+                      key={obj.id}
+                      objective={obj}
+                      keyResults={grouped.krsByParent.get(obj.id) ?? []}
+                      canEdit={tab === "mine" || obj.owner_id === user?.id}
+                      elapsedPct={cycleProgress(cycle).elapsedPct}
+                      onEdit={(o) => setEditing(o)}
+                      onAddKR={() => setCreating({ cycleId: cycle.id, kind: "key_result", parentId: obj.id })}
+                      onCheckin={(o) => setCheckingIn(o)}
+                      onHistory={(o) => setHistoryFor(o)}
+                    />
+                  ))}
+                </ul>
+              )}
+              {view === "kanban" && (
+                <KanbanBoard
+                  objs={grouped.objs}
+                  krsByParent={grouped.krsByParent}
+                  elapsedPct={cycleProgress(cycle).elapsedPct}
+                  callerId={user?.id ?? ""}
+                  tab={tab}
+                  onEdit={(o) => setEditing(o)}
+                  onCheckin={(o) => setCheckingIn(o)}
+                  onHistory={(o) => setHistoryFor(o)}
+                />
+              )}
+              {view === "tree" && (
+                <AlignmentTree
+                  objs={grouped.objs}
+                  krsByParent={grouped.krsByParent}
+                  elapsedPct={cycleProgress(cycle).elapsedPct}
+                  onEdit={(o) => setEditing(o)}
+                />
+              )}
             </div>
           )}
         </>
@@ -427,6 +483,218 @@ function CountStat({ value, label, tone }: { value: number; label: string; tone?
       <div className={`text-xl font-extrabold leading-none ${tone === "good" ? "text-success" : "text-text"}`}>{value}</div>
       <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted mt-1">{label}</div>
     </div>
+  );
+}
+
+// KanbanBoard — same OKR data the list view consumes, but laid out as
+// columns grouped by KR status. Objectives without KRs render under
+// their own status. Each card carries the pace pill + a compact owner
+// label so a glance answers "what's blocked, who owns it, how late?"
+function KanbanBoard({
+  objs, krsByParent, elapsedPct, callerId, tab, onEdit, onCheckin, onHistory,
+}: {
+  objs: OKR[];
+  krsByParent: Map<string, OKR[]>;
+  elapsedPct: number;
+  callerId: string;
+  tab: "mine" | "workspace";
+  onEdit: (o: OKR) => void;
+  onCheckin: (o: OKR) => void;
+  onHistory: (o: OKR) => void;
+}) {
+  // Flatten objectives + KRs into a single set so each one lands in
+  // exactly one column. Objectives with KRs aren't shown directly —
+  // their KRs are the things you ship — but objectives without KRs
+  // still appear so they don't disappear off the board.
+  const items: OKR[] = [];
+  objs.forEach((o) => {
+    const krs = krsByParent.get(o.id) ?? [];
+    if (krs.length === 0) items.push(o);
+    krs.forEach((k) => items.push(k));
+  });
+  const grouped: Record<OKR["status"], OKR[]> = {
+    draft: [], in_progress: [], blocked: [], done: [], dropped: [],
+  };
+  items.forEach((it) => grouped[it.status].push(it));
+  // Hide the dropped column unless it has rows — most cycles never use it.
+  const cols = STATUS_ORDER.filter((s) => s !== "dropped" || grouped[s].length > 0);
+  // Find the parent objective title for a KR (or itself if objective).
+  const parentTitle = (it: OKR): string =>
+    it.kind === "objective" ? it.title : (objs.find((o) => o.id === it.parent_id)?.title ?? "");
+  return (
+    <div className="overflow-x-auto -mx-1 pb-1">
+      <div className="flex gap-3 px-1 min-w-fit">
+        {cols.map((s) => {
+          const meta = STATUS_META[s];
+          const list = grouped[s];
+          return (
+            <section key={s} className="w-72 shrink-0 bg-surface border border-border rounded-2xl flex flex-col">
+              <header className={`px-3 py-2 flex items-center justify-between border-b border-border ${meta.cls.replace(/text-\S+/, "").replace(/border-\S+/, "")}`}>
+                <span className={`pill border text-[10.5px] uppercase tracking-wide font-bold ${meta.cls}`}>{meta.label}</span>
+                <span className="text-[11px] font-semibold text-muted">{list.length}</span>
+              </header>
+              <div className="p-2 space-y-2 max-h-[70vh] overflow-y-auto">
+                {list.length === 0 ? (
+                  <div className="text-[11.5px] text-muted italic text-center py-3">Nothing here.</div>
+                ) : list.map((it) => {
+                  const pace = paceFor(it.progress_pct, elapsedPct, it.status);
+                  const canEdit = tab === "mine" || it.owner_id === callerId;
+                  return (
+                    <div key={it.id} className="bg-bg/40 border border-border rounded-xl px-2.5 py-2 hover:border-accent/40 transition-colors">
+                      <div className="flex items-start gap-1.5">
+                        {it.kind === "objective" ? (
+                          <Target size={11} className="mt-0.5 text-accent shrink-0" />
+                        ) : (
+                          <Flag size={11} className="mt-0.5 text-muted shrink-0" />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[12.5px] font-semibold text-text leading-snug">{it.title}</div>
+                          {it.kind === "key_result" && (
+                            <div className="text-[10.5px] text-muted truncate" title={parentTitle(it)}>
+                              ↳ {parentTitle(it)}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-1 flex-wrap">
+                        {pace !== "not_started" && (
+                          <span className={`pill border text-[9.5px] uppercase tracking-wide font-bold ${PACE_META[pace].cls}`}>{PACE_META[pace].label}</span>
+                        )}
+                        <span className="text-[10.5px] text-muted">{it.owner_name || it.owner_email}</span>
+                        <span className="ml-auto text-[11px] font-bold text-text">{it.progress_pct}%</span>
+                      </div>
+                      <div className="h-1 mt-1 bg-bg/60 rounded-full overflow-hidden">
+                        <div className={`h-full ${it.progress_pct === 100 ? "bg-success" : it.progress_pct >= 50 ? "bg-accent" : "bg-warn"}`} style={{ width: `${it.progress_pct}%` }} />
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-1.5">
+                        {canEdit && (
+                          <button onClick={() => onCheckin(it)} className="text-[10.5px] font-semibold text-accent hover:underline inline-flex items-center gap-0.5">
+                            <TrendingUp size={10} /> Check in
+                          </button>
+                        )}
+                        {it.checkin_count > 0 && (
+                          <button onClick={() => onHistory(it)} className="text-[10.5px] text-muted hover:text-text">
+                            {it.checkin_count} update{it.checkin_count === 1 ? "" : "s"}
+                          </button>
+                        )}
+                        {canEdit && (
+                          <button onClick={() => onEdit(it)} className="ml-auto text-muted hover:text-accent" title="Edit">
+                            <Pencil size={10} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// AlignmentTree — show how objectives ladder up to one another via
+// parent_id. Top-level (parent_id === null) objectives render at the
+// root; each one nests its children, recursively. KRs are summarised
+// as a one-line count per objective so the tree stays readable.
+function AlignmentTree({
+  objs, krsByParent, elapsedPct, onEdit,
+}: {
+  objs: OKR[];
+  krsByParent: Map<string, OKR[]>;
+  elapsedPct: number;
+  onEdit: (o: OKR) => void;
+}) {
+  const childrenOf = new Map<string | null, OKR[]>();
+  objs.forEach((o) => {
+    const key = o.parent_id ?? null;
+    const list = childrenOf.get(key) ?? [];
+    list.push(o);
+    childrenOf.set(key, list);
+  });
+  const roots = childrenOf.get(null) ?? [];
+  // Orphans: objectives whose parent_id points to something not in this
+  // cycle's scope (e.g. a parent on a previous cycle). Render at root
+  // with a small dashed marker so they don't vanish.
+  const knownIds = new Set(objs.map((o) => o.id));
+  const orphans = objs.filter((o) => o.parent_id && !knownIds.has(o.parent_id));
+  if (roots.length === 0 && orphans.length === 0) {
+    return (
+      <div className="bg-surface border border-border rounded-2xl p-6 text-center text-sm text-muted">
+        Nothing to draw yet — add objectives with parent links to see the alignment tree.
+      </div>
+    );
+  }
+  return (
+    <div className="bg-surface border border-border rounded-2xl p-5 overflow-x-auto">
+      <ul className="space-y-2">
+        {roots.map((o) => (
+          <TreeNode key={o.id} obj={o} childrenOf={childrenOf} krsByParent={krsByParent} elapsedPct={elapsedPct} depth={0} onEdit={onEdit} />
+        ))}
+        {orphans.length > 0 && (
+          <>
+            <li className="text-[11px] uppercase tracking-wider font-bold text-muted pt-3 border-t border-border mt-3">Orphaned (parent outside this cycle)</li>
+            {orphans.map((o) => (
+              <TreeNode key={o.id} obj={o} childrenOf={childrenOf} krsByParent={krsByParent} elapsedPct={elapsedPct} depth={0} onEdit={onEdit} dashed />
+            ))}
+          </>
+        )}
+      </ul>
+    </div>
+  );
+}
+
+function TreeNode({
+  obj, childrenOf, krsByParent, elapsedPct, depth, onEdit, dashed,
+}: {
+  obj: OKR;
+  childrenOf: Map<string | null, OKR[]>;
+  krsByParent: Map<string, OKR[]>;
+  elapsedPct: number;
+  depth: number;
+  onEdit: (o: OKR) => void;
+  dashed?: boolean;
+}) {
+  const kids = childrenOf.get(obj.id) ?? [];
+  const krs = krsByParent.get(obj.id) ?? [];
+  const avgPct = krs.length === 0
+    ? obj.progress_pct
+    : Math.round(krs.reduce((s, k) => s + k.progress_pct, 0) / krs.length);
+  const pace = paceFor(avgPct, elapsedPct, obj.status);
+  const conf = CONFIDENCE_META[obj.confidence];
+  return (
+    <li>
+      <div
+        className={`flex items-center gap-2 flex-wrap rounded-xl border px-3 py-2 ${dashed ? "border-dashed" : ""} border-border bg-bg/30`}
+        style={{ marginLeft: depth * 24 }}
+      >
+        <Target size={12} className="text-accent shrink-0" />
+        <span className="text-[13px] font-semibold text-text">{obj.title}</span>
+        {pace !== "not_started" && (
+          <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${PACE_META[pace].cls}`}>{PACE_META[pace].label}</span>
+        )}
+        <span className={`pill border text-[10px] uppercase tracking-wide font-bold ${conf.cls}`}>{conf.label}</span>
+        <span className="text-[11px] text-muted">{obj.owner_name || obj.owner_email}</span>
+        <span className="ml-auto text-[11px] font-bold text-text">{avgPct}%</span>
+        <button onClick={() => onEdit(obj)} className="text-muted hover:text-accent" title="Edit">
+          <Pencil size={11} />
+        </button>
+      </div>
+      {krs.length > 0 && (
+        <div className="text-[10.5px] text-muted italic mt-0.5" style={{ marginLeft: depth * 24 + 18 }}>
+          {krs.length} key result{krs.length === 1 ? "" : "s"} · avg {avgPct}%
+        </div>
+      )}
+      {kids.length > 0 && (
+        <ul className="mt-2 space-y-2">
+          {kids.map((k) => (
+            <TreeNode key={k.id} obj={k} childrenOf={childrenOf} krsByParent={krsByParent} elapsedPct={elapsedPct} depth={depth + 1} onEdit={onEdit} />
+          ))}
+        </ul>
+      )}
+    </li>
   );
 }
 
@@ -1614,7 +1882,7 @@ function CheckinDialog({ okr, onClose }: { okr: OKR; onClose: () => void }) {
           <div>
             <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1.5">Status</div>
             <div className="flex flex-wrap gap-1">
-              {(["draft", "in_progress", "done", "dropped"] as const).map((s) => (
+              {(["draft", "in_progress", "blocked", "done", "dropped"] as const).map((s) => (
                 <button
                   key={s}
                   type="button"
@@ -1799,7 +2067,7 @@ function EditOKRDialog({ okr, cycleObjectives, onClose }: { okr: OKR; cycleObjec
           <div>
             <div className="text-[11px] uppercase tracking-wider text-muted font-bold mb-1.5">Status</div>
             <div className="flex flex-wrap gap-1">
-              {(["draft", "in_progress", "done", "dropped"] as const).map((s) => (
+              {(["draft", "in_progress", "blocked", "done", "dropped"] as const).map((s) => (
                 <button
                   key={s}
                   type="button"
