@@ -7,11 +7,34 @@ import (
 	"strings"
 	"time"
 
+	"github.com/decapods/pgdp/backend/internal/auth"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// mustForceShareToCampfire — true when the caller has to cross-post their
+// check-in into Campfire. Leadership / PMs / HR can opt in or out; everyone
+// else (engineers, designers, QA, BD, finance, interns, etc.) is on the
+// hook to make their plan visible to their team. PMs scan the Campfire
+// feed instead of a per-team report tab — same data, surfaced where the
+// conversation already lives.
+func mustForceShareToCampfire(roles []string) bool {
+	for _, r := range roles {
+		switch r {
+		case "super_admin", "ceo", "coo", "hr", "hr_manager",
+			"delivery_manager", "project_manager":
+			return false
+		}
+	}
+	// governance:write or workforce:write also covers leadership-style
+	// roles we may add later; if either passes, opt-out is allowed.
+	if auth.HasPermission(roles, "governance:write") || auth.HasPermission(roles, "workforce:write") {
+		return false
+	}
+	return true
+}
 
 // Huddle is the morning check-in feature: a single-call endpoint serving the
 // "what do I need to do today" brief, plus a POST to record the user's mood +
@@ -74,6 +97,12 @@ type huddleResp struct {
 	TasksOverdue    []huddleTask       `json:"tasks_overdue"`
 	ApprovalsWaiting int                `json:"approvals_waiting"`
 	OnLeaveToday    bool               `json:"on_leave_today"`
+	// ForceShareToCampfire — server's verdict on whether this caller can
+	// opt out of cross-posting their check-in to the Campfire feed. true
+	// for individual-contributor roles (engineer / designer / qa / bd /
+	// finance / intern); false for leadership + PM + HR. SPA renders the
+	// toggle as locked + checked when true.
+	ForceShareToCampfire bool              `json:"force_share_to_campfire"`
 }
 
 // validCheckinSlot — the three accepted slot strings. Anything else is
@@ -94,6 +123,8 @@ func (h *Huddle) Get(c *gin.Context) {
 	today := now.Format("2006-01-02")
 
 	winBefore, winAfter := loadStandupWindows(c, h.db, tid)
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
 	out := huddleResp{
 		Today:                  today,
 		StandupAt:              standupTimeFor(c.Request.Context(), h.db, tid),
@@ -104,6 +135,7 @@ func (h *Huddle) Get(c *gin.Context) {
 		Attachments:            []huddleAttachment{},
 		SlotsDone:              []string{},
 		SlotTimes:              map[string]any{},
+		ForceShareToCampfire:   mustForceShareToCampfire(roles),
 	}
 
 	// Existing check-in for today?
@@ -297,6 +329,16 @@ func (h *Huddle) Save(c *gin.Context) {
 				return
 			}
 		}
+	}
+
+	// Server-side enforcement: ICs (engineer / designer / qa / etc.) can't
+	// uncheck "post to Campfire". The toggle on the client may be cosmetic
+	// only — even a malicious client posting post_to_campfire=false gets
+	// flipped to true here. Leadership / PM / HR retain the opt-out.
+	rolesAny, _ := c.Get(mw.CtxRoles)
+	roles, _ := rolesAny.([]string)
+	if mustForceShareToCampfire(roles) && req.FocusNote != "" {
+		req.PostToCampfire = true
 	}
 
 	// Cross-posts to Campfire are only sensible for today's check-in.

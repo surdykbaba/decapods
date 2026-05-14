@@ -826,6 +826,23 @@ function CheckinEditor({
 }) {
   const qc = useQueryClient();
   const isToday = row.day === new Date().toISOString().slice(0, 10);
+  // Read the server's force-share verdict from the huddle endpoint —
+  // already cached by the parent MyCheckinsTab + the in-Shell widget so
+  // this is normally a cache hit. ICs (engineer / designer / qa / etc.)
+  // get true; PMs / leadership / HR keep their opt-out.
+  const { data: huddleMeta } = useQuery<{ force_share_to_campfire?: boolean }>({
+    queryKey: ["me-huddle"],
+    queryFn: () => api("/api/v1/me/huddle"),
+    staleTime: 60_000,
+  });
+  const forceShare = !!huddleMeta?.force_share_to_campfire;
+  const [share, setShare] = useState(true);
+  // Once-daily story input. The "yesterday — what shipped" and "today —
+  // what's on" textareas are answered once per day in whichever slot the
+  // user logs first; subsequent slots (afternoon / evening) are mood +
+  // attachments only. We treat any existing focus_note OR yesterday_note
+  // on today's row as "story already captured".
+  const storyAlreadyCaptured = isToday && !!(row.focus_note || row.yesterday_note);
   // Time-of-day-aware phrasing. Only swap labels when filling out today's
   // slot — historical back-fills keep the neutral "that day" framing below.
   const phrasing = checkinPhrasing();
@@ -879,7 +896,10 @@ function CheckinEditor({
         focus_note: focus.trim(),
         yesterday_note: yesterday.trim(),
         attachments,
-        post_to_campfire: false, // back-fills never blast Campfire
+        // Share rule: back-fills never blast Campfire; today's check-in
+        // posts when the user opts in or when their role forces it.
+        // Server enforces the force-share rule too — this match the UX.
+        post_to_campfire: isToday && (forceShare || share) && !!focus.trim(),
         // Only stamp slot on today's check-in. The "three per day, no
         // repeats" rule lives on today; back-fills are unconstrained.
         ...(isToday && slot ? { slot } : {}),
@@ -923,12 +943,24 @@ function CheckinEditor({
   // an entirely empty submission so we don't write blank rows.
   const canAdvance = step === 0 ? !!mood : true;
   const canSave = !save.isPending && (!!mood || !!focus.trim() || !!yesterday.trim());
+  // Once-daily story rule — when today's story was already captured in an
+  // earlier slot, the wizard hops over step 1 ("What's the story?"). The
+  // morning fields stay in state untouched so the backend's INSERT ... ON
+  // CONFLICT preserves them on this slot's save.
+  function nextStep(s: WizardStep): WizardStep {
+    if (s === 0 && storyAlreadyCaptured) return 2;
+    return (s + 1) as WizardStep;
+  }
+  function prevStep(s: WizardStep): WizardStep {
+    if (s === 2 && storyAlreadyCaptured) return 0;
+    return (s - 1) as WizardStep;
+  }
   // Last-step actions also enable on Ctrl/Cmd + Enter so power users can move
   // through the wizard without lifting from the keyboard.
   function onKey(e: React.KeyboardEvent) {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
-      if (step < 2 && canAdvance) setStep((s) => (s + 1) as WizardStep);
+      if (step < 2 && canAdvance) setStep(nextStep(step));
       else if (step === 2 && canSave) save.mutate();
     }
   }
@@ -976,7 +1008,7 @@ function CheckinEditor({
               only allow forward jumps to a step whose prerequisites are met
               (currently just step 0 → mood). */}
           <div className="mt-3 flex items-center gap-1.5">
-            {[0, 1, 2].map((i) => {
+            {[0, 1, 2].filter((i) => !(i === 1 && storyAlreadyCaptured)).map((i) => {
               const reached = step >= i;
               const allowed = i <= step || (i === 1 && !!mood) || i === 2;
               return (
@@ -992,6 +1024,11 @@ function CheckinEditor({
                 />
               );
             })}
+            {storyAlreadyCaptured && (
+              <span className="text-[10.5px] text-muted ml-2 inline-flex items-center gap-1">
+                <CheckCircle2 size={10} className="text-success" /> Plan locked — already captured today
+              </span>
+            )}
           </div>
         </header>
 
@@ -1158,6 +1195,36 @@ function CheckinEditor({
                 )}
               </div>
 
+              {/* Share to Campfire — only for today's check-in, only when
+                  there's something to post (focus_note non-empty). ICs are
+                  force-shared; PMs / leadership / HR can opt in or out. */}
+              {isToday && !!focus.trim() && (
+                <div>
+                  {forceShare ? (
+                    <div className="text-sm flex items-start gap-2 bg-accent-soft/30 border border-accent/20 rounded-lg px-3 py-2">
+                      <CheckCircle2 size={14} className="text-accent shrink-0 mt-0.5" />
+                      <span className="text-text">
+                        Sharing to <span className="font-semibold text-accent">Campfire</span>
+                        <span className="text-muted"> — your team needs to see what you're picking up. (Required for your role.)</span>
+                      </span>
+                    </div>
+                  ) : (
+                    <label className="flex items-start gap-2 text-sm cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={share}
+                        onChange={(e) => setShare(e.target.checked)}
+                        className="mt-1"
+                      />
+                      <span className="text-text">
+                        Post this to <span className="font-semibold text-accent">Campfire</span>
+                        <span className="text-muted"> so the team sees what you're picking up.</span>
+                      </span>
+                    </label>
+                  )}
+                </div>
+              )}
+
               {/* Review summary — shows everything the user is about to save
                   so the final click feels intentional. */}
               <div className="bg-bg/40 border border-border rounded-2xl p-4 space-y-2.5">
@@ -1185,7 +1252,7 @@ function CheckinEditor({
         <footer className="px-5 py-3 border-t border-border flex items-center justify-between gap-2 bg-bg/20">
           <button
             type="button"
-            onClick={step === 0 ? onClose : () => setStep((s) => (s - 1) as WizardStep)}
+            onClick={step === 0 ? onClose : () => setStep(prevStep(step))}
             className="text-sm font-semibold px-3 py-2 rounded-lg text-muted hover:text-text inline-flex items-center gap-1.5"
           >
             {step === 0 ? "Cancel" : "← Back"}
@@ -1196,7 +1263,7 @@ function CheckinEditor({
           {step < 2 ? (
             <button
               type="button"
-              onClick={() => canAdvance && setStep((s) => (s + 1) as WizardStep)}
+              onClick={() => canAdvance && setStep(nextStep(step))}
               disabled={!canAdvance}
               className="inline-flex items-center gap-1.5 text-sm font-bold bg-accent text-white px-4 py-2 rounded-full hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
             >

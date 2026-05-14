@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Sun, Flame, Clock, AlertCircle, X, Send, Plane, ChevronRight, Link2, Paperclip, Trash2, Sparkles } from "lucide-react";
+import { Sun, Flame, Clock, AlertCircle, X, Send, Plane, ChevronRight, Link2, Paperclip, Trash2, Sparkles, CheckSquare } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { toast } from "@/lib/toast";
@@ -29,6 +29,9 @@ type HuddleResp = {
   // committed to. May skip weekends — yesterday_plan_day is the source.
   yesterday_plan?: string;
   yesterday_plan_day?: string;
+  // Server's verdict on whether this caller can opt out of cross-posting
+  // their check-in to Campfire. true = locked-on; false = caller chooses.
+  force_share_to_campfire?: boolean;
   attachments?: HuddleAttachment[];
   standup_at: string;
   tasks_due_today: HuddleTask[];
@@ -147,7 +150,9 @@ export function MorningHuddle() {
       focus_note: focus.trim(),
       yesterday_note: yesterday.trim(),
       attachments,
-      post_to_campfire: share && !!focus.trim(),
+      // Forced share: server enforces this too, but we set it client-side
+      // so the optimistic UI matches.
+      post_to_campfire: (data?.force_share_to_campfire || share) && !!focus.trim(),
     });
   }
 
@@ -358,18 +363,32 @@ export function MorningHuddle() {
               )}
             </div>
 
-            <label className="flex items-start gap-2 text-sm cursor-pointer select-none">
-              <input
-                type="checkbox"
-                checked={share}
-                onChange={(e) => setShare(e.target.checked)}
-                className="mt-1"
-              />
-              <span className="text-text">
-                Post this to <span className="font-semibold text-accent">Campfire</span>
-                <span className="text-muted"> so the team sees what you're picking up.</span>
-              </span>
-            </label>
+            {/* Force-share lock — engineers / designers / QA / BD / finance /
+                interns can't opt out of posting their check-in to Campfire.
+                The team needs visibility, and PMs scan the feed instead of
+                a dedicated report tab. Leadership / PMs / HR keep the opt-out. */}
+            {data.force_share_to_campfire ? (
+              <div className="text-sm flex items-start gap-2 bg-accent-soft/30 border border-accent/20 rounded-lg px-3 py-2">
+                <CheckSquare size={14} className="text-accent shrink-0 mt-0.5" />
+                <span className="text-text">
+                  Posting to <span className="font-semibold text-accent">Campfire</span>
+                  <span className="text-muted"> — your team sees what you're picking up. (Required for your role.)</span>
+                </span>
+              </div>
+            ) : (
+              <label className="flex items-start gap-2 text-sm cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={share}
+                  onChange={(e) => setShare(e.target.checked)}
+                  className="mt-1"
+                />
+                <span className="text-text">
+                  Post this to <span className="font-semibold text-accent">Campfire</span>
+                  <span className="text-muted"> so the team sees what you're picking up.</span>
+                </span>
+              </label>
+            )}
 
             <div className="pt-2 flex items-center justify-between gap-2">
               <button
