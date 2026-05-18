@@ -157,8 +157,29 @@ type Form = {
   compliance_tags: string[];
   dependencies: string[];
   currency: string;
+  contract_model: ContractModel;
   team_composition: TeamLine[];
 };
+
+type ContractModel = "fixed_fee" | "time_materials" | "revenue_share" | "ppp_concession";
+
+const CONTRACT_MODELS: { v: ContractModel; label: string; hint: string }[] = [
+  { v: "fixed_fee",      label: "Fixed fee",              hint: "Agreed price for a defined scope." },
+  { v: "time_materials", label: "Time & materials",       hint: "Billed by effort against agreed rates." },
+  { v: "revenue_share",  label: "Revenue share",          hint: "Paid as a share of revenue / usage." },
+  { v: "ppp_concession", label: "PPP / concession",       hint: "Public-private partnership — routes through the ICRC regulatory pathway." },
+];
+
+// The pre-award ICRC pack the backend will enforce as required docs once
+// PPP is selected. Mirrors governance.icrcPPPDocs — shown here so the BD
+// user sees the compliance commitment before they submit.
+const ICRC_PACK: { label: string; note: string }[] = [
+  { label: "PPP concept note",                 note: "Submitted to ICRC for eligibility assessment." },
+  { label: "Outline Business Case (OBC)",      note: "Needs + options analysis, viability, bankability." },
+  { label: "Value-for-Money analysis",         note: "PPP vs. public-procurement comparison." },
+  { label: "Transaction adviser procurement",  note: "TA engaged via competitive bid (PPA 2007)." },
+  { label: "OBC Compliance Certificate",       note: "Issued by ICRC — gate before procurement." },
+];
 
 type TeamRate = { id: string; name: string; kind: "internal" | "external"; daily_rate: number; currency: string };
 
@@ -382,6 +403,7 @@ export function OpportunityWizard() {
     compliance_tags: [],
     dependencies: [],
     currency: "NGN",
+    contract_model: "fixed_fee",
     team_composition: [],
   });
 
@@ -487,6 +509,7 @@ export function OpportunityWizard() {
         source: form.source.trim(),
         client_name: form.client_name.trim(),
         currency: form.currency,
+        contract_model: form.contract_model,
         estimated_value: form.estimated_value,
         budget: form.budget,
         priority: form.priority,
@@ -626,15 +649,56 @@ export function OpportunityWizard() {
 
         {stepKey === "commercials" && (
           <div className="space-y-5">
-            <Field label="Currency">
-              <select
-                className="input md:w-48"
-                value={form.currency}
-                onChange={(e) => set("currency", e.target.value)}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <Field label="Currency">
+                <select
+                  className="input"
+                  value={form.currency}
+                  onChange={(e) => set("currency", e.target.value)}
+                >
+                  {currencies.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </Field>
+              <Field
+                label="Contract model"
+                hint={CONTRACT_MODELS.find((m) => m.v === form.contract_model)?.hint}
               >
-                {currencies.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-            </Field>
+                <select
+                  className="input"
+                  value={form.contract_model}
+                  onChange={(e) => set("contract_model", e.target.value as ContractModel)}
+                >
+                  {CONTRACT_MODELS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
+                </select>
+              </Field>
+            </div>
+
+            {form.contract_model === "ppp_concession" && (
+              <div className="rounded-xl border border-warn/40 bg-warn/5 p-4">
+                <div className="flex items-center gap-2 text-[13px] font-bold text-text">
+                  <ShieldAlert size={15} className="text-warn" />
+                  ICRC regulatory pack required
+                </div>
+                <p className="text-[12px] text-muted mt-1">
+                  A PPP / concession routes through Nigeria's Infrastructure Concession
+                  Regulatory Commission. These documents become <strong>required</strong> on
+                  the opportunity and gate submission, exactly like an NDA — upload them on
+                  the opportunity page after creating it:
+                </p>
+                <ul className="mt-2 space-y-1">
+                  {ICRC_PACK.map((d) => (
+                    <li key={d.label} className="text-[12px] text-text flex items-start gap-1.5">
+                      <span className="text-warn mt-0.5">•</span>
+                      <span><strong>{d.label}</strong> — <span className="text-muted">{d.note}</span></span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-[11px] text-muted mt-2 italic">
+                  Full Business Case, FBC Compliance Certificate, FEC approval and the signed
+                  PPP contract come later as project deliverables once procurement completes.
+                </p>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Field

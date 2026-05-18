@@ -32,15 +32,16 @@ func New(db *pgxpool.Pool) *Engine { return &Engine{db: db} }
 func (e *Engine) EvaluateOpportunitySubmission(ctx context.Context, tenantID, oppID uuid.UUID) Decision {
 	d := Decision{Allow: true}
 	var (
-		leadType string
-		est      float64
+		leadType      string
+		est           float64
+		contractModel string
 	)
-	if err := e.db.QueryRow(ctx, `SELECT lead_type, estimated_value FROM opportunities WHERE id=$1`, oppID).
-		Scan(&leadType, &est); err != nil {
+	if err := e.db.QueryRow(ctx, `SELECT lead_type, estimated_value, COALESCE(contract_model,'fixed_fee') FROM opportunities WHERE id=$1`, oppID).
+		Scan(&leadType, &est, &contractModel); err != nil {
 		return Decision{Allow: false, Violations: []Violation{{Code: "not_found", Message: err.Error()}}}
 	}
 
-	required := requiredDocsFor(leadType, est)
+	required := requiredDocsFor(leadType, est, contractModel)
 	rows, err := e.db.Query(ctx,
 		`SELECT kind FROM opportunity_documents WHERE opportunity_id = $1`, oppID)
 	if err != nil {
@@ -73,7 +74,7 @@ func (e *Engine) EvaluateOpportunitySubmission(ctx context.Context, tenantID, op
 			var code string
 			var def map[string]any
 			_ = custRows.Scan(&code, &def)
-			if !evalRule(def, map[string]any{"lead_type": leadType, "estimated_value": est}) {
+			if !evalRule(def, map[string]any{"lead_type": leadType, "estimated_value": est, "contract_model": contractModel}) {
 				d.Allow = false
 				d.Violations = append(d.Violations, Violation{Code: code, Message: "custom policy failed"})
 			}
@@ -84,14 +85,31 @@ func (e *Engine) EvaluateOpportunitySubmission(ctx context.Context, tenantID, op
 
 // RequiredDocsFor exposes the required-documents list so handlers can
 // surface it in the opportunity GET response (not only at submit time).
-func RequiredDocsFor(leadType string, value float64) []string {
-	return requiredDocsFor(leadType, value)
+// contractModel is optional for back-compat — callers that don't track
+// it pass "" and get the lead-type-only set.
+func RequiredDocsFor(leadType string, value float64, contractModel string) []string {
+	return requiredDocsFor(leadType, value, contractModel)
 }
 
-func requiredDocsFor(leadType string, value float64) []string {
+// ICRC PPP pre-award pack. These are the documents Nigeria's
+// Infrastructure Concession Regulatory Commission requires *before* a
+// concession can progress past project development — i.e. the slice that
+// belongs on the opportunity-submission gate. The post-procurement
+// pathway (Full Business Case, FBC Compliance Certificate, FEC approval,
+// signed PPP contract) lands later as project deliverables, not as an
+// opportunity-submission blocker.
+var icrcPPPDocs = []string{
+	"ConceptNote",
+	"OutlineBusinessCase",
+	"ValueForMoneyAnalysis",
+	"TransactionAdviserProcurement",
+	"OBCComplianceCertificate",
+}
+
+func requiredDocsFor(leadType string, value float64, contractModel string) []string {
 	// Internal engagements are run inside the org — no NDA needed because
 	// there's no third party to sign one with. Per product policy.
-	if leadType == "internal" {
+	if leadType == "internal" && contractModel != "ppp_concession" {
 		return []string{"TechnicalProposal", "ScopeDocument"}
 	}
 	base := []string{"NDA", "TechnicalProposal", "ScopeDocument"}
@@ -107,6 +125,12 @@ func requiredDocsFor(leadType string, value float64) []string {
 		base = append(base, "ExportComplianceForm", "FXApproval")
 	case "ngo":
 		base = append(base, "GrantAgreement")
+	}
+	// PPP concession → layer the ICRC regulatory pack on top, regardless
+	// of lead type (a PPP is almost always a government lead, but we
+	// don't want a mis-tagged lead type to skip the compliance gate).
+	if contractModel == "ppp_concession" {
+		base = append(base, icrcPPPDocs...)
 	}
 	return base
 }

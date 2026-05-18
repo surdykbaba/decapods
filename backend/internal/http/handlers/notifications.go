@@ -134,6 +134,7 @@ func (h *Notifications) List(c *gin.Context) {
 	//    that are still in new_request).
 	docRows, _ := h.db.Query(c, `
 		SELECT o.id, o.title, o.lead_type, o.estimated_value,
+		       COALESCE(o.contract_model,'fixed_fee'),
 		       (SELECT COUNT(*) FROM opportunity_documents d WHERE d.opportunity_id=o.id) AS attached
 		FROM opportunities o
 		WHERE o.tenant_id=$1 AND o.deleted_at IS NULL AND o.stage='new_request'
@@ -144,12 +145,12 @@ func (h *Notifications) List(c *gin.Context) {
 		for docRows.Next() {
 			var (
 				oid uuid.UUID
-				title, leadType string
+				title, leadType, contractModel string
 				est float64
 				attached int
 			)
-			if err := docRows.Scan(&oid, &title, &leadType, &est, &attached); err != nil { continue }
-			required := len(governance.RequiredDocsFor(leadType, est))
+			if err := docRows.Scan(&oid, &title, &leadType, &est, &contractModel, &attached); err != nil { continue }
+			required := len(governance.RequiredDocsFor(leadType, est, contractModel))
 			missing := required - attached
 			if missing <= 0 { continue }
 			out = append(out, item{

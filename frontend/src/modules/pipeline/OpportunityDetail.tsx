@@ -56,6 +56,14 @@ type Opportunity = {
   metadata?: { stage_history?: StageHistoryEntry[] };
   project_id?: string | null;
   currency?: string;
+  contract_model?: string;
+};
+
+const CONTRACT_MODEL_LABEL: Record<string, string> = {
+  fixed_fee: "Fixed fee",
+  time_materials: "Time & materials",
+  revenue_share: "Revenue share",
+  ppp_concession: "PPP / concession",
 };
 
 type Stakeholder = {
@@ -100,6 +108,12 @@ const DOC_LABELS: Record<string, { label: string; help: string }> = {
   ExportComplianceForm: { label: "Export compliance form",     help: "Cross-border / export controls clearance." },
   FXApproval:           { label: "FX approval",                help: "FX / repatriation approval." },
   GrantAgreement:       { label: "Grant agreement",            help: "Signed grant agreement with the donor." },
+  // ICRC PPP concession pack (Nigeria) — pre-award regulatory pathway.
+  ConceptNote:                  { label: "PPP concept note",            help: "Project concept submitted to ICRC for eligibility assessment." },
+  OutlineBusinessCase:          { label: "Outline Business Case (OBC)", help: "Needs + options analysis, viability and bankability of the PPP option." },
+  ValueForMoneyAnalysis:        { label: "Value-for-Money analysis",    help: "VfM assessment comparing PPP delivery against public procurement." },
+  TransactionAdviserProcurement:{ label: "Transaction adviser procurement", help: "Evidence the TA was engaged via competitive bid (Public Procurement Act 2007)." },
+  OBCComplianceCertificate:     { label: "OBC Compliance Certificate",  help: "ICRC certificate issued on the OBC — required before procurement can start." },
   Invoice:              { label: "Invoice",                    help: "Invoice issued to the client for this engagement — required before closing." },
   PaymentReceipt:       { label: "Payment receipt",            help: "Proof the client paid the invoice — bank advice, remittance note, or signed receipt. Required before closing." },
   Other:                { label: "Other supporting document",  help: "Any extra file worth keeping with this engagement — not required, not gated." },
@@ -233,6 +247,11 @@ export function OpportunityDetail() {
           <TruncatedTitle title={data.title} />
           <div className="flex flex-wrap items-center gap-2 mt-3">
             <Pill>{data.lead_type}</Pill>
+            {data.contract_model && (
+              <Pill tone={data.contract_model === "ppp_concession" ? "warn" : undefined}>
+                {CONTRACT_MODEL_LABEL[data.contract_model] ?? data.contract_model}
+              </Pill>
+            )}
             <Pill tone="info">{prettyStage(data.stage)}</Pill>
             <Pill tone={data.risk_level === "high" ? "bad" : data.risk_level === "medium" ? "warn" : "good"}>
               {data.risk_level} risk

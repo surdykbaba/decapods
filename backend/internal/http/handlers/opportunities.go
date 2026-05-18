@@ -82,7 +82,19 @@ type createOppReq struct {
 	ComplianceTags      []string       `json:"compliance_tags"`
 	Metadata            map[string]any `json:"metadata"`
 	Currency            string         `json:"currency"`
+	ContractModel       string         `json:"contract_model"`
 	TeamComposition     []map[string]any `json:"team_composition"`
+}
+
+// validContractModel — keep in sync with the CHECK constraint added in
+// migration 000066. Empty / unknown defaults to fixed_fee.
+func normalizeContractModel(s string) string {
+	switch s {
+	case "fixed_fee", "time_materials", "revenue_share", "ppp_concession":
+		return s
+	default:
+		return "fixed_fee"
+	}
 }
 
 func (h *Opportunities) List(c *gin.Context) {
@@ -130,7 +142,7 @@ func (h *Opportunities) List(c *gin.Context) {
 		if err := rows.Scan(&id, &title, &stage, &leadType, &est, &prio, &risk, &created, &updated, &clientName, &docCount); err != nil {
 			continue
 		}
-		required := governance.RequiredDocsFor(leadType, est)
+		required := governance.RequiredDocsFor(leadType, est, "")
 		next := wf.AllowedTransitions(stage, rs)
 		out = append(out, gin.H{
 			"id": id, "title": title, "stage": stage, "lead_type": leadType,
@@ -200,13 +212,14 @@ func (h *Opportunities) Create(c *gin.Context) {
 		(id, tenant_id, client_id, title, lead_type, source, category, estimated_value,
 		 budget, priority, risk_level, delivery_deadline, business_lead_id,
 		 technical_scope, proposal_summary, expected_manpower, dependencies,
-		 compliance_tags, metadata, stage, created_by, currency, team_composition)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,'')::date,$13,$14,$15,$16,$17,$18,$19,'new_request',$20,$21,$22)`,
+		 compliance_tags, metadata, stage, created_by, currency, team_composition,
+		 contract_model)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NULLIF($12,'')::date,$13,$14,$15,$16,$17,$18,$19,'new_request',$20,$21,$22,$23)`,
 		id, tid, req.ClientID, req.Title, req.LeadType, req.Source, req.Category,
 		req.EstimatedValue, req.Budget, req.Priority, req.RiskLevel,
 		req.DeliveryDeadline, leadPtr, req.TechnicalScope, req.ProposalSummary,
 		req.ExpectedManpower, req.Dependencies, req.ComplianceTags, req.Metadata, uid,
-		req.Currency, teamJSON)
+		req.Currency, teamJSON, normalizeContractModel(req.ContractModel))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -225,7 +238,8 @@ func (h *Opportunities) Get(c *gin.Context) {
 		SELECT id, title, stage, lead_type, estimated_value, budget, priority, risk_level,
 		       technical_scope, proposal_summary, metadata,
 		       COALESCE(currency,'USD'), COALESCE(team_composition,'[]'::jsonb),
-		       COALESCE(compliance_tags,'{}'::text[]), COALESCE(delivery_deadline::text,'')
+		       COALESCE(compliance_tags,'{}'::text[]), COALESCE(delivery_deadline::text,''),
+		       COALESCE(contract_model,'fixed_fee')
 		FROM opportunities WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL`, id, tid)
 	var (
 		oid                                            uuid.UUID
@@ -236,9 +250,10 @@ func (h *Opportunities) Get(c *gin.Context) {
 		currency, deadline                             string
 		teamComp                                       []map[string]any
 		complianceTags                                 []string
+		contractModel                                  string
 	)
 	if err := row.Scan(&oid, &title, &stage, &leadType, &est, &budget, &prio, &risk, &scope, &proposal, &md,
-		&currency, &teamComp, &complianceTags, &deadline); err != nil {
+		&currency, &teamComp, &complianceTags, &deadline, &contractModel); err != nil {
 		c.JSON(404, gin.H{"error": "not found"})
 		return
 	}
@@ -286,10 +301,11 @@ func (h *Opportunities) Get(c *gin.Context) {
 		"risk_level": risk, "technical_scope": scope, "proposal_summary": proposal,
 		"metadata": md,
 		"documents": docs,
-		"required_documents": governance.RequiredDocsFor(leadType, est),
+		"required_documents": governance.RequiredDocsFor(leadType, est, contractModel),
 		"next_stages":        next,
 		"project_id":         projectID,
 		"currency":           currency,
+		"contract_model":     contractModel,
 		"team_composition":   teamComp,
 		"compliance_tags":    complianceTags,
 		"delivery_deadline":  deadline,
@@ -312,6 +328,7 @@ type updateOppReq struct {
 	Dependencies      *[]string       `json:"dependencies"`
 	ComplianceTags    *[]string       `json:"compliance_tags"`
 	Currency          *string         `json:"currency"`
+	ContractModel     *string         `json:"contract_model"`
 	TeamComposition   *[]map[string]any `json:"team_composition"`
 	Reason            string          `json:"reason"`
 }
@@ -337,6 +354,7 @@ func (h *Opportunities) Update(c *gin.Context) {
 	// a "from → to" change-log entry alongside the update.
 	type currentRow struct {
 		Title, Source, Category, LeadType, RiskLevel, TechnicalScope, ProposalSummary, Currency string
+		ContractModel                                                                           string
 		EstimatedValue, Budget                                                                  float64
 		Priority, ExpectedManpower                                                              int
 		DeliveryDeadline                                                                        *time.Time
@@ -350,12 +368,14 @@ func (h *Opportunities) Update(c *gin.Context) {
 		       currency, estimated_value, budget, priority, expected_manpower,
 		       delivery_deadline,
 		       COALESCE(dependencies, '{}'), COALESCE(compliance_tags, '{}'),
-		       COALESCE(team_composition::text::bytea, ''::bytea)
+		       COALESCE(team_composition::text::bytea, ''::bytea),
+		       COALESCE(contract_model,'fixed_fee')
 		FROM opportunities WHERE id=$1 AND tenant_id=$2`, id, tid).Scan(
 		&cur.Title, &cur.Source, &cur.Category, &cur.LeadType,
 		&cur.RiskLevel, &cur.TechnicalScope, &cur.ProposalSummary,
 		&cur.Currency, &cur.EstimatedValue, &cur.Budget, &cur.Priority, &cur.ExpectedManpower,
 		&cur.DeliveryDeadline, &cur.Dependencies, &cur.ComplianceTags, &cur.TeamComposition,
+		&cur.ContractModel,
 	); err != nil {
 		c.JSON(404, gin.H{"error": "not found"})
 		return
@@ -415,6 +435,11 @@ func (h *Opportunities) Update(c *gin.Context) {
 		add("compliance_tags", *req.ComplianceTags)
 	}
 	if req.Currency != nil        { maybe("currency", cur.Currency, *req.Currency); add("currency", *req.Currency) }
+	if req.ContractModel != nil   {
+		next := normalizeContractModel(*req.ContractModel)
+		maybe("contract_model", cur.ContractModel, next)
+		add("contract_model", next)
+	}
 	if req.TeamComposition != nil {
 		teamJSON, _ := json.Marshal(*req.TeamComposition)
 		curTeam := string(cur.TeamComposition)
