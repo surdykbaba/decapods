@@ -23,7 +23,7 @@ import {
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
   Wrench, Briefcase, Hash, Plus, Loader2, CalendarDays, Calendar,
   Lock, Users as UsersIcon, X as XIcon, UserPlus as UserPlusIcon, Search as SearchIcon, Check,
-  ChevronLeft, ChevronDown, ChevronUp, Trash2, Link as LinkIcon, Copy, Pencil, Info, Save,
+  ChevronLeft, ChevronDown, ChevronUp, ArrowUp, Trash2, Link as LinkIcon, Copy, Pencil, Info, Save,
   BarChart3, CheckCircle2 as CheckCircle, Megaphone as MegaphoneIcon,
 } from "lucide-react";
 
@@ -301,7 +301,6 @@ export function CampfirePage() {
     { key: "feed",   label: "Pulse feed",        icon: Newspaper },
     { key: "kudos",  label: "Recognition",       icon: Trophy },
     { key: "mood",   label: "Mood & insights",  icon: Smile, admin: true },
-    { key: "help",   label: "Help wall",         icon: HelpCircle },
     { key: "rooms",  label: "Channels",          icon: Hash },
   ];
 
@@ -355,7 +354,6 @@ export function CampfirePage() {
           {tab === "feed"     && <PulseFeed isAdmin={isAdmin} />}
           {tab === "kudos"    && <Kudos />}
           {tab === "mood"     && <MoodCheck isAdmin={isAdmin} />}
-          {tab === "help"     && <HelpWall currentUserId={user?.id ?? ""} />}
           {tab === "rooms"    && <TeamRooms isAdmin={isAdmin} />}
         </div>
       </div>
@@ -478,12 +476,91 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
     onError: (e: any) => toast.error("Could not save", e?.message),
   });
 
+  // ── Pagination + "new posts" badge ──────────────────────────────────
+  // The feed used to dump every post (up to 200) in one scroll. Now we
+  // reveal them a page at a time — first PAGE on mount, +PAGE each time
+  // the user nears the bottom (infinite scroll) or taps "View more".
+  const PAGE = 20;
+  const [visibleCount, setVisibleCount] = useState(PAGE);
+
+  // Pinned always render (they're important); pagination only bites the
+  // chronological tail so a long history doesn't blow up the DOM.
+  const pinned = useMemo(() => posts.filter((p) => p.pinned), [posts]);
+  const chrono = useMemo(() => posts.filter((p) => !p.pinned), [posts]);
+  const visiblePosts = useMemo(
+    () => [...pinned, ...chrono.slice(0, visibleCount)],
+    [pinned, chrono, visibleCount],
+  );
+  const hasMore = chrono.length > visibleCount;
+
+  // New-posts badge — Twitter-style. We remember the newest post the user
+  // has "seen" (acknowledged). When the 20s refetch pulls in posts newer
+  // than that — authored by someone else — we float a pill instead of
+  // silently shoving them in, so the reader keeps their place.
+  const ackNewestRef = useRef<string | null>(null);
+  const [newCount, setNewCount] = useState(0);
+  useEffect(() => {
+    if (posts.length === 0) return;
+    const newestId = posts[0].id;
+    if (ackNewestRef.current === null) {
+      // First load — treat everything as already seen.
+      ackNewestRef.current = newestId;
+      return;
+    }
+    const ackIdx = posts.findIndex((p) => p.id === ackNewestRef.current);
+    // Posts ahead of the ack marker that aren't the reader's own.
+    const fresh = (ackIdx === -1 ? posts : posts.slice(0, ackIdx))
+      .filter((p) => p.author_id !== user?.id);
+    setNewCount(fresh.length);
+  }, [posts, user?.id]);
+
+  function showNewPosts() {
+    if (posts.length > 0) ackNewestRef.current = posts[0].id;
+    setNewCount(0);
+    setVisibleCount(PAGE);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  // Infinite scroll — a sentinel just past the last visible card. When it
+  // intersects the viewport we reveal the next page. Cheap; observer is
+  // torn down + rebuilt whenever the dependency set changes.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!hasMore) return;
+    const el = sentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          setVisibleCount((c) => c + PAGE);
+        }
+      },
+      { rootMargin: "400px 0px" },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [hasMore, visibleCount]);
+
   // Group posts by day for the "Today / Yesterday / Mon 13 May" headers. Pinned
   // posts still float to the top in their own bucket so they always read first.
-  const grouped = useMemo(() => groupByDay(posts), [posts]);
+  const grouped = useMemo(() => groupByDay(visiblePosts), [visiblePosts]);
 
   return (
     <div className="space-y-4">
+      {/* New-posts badge — sticky just under the tab strip. Only shows
+          when someone else posted while you were reading. Tap to jump to
+          the top and fold the new ones in. */}
+      {newCount > 0 && (
+        <div className="sticky top-3 z-20 flex justify-center pointer-events-none">
+          <button
+            onClick={showNewPosts}
+            className="pointer-events-auto inline-flex items-center gap-1.5 bg-accent text-white text-[12.5px] font-bold px-4 py-2 rounded-full shadow-card hover:bg-accent/90 transition-colors animate-in"
+          >
+            <ArrowUp size={13} /> {newCount} new post{newCount === 1 ? "" : "s"}
+          </button>
+        </div>
+      )}
+
       <UpcomingEventsBanner />
 
       {/* Post composer trigger — loud on purpose. The old subtle "Share
@@ -594,6 +671,25 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
           </div>
         </section>
       ))}
+
+      {/* Infinite-scroll sentinel + explicit fallback. The sentinel auto-
+          loads the next page when it scrolls into view; the button is the
+          keyboard / reduced-motion path and a clear "there's more" signal. */}
+      {hasMore && (
+        <div ref={sentinelRef} className="pt-2 flex justify-center">
+          <button
+            onClick={() => setVisibleCount((c) => c + PAGE)}
+            className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-muted hover:text-text bg-surface border border-border rounded-full px-4 py-2 hover:border-accent/40 transition-colors"
+          >
+            <ChevronDown size={13} /> View more · {chrono.length - visibleCount} older
+          </button>
+        </div>
+      )}
+      {!hasMore && chrono.length > PAGE && (
+        <div className="text-center text-[11.5px] text-muted/70 py-3">
+          You're all caught up — {chrono.length} post{chrono.length === 1 ? "" : "s"} total.
+        </div>
+      )}
     </div>
   );
 }
@@ -2065,6 +2161,10 @@ const HELP_STATUS_META: Record<"open" | "in_progress" | "resolved", { label: str
   resolved:    { label: "Resolved",    cls: "bg-success/15 text-success border-success/30" },
 };
 
+// Help wall was removed from the tab strip (folded into project channels +
+// the @mention flow), but the component is kept intact so it can be
+// re-enabled without a rebuild. Same `void` keep-alive pattern as PostCard.
+void HelpWall;
 function HelpWall({ currentUserId }: { currentUserId: string }) {
   const qc = useQueryClient();
   const [tab, setTab] = useState<HelpTab>("open");
