@@ -61,6 +61,9 @@ type Row = {
   attachments?: Attachment[];
   posted_to_campfire?: boolean;
   missed: boolean;
+  // Sat/Sun — non-working day. Never counts as missed; rendered as a
+  // muted "Weekend" rather than a red "Missed".
+  weekend?: boolean;
   tasks_done: number;
 };
 
@@ -176,9 +179,12 @@ export function MyCheckinsTab() {
     for (let i = windowDays - 1; i >= 0; i--) {
       const d = new Date(today - i * 86_400_000);
       const iso = d.toISOString().slice(0, 10);
+      const dow = d.getDay(); // 0=Sun, 6=Sat
+      const wknd = dow === 0 || dow === 6;
       out.push(byDay.get(iso) ?? {
         day: iso, mood: null, focus_note: null, yesterday_note: null,
-        attachments: [], posted_to_campfire: false, missed: true, tasks_done: 0,
+        // Weekend gaps aren't "missed" — non-working days.
+        attachments: [], posted_to_campfire: false, missed: !wknd, weekend: wknd, tasks_done: 0,
       });
     }
     return out;
@@ -665,7 +671,9 @@ export function MyCheckinsTab() {
                     <div className="mt-2 text-[18px] leading-none">
                       {r.missed
                         ? <span className="text-[11px] text-danger font-semibold inline-flex items-center gap-1"><AlertCircle size={11} /> Missed</span>
-                        : (r.mood || <span className="text-muted text-xs">No mood</span>)}
+                        : r.weekend && !r.mood && !r.focus_note && !r.yesterday_note
+                          ? <span className="text-[11px] text-muted/70 font-semibold">Weekend</span>
+                          : (r.mood || <span className="text-muted text-xs">No mood</span>)}
                     </div>
                   </div>
                   <div className="min-w-0 flex-1 grid grid-cols-1 md:grid-cols-2 gap-4">

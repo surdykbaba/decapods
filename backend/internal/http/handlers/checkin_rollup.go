@@ -362,6 +362,10 @@ func (h *CheckinRollup) Self(c *gin.Context) {
 		Attachments   any     `json:"attachments"`
 		PostedShared  bool    `json:"posted_to_campfire"`
 		Missed        bool    `json:"missed"`
+		// Weekend days are non-working — an empty Sat/Sun is NOT a missed
+		// check-in. The SPA renders these as a muted "Weekend" instead of
+		// a red "Missed", and they're excluded from the missed count.
+		Weekend       bool    `json:"weekend"`
 		TasksDone     int     `json:"tasks_done"`
 	}
 	out := []selfRow{}
@@ -391,20 +395,26 @@ func (h *CheckinRollup) Self(c *gin.Context) {
 		if len(attachments) > 0 {
 			attachJSON = json.RawMessage(attachments)
 		}
+		weekend := day.Weekday() == time.Saturday || day.Weekday() == time.Sunday
+		empty := mood == nil && focus == nil && yesterday == nil
 		row := selfRow{
 			Day: day.Format("2006-01-02"),
 			Mood: mood, FocusNote: focus, YesterdayNote: yesterday,
 			Attachments: attachJSON,
-			Missed:      mood == nil && focus == nil && yesterday == nil,
+			// Weekends are never "missed" — non-working days.
+			Missed:      empty && !weekend,
+			Weekend:     weekend,
 			TasksDone:   int(tasksDone),
 		}
 		if posted != nil {
 			row.PostedShared = *posted
 		}
-		if row.Missed {
-			missed++
-		} else {
+		// Counts: a content day is "done", a non-weekend empty day is
+		// "missed", a weekend is neither (excluded from compliance).
+		if !empty {
 			done++
+		} else if !weekend {
+			missed++
 		}
 		if mood != nil && *mood != "" {
 			moodCounts[*mood]++
