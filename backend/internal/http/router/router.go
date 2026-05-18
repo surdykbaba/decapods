@@ -276,6 +276,24 @@ func New(d Deps) Built {
 	authed.PUT("/one-on-ones/:reportID/notes",   oneOnOnes.SaveNotes)
 	authed.POST("/one-on-ones/:reportID/close",  oneOnOnes.CloseSession)
 	authed.GET("/members/:id/profile",       members.Profile)
+
+	// Personnel record — sensitive HR file (NIN, blood group, emergency
+	// contact, next of kin, guarantor, payroll basics) + document uploads
+	// (CV, NIN slip, ID card, certificates). /me/* edits your own; the
+	// /members/:id/* variants are HR-only (gate enforced inside the
+	// handler via workforce:write / governance:write).
+	personnel := handlers.NewPersonnel(d.DB)
+	authed.GET("/me/personnel",                         personnel.Get)
+	authed.PUT("/me/personnel",                         personnel.Put)
+	authed.POST("/me/personnel/documents",              personnel.UploadDocument)
+	authed.GET("/me/personnel/documents/:docID",        personnel.GetDocument)
+	authed.DELETE("/me/personnel/documents/:docID",     personnel.DeleteDocument)
+	authed.GET("/members/:id/personnel",                personnel.Get)
+	authed.PUT("/members/:id/personnel",                personnel.Put)
+	authed.POST("/members/:id/personnel/documents",     personnel.UploadDocument)
+	authed.GET("/members/:id/personnel/documents/:docID", personnel.GetDocument)
+	authed.DELETE("/members/:id/personnel/documents/:docID", personnel.DeleteDocument)
+
 	authed.POST("/members",                  mw.RequirePermission("governance:write"), members.Create)
 	authed.PATCH("/members/:id",             mw.RequirePermission("governance:write"), members.Update)
 	authed.POST("/members/:id/reset-password", mw.RequirePermission("governance:write"), members.ResetPassword)

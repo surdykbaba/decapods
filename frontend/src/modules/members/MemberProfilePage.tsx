@@ -15,6 +15,7 @@ import { SmartButton } from "@/components/SmartButton";
 import { AvatarUploader } from "@/components/AvatarUploader";
 import { ExternalEmailBadge } from "@/components/ExternalEmailBadge";
 import { MfaCard } from "@/modules/me/MyWorkPage";
+import { PersonnelCard } from "@/components/PersonnelCard";
 
 type Balance  = { name: string; paid: boolean; accrued: number; carryover: number; used: number; remaining: number };
 type LeaveReq = { id: string; type_name: string; start_date: string; end_date: string; days: number; status: string; reason: string };
@@ -228,6 +229,23 @@ export function MemberProfilePage() {
           the My Work profile tab so account management lives here next to
           the public-facing view of the same person. */}
       {isSelf && <SelfAccountPanel />}
+
+      {/* Personnel file — HR view of someone else's record. The person's
+          own self-edit path lives on the My Work → Profile tab, so we
+          don't double it up here for self-view. Backend re-checks the
+          gate; this guard avoids rendering a panel that would 403. */}
+      {!!id && !isSelf && (me?.roles ?? []).some((r: string) =>
+        ["super_admin", "ceo", "coo", "hr", "hr_manager"].includes(r)) && (
+        <section className="bg-surface border border-border rounded-2xl p-5 mt-5">
+          <h2 className="h2 mb-1">Personnel &amp; documents</h2>
+          <p className="text-xs text-muted mb-4">
+            NIN, blood group, emergency contact, next of kin, guarantor, payroll
+            details and document uploads (CV, NIN slip, ID, certificates).
+            Visible to HR and the teammate only.
+          </p>
+          <PersonnelCard memberId={id} />
+        </section>
+      )}
 
       {/* ============= 2-COLUMN BODY ============= */}
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-5">

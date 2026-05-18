@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { SmartButton } from "@/components/SmartButton";
 import { Avatar } from "@/components/Avatar";
+import { PersonnelCard } from "@/components/PersonnelCard";
 import { MeetingsCard } from "@/modules/me/MeetingsCard";
 import { MailCard, MessageReader } from "@/modules/me/MailCard";
 import { MyCheckinsTab } from "@/modules/me/MyCheckinsTab";
@@ -3785,6 +3786,16 @@ function ProfileTab() {
             style={{ width: `${updateStreakPct}%` }}
           />
         </div>
+      </section>
+
+      <section className="bg-surface border border-border rounded-2xl p-5">
+        <h2 className="h2 mb-1">Personnel &amp; documents</h2>
+        <p className="text-xs text-muted mb-4">
+          Your private HR file — NIN, blood group, emergency contact, next of kin,
+          guarantor, payroll details and document uploads (CV, NIN slip, ID, certificates).
+          Only you and HR can see this.
+        </p>
+        <PersonnelCard />
       </section>
 
       <NotificationPrefsCard />
