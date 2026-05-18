@@ -213,5 +213,67 @@ func (h *Projects) AddTaskComment(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Fan out a "someone commented" ping to the people who care about this
+	// task — its creator, its current assignee, and anyone who already
+	// commented on the thread — minus the author (no self-pings). This is
+	// the missing piece behind "the engineer commented and I, the PM who
+	// created the task, heard nothing".
+	if h.notify != nil {
+		var (
+			taskTitle, projectName string
+			projectID              uuid.UUID
+			createdBy, assignee    *uuid.UUID
+		)
+		if err := h.db.QueryRow(c, `
+			SELECT t.title, p.name, p.id, t.created_by, t.assignee_id
+			FROM tasks t JOIN projects p ON p.id = t.project_id
+			WHERE t.id = $1 AND t.deleted_at IS NULL`, tid).
+			Scan(&taskTitle, &projectName, &projectID, &createdBy, &assignee); err == nil {
+			tenantID := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+			wanted := map[uuid.UUID]bool{}
+			if createdBy != nil && *createdBy != uid {
+				wanted[*createdBy] = true
+			}
+			if assignee != nil && *assignee != uid {
+				wanted[*assignee] = true
+			}
+			if crows, cerr := h.db.Query(c, `
+				SELECT DISTINCT author_id FROM task_comments
+				WHERE task_id = $1 AND author_id <> $2`, tid, uid); cerr == nil {
+				defer crows.Close()
+				for crows.Next() {
+					var aid uuid.UUID
+					if crows.Scan(&aid) == nil {
+						wanted[aid] = true
+					}
+				}
+			}
+			if len(wanted) > 0 {
+				var authorName string
+				_ = h.db.QueryRow(c,
+					`SELECT COALESCE(NULLIF(full_name,''), email::text) FROM users WHERE id=$1`, uid,
+				).Scan(&authorName)
+				recipients := make([]notifications.Recipient, 0, len(wanted))
+				for id := range wanted {
+					id := id
+					recipients = append(recipients, notifications.Recipient{UserID: &id})
+				}
+				h.notify.Notify(c, notifications.Event{
+					Kind:       "task.comment",
+					TenantID:   tenantID,
+					Recipients: recipients,
+					Payload: map[string]any{
+						"Author":  authorName,
+						"Title":   taskTitle,
+						"Project": projectName,
+					},
+					Link:      "/projects/" + projectID.String(),
+					DedupeKey: "task.comment:" + cid.String(),
+				})
+			}
+		}
+	}
+
 	c.JSON(http.StatusCreated, gin.H{"id": cid})
 }

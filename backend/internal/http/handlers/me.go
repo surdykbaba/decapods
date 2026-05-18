@@ -327,6 +327,64 @@ func (h *Me) AddTaskComment(c *gin.Context) {
 		cid, id, uid, strings.TrimSpace(req.Body)); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()}); return
 	}
+
+	// Notify the people who care about this task — creator, assignee, and
+	// anyone who already commented — minus the author. This is the path an
+	// engineer hits when commenting from My Work → My tasks; without this
+	// the task creator (PM) gets no app/email ping.
+	if h.notify != nil {
+		var (
+			taskTitle, projectName string
+			createdBy, asg         *uuid.UUID
+		)
+		if err := h.db.QueryRow(c, `
+			SELECT t.title, p.name, t.created_by, t.assignee_id
+			FROM tasks t JOIN projects p ON p.id = t.project_id
+			WHERE t.id = $1`, id).Scan(&taskTitle, &projectName, &createdBy, &asg); err == nil {
+			wanted := map[uuid.UUID]bool{}
+			if createdBy != nil && *createdBy != uid {
+				wanted[*createdBy] = true
+			}
+			if asg != nil && *asg != uid {
+				wanted[*asg] = true
+			}
+			if crows, cerr := h.db.Query(c, `
+				SELECT DISTINCT author_id FROM task_comments
+				WHERE task_id = $1 AND author_id <> $2`, id, uid); cerr == nil {
+				defer crows.Close()
+				for crows.Next() {
+					var aid uuid.UUID
+					if crows.Scan(&aid) == nil {
+						wanted[aid] = true
+					}
+				}
+			}
+			if len(wanted) > 0 {
+				var authorName string
+				_ = h.db.QueryRow(c,
+					`SELECT COALESCE(NULLIF(full_name,''), email::text) FROM users WHERE id=$1`, uid,
+				).Scan(&authorName)
+				recipients := make([]notifications.Recipient, 0, len(wanted))
+				for rid := range wanted {
+					rid := rid
+					recipients = append(recipients, notifications.Recipient{UserID: &rid})
+				}
+				h.notify.Notify(c, notifications.Event{
+					Kind:       "task.comment",
+					TenantID:   tid,
+					Recipients: recipients,
+					Payload: map[string]any{
+						"Author":  authorName,
+						"Title":   taskTitle,
+						"Project": projectName,
+					},
+					Link:      "/projects/" + projID.String(),
+					DedupeKey: "task.comment:" + cid.String(),
+				})
+			}
+		}
+	}
+
 	c.JSON(201, gin.H{"id": cid})
 }
 

@@ -851,9 +851,14 @@ function CheckinEditor({
   // attachments only. We treat any existing focus_note OR yesterday_note
   // on today's row as "story already captured".
   const storyAlreadyCaptured = isToday && !!(row.focus_note || row.yesterday_note);
-  // Time-of-day-aware phrasing. Only swap labels when filling out today's
-  // slot — historical back-fills keep the neutral "that day" framing below.
-  const phrasing = checkinPhrasing();
+  // Time-of-day- AND weekday-aware phrasing. For today's check-in we use
+  // the real clock. For a back-fill of a past day we anchor to that day's
+  // morning so the recap/plan framing matches the date being filled —
+  // back-filling a Monday correctly asks "Last week — how did it go?"
+  // instead of a misleading static "Yesterday — what shipped".
+  const phrasing = checkinPhrasing(
+    isToday ? new Date() : new Date(row.day + "T09:00:00"),
+  );
   const [step, setStep] = useState<WizardStep>(0);
   const [mood, setMood] = useState(row.mood ?? "");
   // The "Yesterday" textarea starts auto-filled from the user's most recent
@@ -1086,7 +1091,7 @@ function CheckinEditor({
             <div className="space-y-5">
               <div>
                 <div className="text-sm font-semibold text-text mb-1 flex items-center justify-between gap-2">
-                  <span>{isToday ? phrasing.recapLabel : "Yesterday — what shipped"}</span>
+                  <span>{phrasing.recapLabel}</span>
                   {prefilledFromPrior && (
                     <span
                       className="inline-flex items-center gap-1 text-[10.5px] font-semibold text-accent"
@@ -1109,7 +1114,7 @@ function CheckinEditor({
                   onChange={(e) => { setYesterday(e.target.value); if (prefilledFromPrior) setPrefilledFromPrior(false); }}
                   rows={3}
                   className="input w-full resize-none"
-                  placeholder={isToday ? phrasing.recapPlaceholder : "What did you finish, hand off, or get stuck on?"}
+                  placeholder={phrasing.recapPlaceholder}
                   autoFocus
                 />
                 <div className="text-[10.5px] text-muted/80 mt-1 text-right">{yesterday.trim().length} chars</div>
@@ -1117,7 +1122,7 @@ function CheckinEditor({
 
               <div>
                 <div className="text-sm font-semibold text-text mb-1 flex items-center justify-between gap-2">
-                  <span>{isToday ? phrasing.planLabel : "That day — what you were on"}</span>
+                  <span>{phrasing.planLabel}</span>
                   {/* Smart-fill — only when today's morning slot is being
                       filled and the field is empty. Drafts a bulleted list
                       of the user's open priorities so the wizard never
@@ -1141,7 +1146,7 @@ function CheckinEditor({
                   placeholder={
                     tone === "rough"
                       ? "Even one small thing counts — what's the first achievable next move?"
-                      : (isToday ? phrasing.planPlaceholder : "One or two things you were on.")
+                      : phrasing.planPlaceholder
                   }
                 />
                 <div className="text-[10.5px] text-muted/80 mt-1 text-right">{focus.trim().length} chars</div>
