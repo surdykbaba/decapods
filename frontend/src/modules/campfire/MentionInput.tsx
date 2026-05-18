@@ -5,7 +5,8 @@
 //
 // Designed to drop into existing composer forms with the same API as a normal
 // <textarea>. Pass `members` and we'll do the rest.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Smile } from "lucide-react";
 import { api } from "@/lib/api";
@@ -37,9 +38,16 @@ export function MentionInput({
   });
   const members = membersProp ?? dirData?.items ?? [];
   const ref = useRef<HTMLTextAreaElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [openAt, setOpenAt] = useState<number | null>(null);
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
+  // Fixed-viewport coordinates for the suggestion menu. The old absolute
+  // dropdown was clipped + stacked behind sibling post cards (an ancestor
+  // had overflow/stacking-context). Portalling to <body> with computed
+  // fixed coords — same pattern as EmojiPopover — makes it always land
+  // on top and stay clickable.
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number; width: number; flip: boolean } | null>(null);
 
   // Detect when the caret is inside a freshly typed "@something" run. We open
   // the picker, capture the start index, and watch the query update as the
@@ -136,6 +144,33 @@ export function MentionInput({
     });
   }
 
+  // Place the suggestion menu against the textarea's box. Recomputes
+  // while it's open, and on scroll/resize so it tracks the field. Flips
+  // above when there isn't room below.
+  const menuOpen = openAt !== null && filtered.length > 0;
+  const MENU_MAX_H = 280;
+  useLayoutEffect(() => {
+    if (!menuOpen || !ref.current) return;
+    function place() {
+      const r = ref.current!.getBoundingClientRect();
+      const below = window.innerHeight - r.bottom;
+      const flip = below < MENU_MAX_H && r.top > below;
+      setMenuPos({
+        top: flip ? r.top : r.bottom + 4,
+        left: r.left,
+        width: r.width,
+        flip,
+      });
+    }
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [menuOpen, query, filtered.length]);
+
   return (
     <div className="relative">
       <textarea
@@ -164,8 +199,18 @@ export function MentionInput({
         onClose={() => setEmojiOpen(false)}
         onPick={(s) => insertEmoji(s)}
       />
-      {openAt !== null && filtered.length > 0 && (
-        <div className="absolute z-30 left-2 top-full mt-1 bg-surface border border-border rounded-xl shadow-card overflow-hidden min-w-[240px]">
+      {menuOpen && menuPos && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[1000] bg-surface border border-border rounded-xl shadow-card overflow-y-auto"
+          style={{
+            top: menuPos.flip ? undefined : menuPos.top,
+            bottom: menuPos.flip ? window.innerHeight - menuPos.top + 4 : undefined,
+            left: menuPos.left,
+            width: Math.max(240, menuPos.width),
+            maxHeight: MENU_MAX_H,
+          }}
+        >
           {filtered.map((m, i) => (
             <button
               key={m.id}
@@ -185,7 +230,8 @@ export function MentionInput({
               </span>
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
