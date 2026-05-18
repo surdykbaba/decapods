@@ -16,7 +16,7 @@ import {
   Folder, ChevronRight, ChevronDown, ChevronUp, Search, Link as LinkIcon, Briefcase, LayoutGrid, Rows3,
   Sparkles, Bell, XCircle, Pencil, Smile,
   Mail as MailIcon, Paperclip, Reply, AtSign, Users as UsersIcon, AlertCircle,
-  RefreshCw, ExternalLink, Flag, Target, AlertOctagon, GripVertical, MessageCircle, TrendingUp,
+  RefreshCw, ExternalLink, Flag, Target, AlertOctagon, GripVertical, MessageCircle, TrendingUp, Flame,
 } from "lucide-react";
 
 type TaskRow = {
@@ -82,7 +82,7 @@ const STATUS_COLOR: Record<TaskRow["status"], string> = {
 };
 const PRIORITY_LABEL = ["", "Lowest", "Low", "Medium", "High", "Highest"];
 
-type Tab = "dashboard" | "tasks" | "inbox" | "checkins" | "profile";
+type Tab = "dashboard" | "tasks" | "inbox" | "checkins" | "profile" | "campfire";
 
 const VALID_TABS: Tab[] = ["dashboard", "tasks", "inbox", "checkins", "profile"];
 
@@ -191,11 +191,14 @@ export function MyWorkPage() {
     };
   }, [badgeData, profileData, mailData]);
 
-  const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; badge?: number; badgeTone?: "danger" | "warn" | "accent" }[] = [
+  // `href` entries are route links, not in-page tabs — used for Campfire,
+  // which is its own page but belongs in this nav for quick reach.
+  const tabs: { key: Tab; label: string; icon: React.ComponentType<any>; badge?: number; badgeTone?: "danger" | "warn" | "accent"; href?: string }[] = [
     { key: "dashboard", label: "Today",     icon: Zap,            badge: badges.dashboard, badgeTone: "danger" },
     { key: "tasks",     label: "My tasks",  icon: ListChecks,     badge: badges.tasks,     badgeTone: "danger" },
     { key: "inbox",     label: "Inbox",     icon: Inbox,          badge: badges.inbox,     badgeTone: "accent" },
     { key: "checkins",  label: "Check-ins", icon: Calendar,       badge: 0 },
+    { key: "campfire",  label: "Campfire",  icon: Flame,          badge: 0, href: "/campfire" },
     { key: "profile",   label: "Profile",   icon: Github,         badge: badges.profile,   badgeTone: "danger" },
   ];
 
@@ -228,20 +231,31 @@ export function MyWorkPage() {
             : tone === "danger" ? "bg-danger text-white"
             : tone === "warn"   ? "bg-warn   text-white"
             : "bg-accent text-white";
-          return (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-colors ${
-                active ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
-              }`}
-            >
+          const inner = (
+            <>
               <t.icon size={14} /> {t.label}
               {show && (
                 <span className={`min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold grid place-items-center ${chipBg}`}>
                   {(t.badge ?? 0) > 9 ? "9+" : t.badge}
                 </span>
               )}
+            </>
+          );
+          const cls = `inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold transition-colors ${
+            active ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+          }`;
+          // Route-link entries (Campfire) navigate away; in-page tabs flip
+          // the local tab state.
+          if (t.href) {
+            return (
+              <Link key={t.key} to={t.href} className={cls}>
+                {inner}
+              </Link>
+            );
+          }
+          return (
+            <button key={t.key} onClick={() => setTab(t.key)} className={cls}>
+              {inner}
             </button>
           );
         })}
