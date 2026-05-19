@@ -53,6 +53,7 @@ type Post = {
   body: string;
   meta: Record<string, any> | null;
   pinned: boolean;
+  audience?: "workspace" | "team";
   created_at: string;
   edited_at?: string | null;
   comment_count: number;
@@ -1142,6 +1143,10 @@ function PostComposer({
   const [title, setTitle] = useState(initialTitle ?? "");
   const [body, setBody] = useState(initialBody ?? "");
   const [pinned, setPinned] = useState(false);
+  // Audience — 'workspace' (all-hands, default) or 'team' (author's
+  // manager + direct reports + peers). Lets HR / legal / sensitive
+  // updates stay off the firm-wide feed.
+  const [audience, setAudience] = useState<"workspace" | "team">("workspace");
   // Poll-only state. Two options is the floor (a "poll" with one choice
   // is just a button) and six is the ceiling (longer than that and the
   // card stops being skim-readable).
@@ -1150,7 +1155,7 @@ function PostComposer({
 
   const create = useMutation({
     mutationFn: () => {
-      const payload: any = { kind, title: title.trim(), body: body.trim(), pinned };
+      const payload: any = { kind, title: title.trim(), body: body.trim(), pinned, audience };
       if (kind === "poll") {
         const opts = pollOptions.map((o) => o.trim()).filter(Boolean);
         payload.meta = { options: opts, multi: pollMulti };
@@ -1262,6 +1267,37 @@ function PostComposer({
             </div>
           )}
           {kind !== "poll" && <ComposerHints onChange={setBody} value={body} />}
+          <div>
+            <div className="text-[11px] font-semibold text-text mb-1.5">Who can see this</div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setAudience("workspace")}
+                className={`flex items-start gap-2 px-3 py-2.5 rounded-lg border text-left ${
+                  audience === "workspace" ? "border-accent bg-accent-soft" : "border-border hover:bg-bg/40"
+                }`}
+              >
+                <Globe size={15} className={audience === "workspace" ? "text-accent mt-0.5" : "text-muted mt-0.5"} />
+                <span>
+                  <span className={`block text-[12px] font-bold ${audience === "workspace" ? "text-accent" : "text-text"}`}>Everyone</span>
+                  <span className="block text-[10.5px] text-muted leading-tight">Whole workspace</span>
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAudience("team")}
+                className={`flex items-start gap-2 px-3 py-2.5 rounded-lg border text-left ${
+                  audience === "team" ? "border-accent bg-accent-soft" : "border-border hover:bg-bg/40"
+                }`}
+              >
+                <UsersIcon size={15} className={audience === "team" ? "text-accent mt-0.5" : "text-muted mt-0.5"} />
+                <span>
+                  <span className={`block text-[12px] font-bold ${audience === "team" ? "text-accent" : "text-text"}`}>My team</span>
+                  <span className="block text-[10.5px] text-muted leading-tight">Manager, peers &amp; reports</span>
+                </span>
+              </button>
+            </div>
+          </div>
           {allowPin && (
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={pinned} onChange={(e) => setPinned(e.target.checked)} />
@@ -1437,6 +1473,14 @@ function TimelinePostCard({
           {post.edited_at && (
             <span className="text-[10.5px] text-muted italic" title={`Edited ${fullDateTime(post.edited_at)}`}>(edited)</span>
           )}
+          {post.audience === "team" && (
+            <span
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-warn/15 text-warn"
+              title="Visible only to the author's manager, peers and direct reports"
+            >
+              <UsersIcon size={9} /> Team only
+            </span>
+          )}
           <div className="ml-auto flex items-center gap-1">
             {post.pinned && (
               <span className="inline-flex items-center gap-1 text-[10px] font-bold text-accent">
@@ -1477,11 +1521,11 @@ function TimelinePostCard({
                 className="input w-full text-sm font-bold"
               />
             )}
-            <textarea
+            <MentionInput
               value={draftBody}
-              onChange={(e) => setDraftBody(e.target.value)}
-              rows={Math.max(3, Math.min(10, draftBody.split("\n").length + 1))}
-              className="input w-full text-[13.5px] resize-none"
+              onChange={setDraftBody}
+              className="input w-full text-[13.5px]"
+              minRows={Math.max(3, Math.min(10, draftBody.split("\n").length + 1))}
               autoFocus
             />
             <div className="flex items-center justify-end gap-2">
@@ -1823,11 +1867,11 @@ function CommentRow({
         </div>
         {editing ? (
           <div className="mt-1">
-            <textarea
+            <MentionInput
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={setDraft}
               autoFocus
-              rows={2}
+              minRows={2}
               className="input text-[13px] min-h-[60px]"
             />
             <div className="mt-1.5 flex items-center justify-end gap-2">
@@ -2679,11 +2723,12 @@ function HelpComposer({ onClose, onCreated }: { onClose: () => void; onCreated: 
                 ✨ Use {smart.defaultUrgency === "blocking" ? "blocker" : kind} template →
               </button>
             </div>
-            <textarea
+            <MentionInput
               className="input min-h-[140px] text-[13px] font-mono"
-              placeholder="Context, links, what you've already tried…"
+              placeholder="Context, links, what you've already tried… @mention whoever can help"
               value={body}
-              onChange={(e) => setBody(e.target.value)}
+              onChange={setBody}
+              minRows={6}
             />
             <div className="flex items-center justify-between text-[10.5px] text-muted mt-1">
               <span>{body.length === 0 ? "Tip: the more context, the faster the response." : `${body.length} characters · markdown supported`}</span>

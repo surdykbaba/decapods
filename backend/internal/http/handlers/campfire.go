@@ -184,15 +184,35 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 	// pinned-first ordering because the user wants a pure chronological
 	// stream of one person, not the workspace's top posts.
 	authorFilter := strings.TrimSpace(c.Query("author_id"))
-	args := []any{tid, limit}
+	// $1=tenant, $2=limit, $3=viewer. The audience predicate uses $3
+	// to decide whether a 'team'-scoped post is visible: a team post
+	// is seen only by the author, the author's manager, the author's
+	// direct reports, and peers under the same manager. 'workspace'
+	// posts stay all-hands.
+	args := []any{tid, limit, uid}
 	q := `
 		SELECT p.id, p.author_id, COALESCE(u.full_name,''), COALESCE(u.email::text,''),
 		       COALESCE(u.avatar_url,''),
 		       p.kind, COALESCE(p.title,''), p.body, p.meta, p.pinned, p.created_at, p.edited_at,
+		       p.audience,
 		       (SELECT COUNT(*) FROM campfire_comments cc WHERE cc.post_id=p.id) AS comment_count
 		FROM campfire_posts p
 		LEFT JOIN users u ON u.id = p.author_id
-		WHERE p.tenant_id=$1`
+		WHERE p.tenant_id=$1
+		  AND (
+		    p.audience = 'workspace'
+		    OR p.author_id = $3
+		    OR EXISTS (
+		      SELECT 1 FROM users au
+		      WHERE au.id = p.author_id
+		        AND (
+		          au.manager_id = $3
+		          OR (SELECT vu.manager_id FROM users vu WHERE vu.id = $3) = au.id
+		          OR (au.manager_id IS NOT NULL
+		              AND au.manager_id = (SELECT vu.manager_id FROM users vu WHERE vu.id = $3))
+		        )
+		    )
+		  )`
 	if authorFilter != "" {
 		args = append(args, authorFilter)
 		q += " AND p.author_id = $" + strconv.Itoa(len(args)) + "::uuid"
@@ -219,17 +239,19 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 			pinned                                   bool
 			created                                  time.Time
 			edited                                   *time.Time
+			audience                                 string
 			// Postgres COUNT(*) is bigint; see the long note in ListRooms.
 			// Plain int silently drops the row on some pgx setups.
 			commentCount                             int64
 		)
 		if err := rows.Scan(&id, &authorID, &authorName, &authorEmail, &authorAvatar, &kind,
-			&title, &body, &meta, &pinned, &created, &edited, &commentCount); err == nil {
+			&title, &body, &meta, &pinned, &created, &edited, &audience, &commentCount); err == nil {
 			posts = append(posts, gin.H{
 				"id": id, "author_id": authorID, "author_name": authorName, "author_email": authorEmail,
 				"author_avatar_url": authorAvatar,
 				"kind": kind, "title": title, "body": body, "meta": meta,
 				"pinned": pinned, "created_at": created, "edited_at": edited,
+				"audience": audience,
 				"comment_count": commentCount,
 			})
 			postIDs = append(postIDs, id)
@@ -408,11 +430,12 @@ func (h *Campfire) CreatePost(c *gin.Context) {
 	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
 	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
 	var req struct {
-		Kind   string         `json:"kind"   binding:"required"`
-		Title  string         `json:"title"`
-		Body   string         `json:"body"   binding:"required,min=1"`
-		Meta   map[string]any `json:"meta"`
-		Pinned bool           `json:"pinned"`
+		Kind     string         `json:"kind"   binding:"required"`
+		Title    string         `json:"title"`
+		Body     string         `json:"body"   binding:"required,min=1"`
+		Meta     map[string]any `json:"meta"`
+		Pinned   bool           `json:"pinned"`
+		Audience string         `json:"audience"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -422,15 +445,26 @@ func (h *Campfire) CreatePost(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "invalid kind"})
 		return
 	}
+	// Audience defaults to all-hands. Only 'team' narrows it. An
+	// invalid value is rejected rather than silently widened so a
+	// client bug can't leak a meant-to-be-scoped post workspace-wide.
+	audience := strings.TrimSpace(req.Audience)
+	if audience == "" {
+		audience = "workspace"
+	}
+	if audience != "workspace" && audience != "team" {
+		c.JSON(400, gin.H{"error": "invalid audience"})
+		return
+	}
 	if req.Meta == nil {
 		req.Meta = map[string]any{}
 	}
 	var id uuid.UUID
 	if err := h.db.QueryRow(c.Request.Context(), `
-		INSERT INTO campfire_posts (tenant_id, author_id, kind, title, body, meta, pinned)
-		VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7) RETURNING id`,
+		INSERT INTO campfire_posts (tenant_id, author_id, kind, title, body, meta, pinned, audience)
+		VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7,$8) RETURNING id`,
 		tid, uid, req.Kind, strings.TrimSpace(req.Title), strings.TrimSpace(req.Body),
-		req.Meta, req.Pinned).Scan(&id); err != nil {
+		req.Meta, req.Pinned, audience).Scan(&id); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
