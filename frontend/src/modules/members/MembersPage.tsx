@@ -291,6 +291,20 @@ export function MembersPage() {
     onError: (e: Error) => toast.error("Could not reset", e.message),
   });
 
+  // Broadcast a "complete your personnel profile" reminder (bell + email)
+  // to every active member, 5-day deadline. Server de-dupes per tenant per
+  // day so a double-click won't double-send.
+  const remindProfiles = useMutation({
+    mutationFn: () =>
+      api<{ sent: number; deadline: string }>("/api/v1/personnel/remind-all", {
+        method: "POST",
+        body: JSON.stringify({ deadline_days: 5 }),
+      }),
+    onSuccess: (d) =>
+      toast.success("Reminder sent", `${d.sent} ${d.sent === 1 ? "person" : "people"} notified — deadline ${d.deadline}.`),
+    onError: (e: Error) => toast.error("Could not send reminder", e.message),
+  });
+
   return (
     <div className="space-y-5 max-w-7xl">
       {/* Page header — title, subtitle, and the primary CTA. Restored after
@@ -307,9 +321,23 @@ export function MembersPage() {
             <code className="text-accent">finance</code>.
           </p>
         </div>
-        <SmartButton variant="primary" onClick={() => setCreateOpen(true)} icon={<Plus size={14} />}>
-          Add member
-        </SmartButton>
+        <div className="flex items-center gap-2 flex-wrap">
+          <SmartButton
+            variant="outline"
+            onClick={() => {
+              if (confirm("Email every active member a reminder to complete their personnel profile (5-day deadline)?")) {
+                remindProfiles.mutate();
+              }
+            }}
+            loading={remindProfiles.isPending}
+            icon={<Mail size={14} />}
+          >
+            Remind all to complete profile
+          </SmartButton>
+          <SmartButton variant="primary" onClick={() => setCreateOpen(true)} icon={<Plus size={14} />}>
+            Add member
+          </SmartButton>
+        </div>
       </header>
 
       {/* Insight strip — top-of-page team health. Tiles are now clickable

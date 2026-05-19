@@ -8,6 +8,7 @@ import (
 
 	"github.com/decapods/pgdp/backend/internal/auth"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
+	"github.com/decapods/pgdp/backend/internal/notifications"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,10 +27,74 @@ import (
 // targetUser() resolves which it is and enforces the gate, so every
 // method below is a thin wrapper around the shared logic.
 type Personnel struct {
-	db *pgxpool.Pool
+	db     *pgxpool.Pool
+	notify *notifications.Engine
 }
 
 func NewPersonnel(db *pgxpool.Pool) *Personnel { return &Personnel{db: db} }
+
+// WithEngine attaches the notification engine so RemindAll can fan a
+// "complete your profile" email + bell out to the whole workspace.
+func (h *Personnel) WithEngine(e *notifications.Engine) *Personnel {
+	h.notify = e
+	return h
+}
+
+// RemindAll — HR broadcasts a "fill in your personnel profile" reminder
+// to every active member, with a deadline N days out (default 5). Fires
+// the personnel.profile_reminder event (immediate tier → bell + email,
+// still subject to each user's category prefs). Gated to HR/governance
+// in the router.
+func (h *Personnel) RemindAll(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	if h.notify == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "notifications engine unavailable"})
+		return
+	}
+	var req struct {
+		DeadlineDays int `json:"deadline_days"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	days := req.DeadlineDays
+	if days <= 0 || days > 60 {
+		days = 5
+	}
+	deadline := time.Now().UTC().AddDate(0, 0, days).Format("Mon 2 Jan 2006")
+
+	rows, err := h.db.Query(c, `
+		SELECT id FROM users
+		WHERE tenant_id=$1 AND deleted_at IS NULL AND status='active'`, tid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	recipients := []notifications.Recipient{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err == nil {
+			id := id
+			recipients = append(recipients, notifications.Recipient{UserID: &id})
+		}
+	}
+	if len(recipients) == 0 {
+		c.JSON(http.StatusOK, gin.H{"sent": 0})
+		return
+	}
+	h.notify.Notify(c.Request.Context(), notifications.Event{
+		Kind:       "personnel.profile_reminder",
+		TenantID:   tid,
+		Recipients: recipients,
+		Payload: map[string]any{
+			"Deadline": deadline,
+		},
+		// One reminder per tenant per day — re-clicking the button won't
+		// spam people who already got it this morning.
+		DedupeKey: "personnel.profile_reminder:" + tid.String() + ":" + time.Now().UTC().Format("2006-01-02"),
+		Link:      "/my-work?tab=profile",
+	})
+	c.JSON(http.StatusOK, gin.H{"sent": len(recipients), "deadline": deadline})
+}
 
 // targetUser returns the user id the request operates on. For /me/* routes
 // that's the caller. For /members/:id/* routes it's the path param, but

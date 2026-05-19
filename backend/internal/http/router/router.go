@@ -282,7 +282,8 @@ func New(d Deps) Built {
 	// (CV, NIN slip, ID card, certificates). /me/* edits your own; the
 	// /members/:id/* variants are HR-only (gate enforced inside the
 	// handler via workforce:write / governance:write).
-	personnel := handlers.NewPersonnel(d.DB)
+	personnel := handlers.NewPersonnel(d.DB).WithEngine(earlyEngine)
+	authed.POST("/personnel/remind-all",                mw.RequirePermission("workforce:write"), personnel.RemindAll)
 	authed.GET("/me/personnel",                         personnel.Get)
 	authed.PUT("/me/personnel",                         personnel.Put)
 	authed.POST("/me/personnel/documents",              personnel.UploadDocument)
