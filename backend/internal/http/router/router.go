@@ -453,6 +453,10 @@ func New(d Deps) Built {
 	// Poll voting — toggles the caller's vote on a single option. The
 	// handler enforces single-vs-multi from the post's meta.
 	authed.POST("/campfire/posts/:id/vote", cf.VotePoll)
+	// Read receipts — SPA fires /seen on render of an announcement;
+	// /readers backs the "Seen by N" hover list.
+	authed.POST("/campfire/posts/:id/seen",    cf.MarkPostRead)
+	authed.GET("/campfire/posts/:id/readers",  cf.PostReaders)
 
 	authed.POST("/campfire/react/:kind/:id", cf.ToggleReaction)
 

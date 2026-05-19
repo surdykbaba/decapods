@@ -54,6 +54,9 @@ type Post = {
   meta: Record<string, any> | null;
   pinned: boolean;
   audience?: "workspace" | "team";
+  seen_count?: number;
+  seen_by_me?: boolean;
+  audience_size?: number;
   created_at: string;
   edited_at?: string | null;
   comment_count: number;
@@ -1561,10 +1564,84 @@ function TimelinePostCard({
           >
             <MessageCircle size={11} /> {post.comment_count}
           </button>
+          {post.kind === "announcement" && <SeenReceipt post={post} />}
         </footer>
         {showComments && <CommentsThread postId={post.id} />}
       </div>
     </article>
+  );
+}
+
+// SeenReceipt — "Seen by N / M" affordance on announcement cards.
+// Fires a read receipt once when the card first renders for the
+// caller, then shows the tally. Clicking opens a lazy-loaded list of
+// who has actually read it (newest first) so a CEO can tell whether an
+// announcement landed instead of hoping people scrolled past it.
+function SeenReceipt({ post }: { post: Post }) {
+  const { user } = useAuth();
+  const [open, setOpen] = useState(false);
+  // Optimistic local bump so the author/reader sees their own view
+  // reflected immediately without waiting for the 20s feed refetch.
+  const firedRef = useRef(false);
+  const [localSeen, setLocalSeen] = useState(false);
+
+  useEffect(() => {
+    if (firedRef.current) return;
+    firedRef.current = true;
+    if (post.seen_by_me) return;
+    api(`/api/v1/campfire/posts/${post.id}/seen`, { method: "POST" })
+      .then(() => setLocalSeen(true))
+      .catch(() => { /* receipts are best-effort */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [post.id]);
+
+  const base = post.seen_count ?? 0;
+  const count = base + (!post.seen_by_me && localSeen ? 1 : 0);
+  const denom = post.audience_size;
+
+  const { data: readers, isLoading } = useQuery<{ items: { id: string; name: string; email: string; avatar_url: string; seen_at: string }[] }>({
+    queryKey: ["campfire", "post-readers", post.id],
+    queryFn: () => api(`/api/v1/campfire/posts/${post.id}/readers`),
+    enabled: open,
+    staleTime: 30_000,
+  });
+
+  return (
+    <div className="relative ml-auto">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-muted hover:text-text rounded-full hover:bg-bg/40 transition-colors"
+        title="Who has seen this announcement"
+      >
+        <CheckCircle size={11} className={count > 0 ? "text-success" : ""} />
+        Seen by {count}{denom ? ` / ${denom}` : ""}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 bottom-full mb-1.5 z-40 w-64 max-h-72 overflow-auto bg-surface border border-border rounded-xl shadow-card p-2">
+            <div className="text-[10.5px] uppercase tracking-wider font-bold text-muted px-1.5 pb-1.5">
+              Seen by {count}{denom ? ` of ${denom}` : ""}
+            </div>
+            {isLoading && <div className="text-[11.5px] text-muted px-1.5 py-2">Loading…</div>}
+            {!isLoading && (readers?.items?.length ?? 0) === 0 && (
+              <div className="text-[11.5px] text-muted px-1.5 py-2">No one has seen this yet.</div>
+            )}
+            <ul className="space-y-0.5">
+              {(readers?.items ?? []).map((r) => (
+                <li key={r.id} className="flex items-center gap-2 px-1.5 py-1 rounded-lg hover:bg-bg/40">
+                  <Avatar name={r.name} email={r.email} src={r.avatar_url} size={22} />
+                  <span className="text-[12px] text-text truncate flex-1">
+                    {r.name || r.email}{r.id === user?.id ? " (you)" : ""}
+                  </span>
+                  <span className="text-[10px] text-muted shrink-0">{relativeTime(r.seen_at)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 

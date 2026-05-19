@@ -332,7 +332,120 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 		}
 	}
 
+	// Read-receipt hydration. One round trip for the page: per-post
+	// reader count + whether the caller has seen it. The UI only shows
+	// this for announcement-kind posts, but hydrating all of them keeps
+	// the query simple and the payload is two small ints per post.
+	if len(postIDs) > 0 {
+		seenCount := map[uuid.UUID]int64{}
+		mySeen := map[uuid.UUID]bool{}
+		rrows, err := h.db.Query(c.Request.Context(), `
+			SELECT post_id, COUNT(*)::bigint,
+			       BOOL_OR(user_id = $2) AS mine
+			FROM campfire_post_reads
+			WHERE post_id = ANY($1)
+			GROUP BY post_id`, postIDs, uid)
+		if err == nil {
+			defer rrows.Close()
+			for rrows.Next() {
+				var pid uuid.UUID
+				var n int64
+				var mine bool
+				if err := rrows.Scan(&pid, &n, &mine); err == nil {
+					seenCount[pid] = n
+					mySeen[pid] = mine
+				}
+			}
+		}
+		// Denominator for workspace announcements: active members in
+		// the tenant. Team-scoped posts don't get a denominator (the
+		// audience set is dynamic) — the UI just shows the raw count.
+		var activeMembers int64
+		_ = h.db.QueryRow(c.Request.Context(),
+			`SELECT COUNT(*)::bigint FROM users
+			 WHERE tenant_id=$1 AND deleted_at IS NULL AND status='active'`,
+			tid).Scan(&activeMembers)
+		for _, p := range posts {
+			id := p["id"].(uuid.UUID)
+			p["seen_count"] = seenCount[id]
+			p["seen_by_me"] = mySeen[id]
+			if p["audience"] == "workspace" {
+				p["audience_size"] = activeMembers
+			}
+		}
+	}
+
 	c.JSON(200, gin.H{"items": posts})
+}
+
+// MarkPostRead records that the caller has seen a post. Idempotent
+// (PK upsert) so the SPA can fire it freely on render. Only the
+// announcement card actually calls it today, but the endpoint is
+// kind-agnostic.
+func (h *Campfire) MarkPostRead(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	postID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	// Confirm the post exists in this tenant before writing a receipt
+	// so a guessed id can't seed rows for another workspace's post.
+	var exists bool
+	if err := h.db.QueryRow(c.Request.Context(),
+		`SELECT EXISTS(SELECT 1 FROM campfire_posts WHERE id=$1 AND tenant_id=$2)`,
+		postID, tid).Scan(&exists); err != nil || !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": "post not found"})
+		return
+	}
+	if _, err := h.db.Exec(c.Request.Context(), `
+		INSERT INTO campfire_post_reads (post_id, user_id)
+		VALUES ($1,$2)
+		ON CONFLICT (post_id, user_id) DO NOTHING`,
+		postID, uid); err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"ok": true})
+}
+
+// PostReaders returns the people who have seen a post, newest first.
+// Used by the "Seen by N" chip's hover/expand on announcements.
+func (h *Campfire) PostReaders(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	postID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(400, gin.H{"error": "bad id"})
+		return
+	}
+	rows, err := h.db.Query(c.Request.Context(), `
+		SELECT u.id, COALESCE(u.full_name,''), u.email::text,
+		       COALESCE(u.avatar_url,''), r.seen_at
+		FROM campfire_post_reads r
+		JOIN users u ON u.id = r.user_id
+		JOIN campfire_posts p ON p.id = r.post_id
+		WHERE r.post_id=$1 AND p.tenant_id=$2 AND u.deleted_at IS NULL
+		ORDER BY r.seen_at DESC
+		LIMIT 200`, postID, tid)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	out := []gin.H{}
+	for rows.Next() {
+		var id uuid.UUID
+		var name, email, avatar string
+		var seenAt time.Time
+		if err := rows.Scan(&id, &name, &email, &avatar, &seenAt); err == nil {
+			out = append(out, gin.H{
+				"id": id, "name": name, "email": email,
+				"avatar_url": avatar, "seen_at": seenAt,
+			})
+		}
+	}
+	c.JSON(200, gin.H{"items": out})
 }
 
 // VotePoll toggles the caller's vote on a poll option. The body specifies
