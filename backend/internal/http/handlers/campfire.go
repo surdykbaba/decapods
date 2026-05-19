@@ -220,14 +220,21 @@ func (h *Campfire) ListPosts(c *gin.Context) {
 		// A single-author timeline is a pure chronological stream.
 		orderBy = " ORDER BY p.created_at DESC LIMIT $2"
 	}
-	// Optional free-text search over title + body. Used by the
-	// superadmin-only search box on the pulse feed; the audience
-	// predicate above still applies so it can't surface a scoped post
-	// the caller couldn't otherwise see.
+	// Optional free-text search. Matches against the post (title +
+	// body) AND the author's name + email — so a superadmin typing
+	// "victo" finds Victoria's posts even though her name lives on
+	// the joined users row. Used by the superadmin-only search box
+	// on the pulse feed; the audience predicate above still applies
+	// so it can't surface a scoped post the caller couldn't see.
 	if sq := strings.TrimSpace(c.Query("q")); sq != "" {
 		args = append(args, "%"+sq+"%")
 		n := strconv.Itoa(len(args))
-		q += " AND (p.title ILIKE $" + n + " OR p.body ILIKE $" + n + ")"
+		q += " AND (" +
+			"p.title ILIKE $" + n + " OR " +
+			"p.body ILIKE $" + n + " OR " +
+			"u.full_name ILIKE $" + n + " OR " +
+			"u.email::text ILIKE $" + n +
+			")"
 	}
 	q += orderBy
 	rows, err := h.db.Query(c.Request.Context(), q, args...)
