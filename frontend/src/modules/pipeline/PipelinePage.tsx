@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { api, ApiError } from "@/lib/api";
@@ -96,6 +96,24 @@ type DropError = {
 
 type ViewMode = "kanban" | "list";
 
+// Saved views — the pipeline questions a BD lead actually opens this
+// page to ask. Predicates run on the already-tenant-scoped list.
+type PipelineView = { id: string; label: string; match: (o: Opp) => boolean };
+const PIPELINE_VIEWS: PipelineView[] = [
+  { id: "attention", label: "Needs attention", match: (o) => {
+      const s = signalOf(o).status;
+      return s !== "on_track" && s !== "ready";
+    } },
+  { id: "high_risk", label: "High risk",     match: (o) => o.risk_level === "high" && o.stage !== "closed" },
+  { id: "stalled",   label: "Stalled",       match: (o) => signalOf(o).status === "blocked" },
+  { id: "priority",  label: "High priority", match: (o) => o.priority <= 2 },
+  { id: "open",      label: "Open",          match: (o) => o.stage !== "closed" && o.stage !== "paid" },
+];
+
+const PL_VIEW = "pipeline_view";
+const PL_LEAD = "pipeline_lead";
+const PL_FILTER = "pipeline_filter";
+
 export function PipelinePage() {
   const qc = useQueryClient();
   const nav = useNavigate();
@@ -104,10 +122,19 @@ export function PipelinePage() {
     queryKey: ["opps"], queryFn: () => api("/api/v1/opportunities"),
   });
 
-  const [view, setView] = useState<ViewMode>("kanban");
+  const [view, setView] = useState<ViewMode>(
+    () => (typeof window !== "undefined" && (localStorage.getItem(PL_VIEW) as ViewMode)) || "kanban",
+  );
   const [query, setQuery] = useState("");
-  const [leadType, setLeadType] = useState("");
-  const [needsAttention, setNeedsAttention] = useState(false);
+  const [leadType, setLeadType] = useState(
+    () => (typeof window !== "undefined" && localStorage.getItem(PL_LEAD)) || "",
+  );
+  const [savedView, setSavedView] = useState<string>(
+    () => (typeof window !== "undefined" && localStorage.getItem(PL_FILTER)) || "all",
+  );
+  useEffect(() => { try { localStorage.setItem(PL_VIEW, view); } catch { /* private */ } }, [view]);
+  useEffect(() => { try { localStorage.setItem(PL_LEAD, leadType); } catch { /* private */ } }, [leadType]);
+  useEffect(() => { try { localStorage.setItem(PL_FILTER, savedView); } catch { /* private */ } }, [savedView]);
   const [errors, setErrors] = useState<DropError[]>([]);
   const [draggingId, setDraggingId] = useState<string | null>(null);
 
@@ -161,12 +188,16 @@ export function PipelinePage() {
   });
 
   const items = data?.items ?? [];
+  const savedViewMatch = useMemo(
+    () => PIPELINE_VIEWS.find((v) => v.id === savedView)?.match,
+    [savedView],
+  );
   const filtered = useMemo(() => items.filter((o) => {
     if (query && !`${o.title} ${o.client_name}`.toLowerCase().includes(query.toLowerCase())) return false;
     if (leadType && o.lead_type !== leadType) return false;
-    if (needsAttention && signalOf(o).status === "on_track") return false;
+    if (savedViewMatch && !savedViewMatch(o)) return false;
     return true;
-  }), [items, query, leadType, needsAttention]);
+  }), [items, query, leadType, savedViewMatch]);
 
   const attentionCount = items.filter((o) => {
     const s = signalOf(o).status;
@@ -257,12 +288,32 @@ export function PipelinePage() {
           ))}
         </Dropdown>
 
-        <button
-          className={`btn ${needsAttention ? "bg-warn/15 text-warn" : "btn-outline"}`}
-          onClick={() => setNeedsAttention((v) => !v)}
-        >
-          <Filter size={14} /> Filter {needsAttention && <span className="ml-1 text-[11px] bg-surface text-warn px-1 rounded">on</span>}
-        </button>
+        {/* Saved views — persisted, counted presets. Replaces the old
+            single "Filter" toggle with the questions people actually
+            ask of the pipeline. */}
+        <div className="flex items-center gap-1 border border-border bg-surface rounded-md p-1 text-xs flex-wrap">
+          <button
+            onClick={() => setSavedView("all")}
+            className={`px-2 py-1 rounded font-medium ${savedView === "all" ? "bg-accent text-white" : "text-muted hover:text-text"}`}
+          >
+            All ({items.length})
+          </button>
+          {PIPELINE_VIEWS.map((v) => {
+            const count = items.filter(v.match).length;
+            return (
+              <button
+                key={v.id}
+                onClick={() => setSavedView(v.id)}
+                className={`px-2 py-1 rounded font-medium inline-flex items-center gap-1 ${
+                  savedView === v.id ? "bg-accent text-white" : "text-muted hover:text-text"
+                }`}
+              >
+                {v.id === "attention" && <Filter size={11} />}
+                {v.label} ({count})
+              </button>
+            );
+          })}
+        </div>
 
         <div className="flex-1" />
 

@@ -75,26 +75,62 @@ function daysUntil(iso?: string | null): number | null {
 type View = "grid" | "list";
 type StatusFilter = "all" | "active" | "finished" | string;
 
+// Saved views — opinionated presets that answer the questions people
+// actually open this page to ask. `id` is a stable token persisted to
+// localStorage; `match` runs against the already-tenant-scoped list
+// (the API returns only projects the caller can see, so "mine" is
+// implicit for non-privileged roles).
+type SavedView = {
+  id: string;
+  label: string;
+  match: (p: Project) => boolean;
+};
+const SAVED_VIEWS: SavedView[] = [
+  { id: "active",  label: "Active",            match: (p) => ACTIVE_STATUSES.includes(p.status) },
+  { id: "at_risk", label: "At risk",           match: (p) => p.health === "red" || p.blockers > 0 || p.risk_score >= 60 },
+  { id: "closing", label: "Closing ≤30 days",  match: (p) => {
+      if (FINISHED_STATUSES.includes(p.status)) return false;
+      const d = daysUntil(p.end_date);
+      return d !== null && d >= 0 && d <= 30;
+    } },
+  { id: "finished", label: "Finished",         match: (p) => FINISHED_STATUSES.includes(p.status) },
+];
+
+const LS_FILTER = "projects_filter";
+const LS_VIEW = "projects_view";
+
 export function ProjectsPage() {
   const { data, isLoading } = useQuery<Project[]>({
     queryKey: ["projects"],
     queryFn: () => api<{ items: Project[] }>("/api/v1/projects").then((r) => r.items),
   });
 
-  const [view, setView] = useState<View>("list");
+  const [view, setView] = useState<View>(
+    () => (typeof window !== "undefined" && (localStorage.getItem(LS_VIEW) as View)) || "list",
+  );
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<StatusFilter>("all");
+  const [filter, setFilter] = useState<StatusFilter>(
+    () => (typeof window !== "undefined" && localStorage.getItem(LS_FILTER)) || "all",
+  );
+  // Persist the chosen view + filter so the page reopens the way the
+  // user left it — the whole point of "saved views".
+  useEffect(() => { try { localStorage.setItem(LS_FILTER, filter); } catch { /* private mode */ } }, [filter]);
+  useEffect(() => { try { localStorage.setItem(LS_VIEW, view); } catch { /* private mode */ } }, [view]);
+
+  const savedViewMatch = useMemo(
+    () => SAVED_VIEWS.find((v) => v.id === filter)?.match,
+    [filter],
+  );
 
   const items = data ?? [];
   const filtered = useMemo(() => {
     return items.filter((p) => {
       if (query && !`${p.name} ${p.code} ${p.client_name}`.toLowerCase().includes(query.toLowerCase())) return false;
       if (filter === "all") return true;
-      if (filter === "active") return ACTIVE_STATUSES.includes(p.status);
-      if (filter === "finished") return FINISHED_STATUSES.includes(p.status);
+      if (savedViewMatch) return savedViewMatch(p);
       return p.status === filter;
     });
-  }, [items, query, filter]);
+  }, [items, query, filter, savedViewMatch]);
 
   return (
     <div className="space-y-5">
@@ -122,15 +158,25 @@ export function ProjectsPage() {
           )}
         </div>
 
-        <div className="flex items-center gap-1 border border-border bg-surface rounded-md p-1 text-xs">
+        <div className="flex items-center gap-1 border border-border bg-surface rounded-md p-1 text-xs flex-wrap">
           <FilterPill on={filter === "all"} onClick={() => setFilter("all")}>All ({items.length})</FilterPill>
-          <FilterPill on={filter === "active"} onClick={() => setFilter("active")}>Active</FilterPill>
+          {/* Saved views — the questions people open this page to ask.
+              Count is the live size of each preset so a glance tells
+              you "3 at risk" before you even click. */}
+          {SAVED_VIEWS.map((v) => {
+            const count = items.filter(v.match).length;
+            return (
+              <FilterPill key={v.id} on={filter === v.id} onClick={() => setFilter(v.id)}>
+                {v.label} ({count})
+              </FilterPill>
+            );
+          })}
+          <span className="w-px self-stretch bg-border mx-0.5" />
           {Object.entries(STATUS_META).filter(([k]) => ACTIVE_STATUSES.includes(k)).map(([k, m]) => {
             const count = items.filter((p) => p.status === k).length;
             if (count === 0) return null;
             return <FilterPill key={k} on={filter === k} onClick={() => setFilter(k)}>{m.label} ({count})</FilterPill>;
           })}
-          <FilterPill on={filter === "finished"} onClick={() => setFilter("finished")}>Finished</FilterPill>
         </div>
 
         <div className="flex-1" />
