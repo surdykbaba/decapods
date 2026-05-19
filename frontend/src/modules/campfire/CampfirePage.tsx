@@ -444,10 +444,26 @@ const FEED_SCOPE_KEY = "campfire_feed_scope";
 function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
   const qc = useQueryClient();
   const { user } = useAuth();
+  // Server-side feed search is a superadmin-only affordance — a
+  // moderation/oversight tool, not a general feature. Everyone else
+  // uses the global command palette.
+  const isSuperAdmin = !!user?.roles?.some((r) => r === "super_admin");
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(isSuperAdmin ? search.trim() : ""), 220);
+    return () => clearTimeout(t);
+  }, [search, isSuperAdmin]);
+
   const { data, isLoading } = useQuery<{ items: Post[] }>({
-    queryKey: ["campfire", "posts"],
-    queryFn: () => api("/api/v1/campfire/posts"),
-    refetchInterval: 20_000,
+    queryKey: ["campfire", "posts", debouncedSearch],
+    queryFn: () =>
+      api(
+        debouncedSearch
+          ? `/api/v1/campfire/posts?limit=200&q=${encodeURIComponent(debouncedSearch)}`
+          : "/api/v1/campfire/posts",
+      ),
+    refetchInterval: debouncedSearch ? false : 20_000,
   });
   const allPosts = data?.items ?? [];
 
@@ -484,10 +500,16 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
 
   const posts = useMemo(
     () =>
-      effectiveScope === "team"
-        ? allPosts.filter((p) => !!p.author_id && teamIds.has(p.author_id))
-        : allPosts,
-    [allPosts, effectiveScope, teamIds],
+      // An active admin search spans everything the server returned —
+      // don't also narrow it by the client-side team scope, or a
+      // superadmin searching while on "My team" would silently miss
+      // hits outside their line.
+      debouncedSearch
+        ? allPosts
+        : effectiveScope === "team"
+          ? allPosts.filter((p) => !!p.author_id && teamIds.has(p.author_id))
+          : allPosts,
+    [allPosts, effectiveScope, teamIds, debouncedSearch],
   );
 
   // Smart-term dictionary for the post body. We fetch the tenant's
@@ -712,12 +734,42 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
             <UsersIcon size={12} /> My team
           </button>
         </div>
-        {effectiveScope === "team" && (
-          <span className="text-[11.5px] text-muted">
-            Showing your manager &amp; direct reports · {posts.length} post{posts.length === 1 ? "" : "s"}
-          </span>
-        )}
+        <div className="flex items-center gap-3 flex-wrap">
+          {effectiveScope === "team" && !debouncedSearch && (
+            <span className="text-[11.5px] text-muted">
+              Showing your manager &amp; direct reports · {posts.length} post{posts.length === 1 ? "" : "s"}
+            </span>
+          )}
+          {/* Superadmin-only feed search. Hits the server (ILIKE on
+              title + body, audience predicate still enforced) so it
+              spans the full history, not just the loaded page. */}
+          {isSuperAdmin && (
+            <div className="relative">
+              <SearchIcon size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted pointer-events-none" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search all posts…"
+                className="w-56 pl-7 pr-7 py-1.5 text-[12.5px] bg-surface border border-border rounded-full outline-none focus:border-accent transition-colors"
+              />
+              {search && (
+                <button
+                  onClick={() => setSearch("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted hover:text-text"
+                  aria-label="Clear search"
+                >
+                  <XIcon size={13} />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
       </div>
+      {isSuperAdmin && debouncedSearch && !isLoading && (
+        <div className="text-[11.5px] text-muted -mt-1">
+          {posts.length} result{posts.length === 1 ? "" : "s"} for “{debouncedSearch}” · admin search across all posts
+        </div>
+      )}
 
       {isLoading && <div className="text-sm text-muted py-8 text-center">Loading feed…</div>}
 
