@@ -23,7 +23,7 @@ import {
   Star, Smile, Frown, Meh, Zap, AlertCircle, HelpCircle, ShieldQuestion,
   Wrench, Briefcase, Hash, Plus, Loader2, CalendarDays, Calendar,
   Lock, Users as UsersIcon, X as XIcon, UserPlus as UserPlusIcon, Search as SearchIcon, Check,
-  ChevronLeft, ChevronDown, ChevronUp, ArrowUp, Trash2, Link as LinkIcon, Copy, Pencil, Info, Save,
+  ChevronLeft, ChevronDown, ChevronUp, ArrowUp, Trash2, Link as LinkIcon, Copy, Pencil, Info, Save, Globe,
   BarChart3, CheckCircle2 as CheckCircle, Megaphone as MegaphoneIcon,
 } from "lucide-react";
 
@@ -426,6 +426,17 @@ function PresenceBar() {
  * Pulse feed
  * ───────────────────────────────────────────────────────────────────────── */
 
+// Caller's reporting line — drives the "My team" feed scope. Mirrors
+// the shape ColleaguesPage consumes so the definition of "my team"
+// (manager ∪ direct reports ∪ self) stays consistent across the app.
+type FeedReportingLine = {
+  manager: { id: string } | null;
+  reports: { id: string }[];
+};
+
+type FeedScope = "all" | "team";
+const FEED_SCOPE_KEY = "campfire_feed_scope";
+
 function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
   const qc = useQueryClient();
   const { user } = useAuth();
@@ -434,7 +445,46 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
     queryFn: () => api("/api/v1/campfire/posts"),
     refetchInterval: 20_000,
   });
-  const posts = data?.items ?? [];
+  const allPosts = data?.items ?? [];
+
+  // Reporting line for the "My team" scope. Fetched eagerly so the
+  // chip count is honest on first paint; cheap + cached 5 min.
+  const { data: line } = useQuery<FeedReportingLine>({
+    queryKey: ["campfire", "reporting-line"],
+    queryFn: () => api("/api/v1/me/manager"),
+    staleTime: 5 * 60_000,
+  });
+  const teamIds = useMemo<Set<string>>(() => {
+    const s = new Set<string>();
+    if (user?.id) s.add(user.id);
+    if (line?.manager) s.add(line.manager.id);
+    (line?.reports ?? []).forEach((r) => s.add(r.id));
+    return s;
+  }, [line, user?.id]);
+  // A reporting line of just "me" isn't a team — disable the chip so
+  // the user doesn't filter the feed down to only their own posts and
+  // think it's broken.
+  const hasTeam = teamIds.size > 1;
+
+  const [scope, setScope] = useState<FeedScope>(() => {
+    if (typeof window === "undefined") return "all";
+    return (localStorage.getItem(FEED_SCOPE_KEY) as FeedScope) || "all";
+  });
+  function switchScope(next: FeedScope) {
+    setScope(next);
+    try { localStorage.setItem(FEED_SCOPE_KEY, next); } catch { /* private mode */ }
+  }
+  // If "My team" is the saved scope but the user has no line yet,
+  // transparently fall back to "all" so the feed isn't empty.
+  const effectiveScope: FeedScope = scope === "team" && !hasTeam ? "all" : scope;
+
+  const posts = useMemo(
+    () =>
+      effectiveScope === "team"
+        ? allPosts.filter((p) => !!p.author_id && teamIds.has(p.author_id))
+        : allPosts,
+    [allPosts, effectiveScope, teamIds],
+  );
 
   // Smart-term dictionary for the post body. We fetch the tenant's
   // projects so any mention of a project name or code in a post body
@@ -499,6 +549,15 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
   // silently shoving them in, so the reader keeps their place.
   const ackNewestRef = useRef<string | null>(null);
   const [newCount, setNewCount] = useState(0);
+  // Switching scope re-slices the list — re-baseline the "seen" marker
+  // to the new top so we don't false-flag the whole filtered set as
+  // "new posts".
+  useEffect(() => {
+    ackNewestRef.current = posts[0]?.id ?? null;
+    setNewCount(0);
+    setVisibleCount(PAGE);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveScope]);
   useEffect(() => {
     if (posts.length === 0) return;
     const newestId = posts[0].id;
@@ -624,13 +683,51 @@ function PulseFeed({ isAdmin }: { isAdmin: boolean }) {
         />
       )}
 
+      {/* Scope toggle — "Everyone" vs "My team" (the caller's manager,
+          their peers' manager-line and direct reports). Persisted so a
+          manager who lives in the team view stays there. Disabled with
+          a hint when no reporting line is set yet. */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="inline-flex items-center gap-0.5 p-0.5 bg-surface/70 border border-border rounded-full shadow-soft">
+          <button
+            onClick={() => switchScope("all")}
+            className={`inline-flex items-center gap-1.5 text-[12px] font-bold px-3 py-1.5 rounded-full transition-colors ${
+              effectiveScope === "all" ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+            }`}
+          >
+            <Globe size={12} /> Everyone
+          </button>
+          <button
+            onClick={() => hasTeam && switchScope("team")}
+            disabled={!hasTeam}
+            title={hasTeam ? "Only your manager and direct reports" : "No reporting line set yet — ask an admin to set your manager"}
+            className={`inline-flex items-center gap-1.5 text-[12px] font-bold px-3 py-1.5 rounded-full transition-colors ${
+              effectiveScope === "team" ? "bg-accent text-white shadow-soft" : "text-muted hover:text-text"
+            } ${!hasTeam ? "opacity-40 cursor-not-allowed" : ""}`}
+          >
+            <UsersIcon size={12} /> My team
+          </button>
+        </div>
+        {effectiveScope === "team" && (
+          <span className="text-[11.5px] text-muted">
+            Showing your manager &amp; direct reports · {posts.length} post{posts.length === 1 ? "" : "s"}
+          </span>
+        )}
+      </div>
+
       {isLoading && <div className="text-sm text-muted py-8 text-center">Loading feed…</div>}
 
       {posts.length === 0 && !isLoading && (
         <div className="bg-surface border border-border rounded-2xl p-10 text-center">
           <Megaphone className="mx-auto text-muted mb-3" size={28} />
-          <div className="text-sm font-semibold text-text">No posts yet</div>
-          <div className="text-xs text-muted mt-1">Be the first to share a win, an announcement, or just say hello.</div>
+          <div className="text-sm font-semibold text-text">
+            {effectiveScope === "team" ? "No posts from your team yet" : "No posts yet"}
+          </div>
+          <div className="text-xs text-muted mt-1">
+            {effectiveScope === "team"
+              ? <>Nobody on your team has posted. <button onClick={() => switchScope("all")} className="text-accent hover:underline font-semibold">See everyone →</button></>
+              : "Be the first to share a win, an announcement, or just say hello."}
+          </div>
         </div>
       )}
 
