@@ -408,6 +408,8 @@ func New(d Deps) Built {
 	authed.POST("/payroll/runs/:id/approve",       mw.RequirePermission("payroll:write"), pay.ApproveRun)
 	authed.POST("/payroll/runs/:id/pay",           mw.RequirePermission("payroll:write"), pay.PayRun)
 	authed.GET("/payroll/runs/:id/export",         mw.RequirePermission("payroll:read"),  pay.ExportRun)
+	authed.GET("/payroll/settings",                mw.RequirePermission("payroll:read"),  pay.GetSettings)
+	authed.PUT("/payroll/settings",                mw.RequirePermission("payroll:write"), pay.PutSettings)
 
 	gov := handlers.NewGovernance(d.DB)
 	authed.GET("/governance/policies", mw.RequirePermission("policy:read"), gov.ListPolicies)

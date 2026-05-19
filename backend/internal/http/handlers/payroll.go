@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/decapods/pgdp/backend/internal/audit"
 	mw "github.com/decapods/pgdp/backend/internal/http/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -35,6 +37,127 @@ type Payroll struct {
 
 func NewPayroll(db *pgxpool.Pool) *Payroll { return &Payroll{db: db} }
 
+/* ---------------- Tenant-configurable statutory rates ----------------
+
+Stored under tenants.settings.payroll_config (same JSONB pattern as
+work_policy / standup). Defaults are the standard Nigerian PITA /
+Finance-Act figures so a fresh tenant computes correctly with zero
+setup; an operator can tune bands + rates from Payroll → Settings
+without a deploy when the law changes or a state band differs. */
+
+type PayBand struct {
+	// Size in annual currency. A band with Size <= 0 is the unbounded
+	// top band ("everything above").
+	Size float64 `json:"size"`
+	Rate float64 `json:"rate"`
+}
+
+type PayrollConfig struct {
+	// Consolidated Relief Allowance = max(CRAFloor, gross*CRAMinPctOfGross)
+	//                                  + gross*CRAGrossPct
+	CRAFloor         float64   `json:"cra_floor"`
+	CRAMinPctOfGross float64   `json:"cra_min_pct_of_gross"`
+	CRAGrossPct      float64   `json:"cra_gross_pct"`
+	PensionRate      float64   `json:"pension_rate"`
+	NHFRate          float64   `json:"nhf_rate"`
+	Bands            []PayBand `json:"bands"`
+}
+
+func DefaultPayrollConfig() PayrollConfig {
+	return PayrollConfig{
+		CRAFloor:         200_000,
+		CRAMinPctOfGross: 0.01,
+		CRAGrossPct:      0.20,
+		PensionRate:      0.08,
+		NHFRate:          0.025,
+		Bands: []PayBand{
+			{Size: 300_000, Rate: 0.07},
+			{Size: 300_000, Rate: 0.11},
+			{Size: 500_000, Rate: 0.15},
+			{Size: 500_000, Rate: 0.19},
+			{Size: 1_600_000, Rate: 0.21},
+			{Size: 0, Rate: 0.24}, // 0 = unbounded top band
+		},
+	}
+}
+
+func (cfg *PayrollConfig) normalize() {
+	d := DefaultPayrollConfig()
+	if cfg.CRAFloor < 0 {
+		cfg.CRAFloor = d.CRAFloor
+	}
+	if cfg.CRAMinPctOfGross < 0 || cfg.CRAMinPctOfGross > 1 {
+		cfg.CRAMinPctOfGross = d.CRAMinPctOfGross
+	}
+	if cfg.CRAGrossPct < 0 || cfg.CRAGrossPct > 1 {
+		cfg.CRAGrossPct = d.CRAGrossPct
+	}
+	if cfg.PensionRate < 0 || cfg.PensionRate > 1 {
+		cfg.PensionRate = d.PensionRate
+	}
+	if cfg.NHFRate < 0 || cfg.NHFRate > 1 {
+		cfg.NHFRate = d.NHFRate
+	}
+	// Reject a malformed/empty band table — fall back to the statutory
+	// default rather than silently taxing everyone at 0%.
+	clean := cfg.Bands[:0]
+	for _, b := range cfg.Bands {
+		if b.Rate < 0 || b.Rate > 1 {
+			continue
+		}
+		clean = append(clean, b)
+	}
+	if len(clean) == 0 {
+		cfg.Bands = d.Bands
+	} else {
+		cfg.Bands = clean
+	}
+}
+
+func LoadPayrollConfig(ctx context.Context, db *pgxpool.Pool, tid uuid.UUID) PayrollConfig {
+	out := DefaultPayrollConfig()
+	var raw []byte
+	if err := db.QueryRow(ctx, `SELECT settings FROM tenants WHERE id=$1`, tid).Scan(&raw); err != nil || len(raw) == 0 {
+		return out
+	}
+	var s map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return out
+	}
+	pc, ok := s["payroll_config"]
+	if !ok {
+		return out
+	}
+	_ = json.Unmarshal(pc, &out)
+	out.normalize()
+	return out
+}
+
+func (h *Payroll) GetSettings(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	c.JSON(http.StatusOK, LoadPayrollConfig(c.Request.Context(), h.db, tid))
+}
+
+func (h *Payroll) PutSettings(c *gin.Context) {
+	tid := c.MustGet(mw.CtxTenantID).(uuid.UUID)
+	uid := c.MustGet(mw.CtxUserID).(uuid.UUID)
+	var body PayrollConfig
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	body.normalize()
+	patch, _ := json.Marshal(map[string]any{"payroll_config": body})
+	if _, err := h.db.Exec(c, `
+		UPDATE tenants SET settings = COALESCE(settings,'{}'::jsonb) || $2::jsonb,
+		       updated_at = now() WHERE id = $1`, tid, patch); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	audit.WriteHTTP(c, h.db, c, tid, &uid, "settings.payroll_config_changed", "tenant", tid, body)
+	c.JSON(http.StatusOK, body)
+}
+
 /* ---------------- Nigerian statutory engine ---------------- */
 
 // payComputation is the full monthly breakdown for one employee.
@@ -55,7 +178,7 @@ type payComputation struct {
 // computePay runs the statutory math for ONE month. basic + allowances are
 // the full (non-prorated) monthly figures; unpaidDays/workingDays drive the
 // pro-ration. pensionOptIn / nhfOptIn come from employee_compensation.
-func computePay(basic float64, allowances map[string]float64, pensionOptIn, nhfOptIn bool, workingDays, unpaidDays int) payComputation {
+func computePay(basic float64, allowances map[string]float64, pensionOptIn, nhfOptIn bool, workingDays, unpaidDays int, cfg PayrollConfig) payComputation {
 	fullGross := basic
 	for _, v := range allowances {
 		fullGross += v
@@ -83,11 +206,11 @@ func computePay(basic float64, allowances map[string]float64, pensionOptIn, nhfO
 	}
 	pension := 0.0
 	if pensionOptIn {
-		pension = round2(pensionable * 0.08) // 8% employee contribution
+		pension = round2(pensionable * cfg.PensionRate) // default 8%
 	}
 	nhf := 0.0
 	if nhfOptIn {
-		nhf = round2(proBasic * 0.025) // 2.5% of basic
+		nhf = round2(proBasic * cfg.NHFRate) // default 2.5% of basic
 	}
 
 	// PAYE (PITA). Work annually, divide back to the month.
@@ -96,14 +219,12 @@ func computePay(basic float64, allowances map[string]float64, pensionOptIn, nhfO
 	annualNHF := nhf * 12
 	// Consolidated Relief Allowance: higher of ₦200,000 or 1% of gross,
 	// plus 20% of gross income.
-	craFloor := 200_000.0
-	onePct := annualGross * 0.01
-	cra := math.Max(craFloor, onePct) + annualGross*0.20
+	cra := math.Max(cfg.CRAFloor, annualGross*cfg.CRAMinPctOfGross) + annualGross*cfg.CRAGrossPct
 	taxable := annualGross - cra - annualPension - annualNHF
 	if taxable < 0 {
 		taxable = 0
 	}
-	annualPAYE := nigeriaPAYE(taxable)
+	annualPAYE := payeFor(taxable, cfg.Bands)
 	paye := round2(annualPAYE / 12)
 
 	deductions := round2(paye + pension + nhf)
@@ -122,27 +243,21 @@ func computePay(basic float64, allowances map[string]float64, pensionOptIn, nhfO
 	}
 }
 
-// nigeriaPAYE — progressive PITA bands on annual taxable income.
-func nigeriaPAYE(taxable float64) float64 {
-	bands := []struct {
-		size float64
-		rate float64
-	}{
-		{300_000, 0.07},
-		{300_000, 0.11},
-		{500_000, 0.15},
-		{500_000, 0.19},
-		{1_600_000, 0.21},
-		{math.MaxFloat64, 0.24},
-	}
+// payeFor — progressive tax over the configured bands on annual taxable
+// income. A band with size <= 0 is the unbounded top band.
+func payeFor(taxable float64, bands []PayBand) float64 {
 	tax := 0.0
 	rem := taxable
 	for _, b := range bands {
 		if rem <= 0 {
 			break
 		}
-		slice := math.Min(rem, b.size)
-		tax += slice * b.rate
+		size := b.Size
+		if size <= 0 {
+			size = math.MaxFloat64
+		}
+		slice := math.Min(rem, size)
+		tax += slice * b.Rate
 		rem -= slice
 	}
 	return round2(tax)
@@ -378,6 +493,7 @@ func (h *Payroll) GenerateRun(c *gin.Context) {
 		return
 	}
 	workDays := workingDaysInMonth(period)
+	cfg := LoadPayrollConfig(c.Request.Context(), h.db, tid)
 
 	rows, err := h.db.Query(c, `
 		SELECT u.id, COALESCE(u.full_name, u.email::text),
@@ -459,7 +575,7 @@ func (h *Payroll) GenerateRun(c *gin.Context) {
 			unpaid = workDays
 		}
 
-		pc := computePay(e.basic, e.allow, e.pension, e.nhf, workDays, unpaid)
+		pc := computePay(e.basic, e.allow, e.pension, e.nhf, workDays, unpaid, cfg)
 		flags := []string{}
 		if e.basic == 0 && len(e.allow) == 0 {
 			flags = append(flags, "no_salary")

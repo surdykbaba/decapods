@@ -57,7 +57,7 @@ function money(n: number, ccy = "NGN"): string {
 }
 
 export function PayrollPage() {
-  const [tab, setTab] = useState<"runs" | "comp">("runs");
+  const [tab, setTab] = useState<"runs" | "comp" | "settings">("runs");
   return (
     <div className="space-y-5 max-w-6xl">
       <header>
@@ -70,7 +70,7 @@ export function PayrollPage() {
       </header>
 
       <div className="flex gap-1 p-1 bg-surface border border-border rounded-full w-fit">
-        {(["runs", "comp"] as const).map((t) => (
+        {(["runs", "comp", "settings"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -78,12 +78,12 @@ export function PayrollPage() {
               tab === t ? "bg-accent text-white" : "text-muted hover:text-text"
             }`}
           >
-            {t === "runs" ? "Pay runs" : "Compensation"}
+            {t === "runs" ? "Pay runs" : t === "comp" ? "Compensation" : "Tax settings"}
           </button>
         ))}
       </div>
 
-      {tab === "runs" ? <RunsTab /> : <CompensationTab />}
+      {tab === "runs" ? <RunsTab /> : tab === "comp" ? <CompensationTab /> : <SettingsTab />}
     </div>
   );
 }
@@ -348,6 +348,130 @@ function CompensationTab() {
         })}
       </ul>
       {editing && <CompDialog comp={editing} onClose={() => setEditing(null)} />}
+    </div>
+  );
+}
+
+/* ---------------- Tax settings ---------------- */
+
+type PayBand = { size: number; rate: number };
+type PayrollConfig = {
+  cra_floor: number; cra_min_pct_of_gross: number; cra_gross_pct: number;
+  pension_rate: number; nhf_rate: number; bands: PayBand[];
+};
+
+function SettingsTab() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<PayrollConfig>({
+    queryKey: ["payroll", "settings"],
+    queryFn: () => api("/api/v1/payroll/settings"),
+  });
+  const [cfg, setCfg] = useState<PayrollConfig | null>(null);
+  const c = cfg ?? data ?? null;
+
+  const save = useMutation({
+    mutationFn: () => api("/api/v1/payroll/settings", { method: "PUT", body: JSON.stringify(c) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["payroll", "settings"] });
+      toast.success("Saved", "New runs will use these rates. Existing runs are unaffected.");
+      setCfg(null);
+    },
+    onError: (e: any) => toast.error("Couldn't save", e?.message),
+  });
+
+  if (isLoading || !c) return <div className="text-sm text-muted">Loading…</div>;
+  const patch = (p: Partial<PayrollConfig>) => setCfg({ ...c, ...p });
+  const setBand = (i: number, b: Partial<PayBand>) => {
+    const bands = c.bands.map((x, j) => (j === i ? { ...x, ...b } : x));
+    patch({ bands });
+  };
+  const pct = (v: number) => (v * 100).toString();
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <div className="bg-warn/5 border border-warn/30 rounded-xl px-4 py-2.5 text-[12.5px] text-text flex items-start gap-2">
+        <AlertTriangle size={14} className="text-warn shrink-0 mt-0.5" />
+        Defaults are the standard Nigerian PITA / Finance-Act figures. Only change these
+        if your tax tables differ — they apply to <strong>new</strong> pay runs only;
+        already-generated payslips keep their frozen numbers.
+      </div>
+
+      <section className="bg-surface border border-border rounded-2xl p-5 space-y-3">
+        <h3 className="text-[11px] uppercase tracking-wider font-bold text-muted">Reliefs &amp; statutory rates</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <label className="block">
+            <div className="text-[12px] font-semibold text-text mb-1">CRA floor (₦/yr)</div>
+            <input type="number" className="input w-full" value={c.cra_floor}
+              onChange={(e) => patch({ cra_floor: parseFloat(e.target.value) || 0 })} />
+          </label>
+          <label className="block">
+            <div className="text-[12px] font-semibold text-text mb-1">CRA min % of gross</div>
+            <input type="number" className="input w-full" value={pct(c.cra_min_pct_of_gross)}
+              onChange={(e) => patch({ cra_min_pct_of_gross: (parseFloat(e.target.value) || 0) / 100 })} />
+          </label>
+          <label className="block">
+            <div className="text-[12px] font-semibold text-text mb-1">CRA % of gross</div>
+            <input type="number" className="input w-full" value={pct(c.cra_gross_pct)}
+              onChange={(e) => patch({ cra_gross_pct: (parseFloat(e.target.value) || 0) / 100 })} />
+          </label>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <div className="text-[12px] font-semibold text-text mb-1">Pension %</div>
+              <input type="number" className="input w-full" value={pct(c.pension_rate)}
+                onChange={(e) => patch({ pension_rate: (parseFloat(e.target.value) || 0) / 100 })} />
+            </label>
+            <label className="block">
+              <div className="text-[12px] font-semibold text-text mb-1">NHF %</div>
+              <input type="number" className="input w-full" value={pct(c.nhf_rate)}
+                onChange={(e) => patch({ nhf_rate: (parseFloat(e.target.value) || 0) / 100 })} />
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section className="bg-surface border border-border rounded-2xl p-5 space-y-3">
+        <h3 className="text-[11px] uppercase tracking-wider font-bold text-muted">PAYE bands (annual, progressive)</h3>
+        <p className="text-[11px] text-muted">A band size of <strong>0</strong> is the unbounded top band — everything above.</p>
+        <div className="space-y-2">
+          {c.bands.map((b, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span className="text-[11px] text-muted w-12">#{i + 1}</span>
+              <label className="flex-1">
+                <div className="text-[10.5px] text-muted mb-0.5">Band size (₦/yr, 0 = top)</div>
+                <input type="number" className="input w-full" value={b.size}
+                  onChange={(e) => setBand(i, { size: parseFloat(e.target.value) || 0 })} />
+              </label>
+              <label className="w-28">
+                <div className="text-[10.5px] text-muted mb-0.5">Rate %</div>
+                <input type="number" className="input w-full" value={(b.rate * 100).toString()}
+                  onChange={(e) => setBand(i, { rate: (parseFloat(e.target.value) || 0) / 100 })} />
+              </label>
+              <button
+                onClick={() => patch({ bands: c.bands.filter((_, j) => j !== i) })}
+                className="text-muted hover:text-danger p-1.5 mt-4" title="Remove band"
+              >
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+          <button
+            onClick={() => patch({ bands: [...c.bands, { size: 0, rate: 0.24 }] })}
+            className="text-[12px] font-semibold text-accent hover:underline inline-flex items-center gap-1"
+          >
+            <Plus size={12} /> Add band
+          </button>
+        </div>
+      </section>
+
+      <div className="flex justify-end">
+        <button
+          onClick={() => save.mutate()}
+          disabled={save.isPending || !cfg}
+          className="inline-flex items-center gap-1.5 text-[13px] font-bold bg-accent text-white px-5 py-2.5 rounded-full hover:bg-accent/90 disabled:opacity-50"
+        >
+          <Save size={14} /> {cfg ? "Save tax settings" : "Saved"}
+        </button>
+      </div>
     </div>
   );
 }
