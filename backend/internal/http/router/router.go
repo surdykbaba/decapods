@@ -74,6 +74,12 @@ func New(d Deps) Built {
 
 	authed.GET("/me", auth.Me)
 
+	// Global search — one tenant-scoped, permission-aware endpoint
+	// behind the command palette (people, projects, opportunities,
+	// tasks, Campfire posts, legals).
+	search := handlers.NewSearch(d.DB)
+	authed.GET("/search", search.Search)
+
 	// Self-service MFA enrollment + admin enforcement toggle.
 	authed.POST("/me/mfa/begin",    auth.BeginMFAEnrollment)
 	authed.POST("/me/mfa/confirm",  auth.ConfirmMFAEnrollment)

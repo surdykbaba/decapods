@@ -5,21 +5,45 @@ import { api } from "@/lib/api";
 import {
   Search, X, ArrowRight, Briefcase, FolderKanban, LayoutDashboard,
   Settings, GitBranch, Wallet, ShieldCheck, Github, Users, FileSearch, Bell,
-  CornerDownLeft,
+  CornerDownLeft, CheckSquare, MessageSquare, Scale, Loader2,
 } from "lucide-react";
 
-type Opp = { id: string; title: string; stage: string; client_name: string; lead_type: string };
-type Proj = { id: string; code: string; name: string; status: string; client_name: string };
+// Server search hit — flat, typed; the palette groups + decorates it.
+type SearchHit = {
+  type: "person" | "project" | "opportunity" | "task" | "post" | "legal";
+  id: string;
+  title: string;
+  subtitle: string;
+  url: string;
+};
+
+type Group =
+  | "Quick actions" | "People" | "Projects" | "Opportunities"
+  | "Tasks" | "Campfire" | "Legals" | "Navigate";
 
 type Result = {
   id: string;
-  group: "Quick actions" | "Opportunities" | "Projects" | "Navigate";
+  group: Group;
   label: string;
   hint?: string;
   icon: React.ComponentType<any>;
   to?: string;
   onRun?: () => void;
 };
+
+const HIT_META: Record<SearchHit["type"], { group: Group; icon: React.ComponentType<any> }> = {
+  person:      { group: "People",        icon: Users },
+  project:     { group: "Projects",      icon: FolderKanban },
+  opportunity: { group: "Opportunities", icon: Briefcase },
+  task:        { group: "Tasks",         icon: CheckSquare },
+  post:        { group: "Campfire",      icon: MessageSquare },
+  legal:       { group: "Legals",        icon: Scale },
+};
+
+const GROUP_ORDER: Group[] = [
+  "Quick actions", "People", "Projects", "Opportunities",
+  "Tasks", "Campfire", "Legals", "Navigate",
+];
 
 const NAV_RESULTS: Result[] = [
   { id: "nav-dashboard", group: "Navigate", label: "Dashboard",  icon: LayoutDashboard, to: "/dashboard", hint: "Executive overview" },
@@ -42,51 +66,64 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
-  const { data: oppsData } = useQuery<{ items: Opp[] }>({
-    queryKey: ["opps"], queryFn: () => api("/api/v1/opportunities"), enabled: open,
-  });
-  const { data: projData } = useQuery<{ items: Proj[] }>({
-    queryKey: ["projects"], queryFn: () => api("/api/v1/projects"), enabled: open,
+  // Debounce the typed query so we hit /search at most ~5x/sec while
+  // the user types, not on every keystroke.
+  const [debounced, setDebounced] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(query.trim()), 180);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  const { data: searchData, isFetching } = useQuery<{ items: SearchHit[] }>({
+    queryKey: ["global-search", debounced],
+    queryFn: () => api(`/api/v1/search?q=${encodeURIComponent(debounced)}`),
+    enabled: open && debounced.length >= 2,
+    staleTime: 30_000,
   });
 
-  const all: Result[] = useMemo(() => {
-    const oppResults: Result[] = (oppsData?.items ?? []).map((o) => ({
-      id: `opp-${o.id}`,
-      group: "Opportunities" as const,
-      label: o.title,
-      hint: `${o.client_name || o.lead_type} · ${o.stage.replace(/_/g, " ")}`,
-      icon: Briefcase,
-      to: `/pipeline/${o.id}`,
-    }));
-    const projResults: Result[] = (projData?.items ?? []).map((p) => ({
-      id: `proj-${p.id}`,
-      group: "Projects" as const,
-      label: p.name,
-      hint: `${p.code} · ${p.client_name || ""} · ${p.status.replace(/_/g, " ")}`,
-      icon: FolderKanban,
-      to: `/projects/${p.id}`,
-    }));
+  // Static rows (quick actions + navigate) are always available and
+  // filtered locally; server hits come from /search.
+  const staticResults: Result[] = useMemo(() => {
     const quick: Result[] = [
-      { id: "qa-new-opp",  group: "Quick actions", label: "New opportunity", hint: "Open the wizard", icon: Briefcase,    to: "/pipeline/new" },
+      { id: "qa-new-opp", group: "Quick actions", label: "New opportunity", hint: "Open the wizard", icon: Briefcase, to: "/pipeline/new" },
     ];
-    return [...quick, ...oppResults, ...projResults, ...NAV_RESULTS];
-  }, [oppsData, projData]);
+    return [...quick, ...NAV_RESULTS];
+  }, []);
+
+  const serverResults: Result[] = useMemo(
+    () =>
+      (searchData?.items ?? []).map((h) => {
+        const meta = HIT_META[h.type];
+        return {
+          id: `${h.type}-${h.id}`,
+          group: meta.group,
+          label: h.title || "(untitled)",
+          hint: h.subtitle,
+          icon: meta.icon,
+          to: h.url,
+        };
+      }),
+    [searchData],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return all;
-    return all.filter((r) =>
-      r.label.toLowerCase().includes(q) || (r.hint ?? "").toLowerCase().includes(q)
-    );
-  }, [all, query]);
+    const staticFiltered = !q
+      ? staticResults
+      : staticResults.filter(
+          (r) => r.label.toLowerCase().includes(q) || (r.hint ?? "").toLowerCase().includes(q),
+        );
+    return [...staticFiltered, ...serverResults];
+  }, [staticResults, serverResults, query]);
 
-  // Group for rendering, preserving order: Quick actions → Opportunities → Projects → Navigate.
+  // Group for rendering in a fixed, sensible order.
   const grouped = useMemo(() => {
-    const groups: Record<Result["group"], Result[]> = {
-      "Quick actions": [], "Opportunities": [], "Projects": [], "Navigate": [],
-    };
-    filtered.forEach((r) => groups[r.group].push(r));
-    return (Object.entries(groups) as [Result["group"], Result[]][]).filter(([_, list]) => list.length > 0);
+    const groups = {} as Record<Group, Result[]>;
+    GROUP_ORDER.forEach((g) => { groups[g] = []; });
+    filtered.forEach((r) => { (groups[r.group] ||= []).push(r); });
+    return GROUP_ORDER
+      .map((g) => [g, groups[g]] as [Group, Result[]])
+      .filter(([, list]) => list.length > 0);
   }, [filtered]);
 
   // Reset highlight when filtered changes
@@ -142,13 +179,15 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
-          <Search size={18} className="text-muted shrink-0" />
+          {isFetching
+            ? <Loader2 size={18} className="text-accent shrink-0 animate-spin" />
+            : <Search size={18} className="text-muted shrink-0" />}
           <input
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Search opportunities, projects, settings…"
+            placeholder="Search people, projects, tasks, posts, legals…"
             className="flex-1 bg-transparent outline-none text-[15px] text-text placeholder:text-muted"
           />
           <kbd className="text-[11px] font-mono text-muted px-1.5 py-0.5 border border-border rounded">esc</kbd>
@@ -160,8 +199,21 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
         <div ref={listRef} className="overflow-auto max-h-[55vh]">
           {filtered.length === 0 ? (
             <div className="px-4 py-10 text-center">
-              <div className="text-sm font-semibold text-text">No matches</div>
-              <div className="text-xs text-muted mt-1">Try a project name, client, or page.</div>
+              {isFetching ? (
+                <div className="text-sm text-muted inline-flex items-center gap-2">
+                  <Loader2 size={14} className="animate-spin" /> Searching…
+                </div>
+              ) : debounced.length >= 2 ? (
+                <>
+                  <div className="text-sm font-semibold text-text">No matches for “{debounced}”</div>
+                  <div className="text-xs text-muted mt-1">Try a name, project code, task or post text.</div>
+                </>
+              ) : (
+                <>
+                  <div className="text-sm font-semibold text-text">Type to search</div>
+                  <div className="text-xs text-muted mt-1">People, projects, tasks, Campfire posts, legals — at least 2 characters.</div>
+                </>
+              )}
             </div>
           ) : (
             grouped.map(([group, list]) => (
