@@ -5,7 +5,7 @@ import {
   Sun, Moon, LogOut, ChevronDown,
   Handshake, UserCog, Folder, Plane,
   ShieldCheck, Menu, X, ClipboardCheck, Lock,
-  Smile, Scale, Target,
+  Smile, Scale, Target, Wallet,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useMemo, useState } from "react";
@@ -45,6 +45,7 @@ const navTop: NavItem[] = [
   // breakdown so the sidebar stays light.
   { section: "relationships", to: "/relationships", label: "Relationships", icon: Handshake },
   { section: "finance",      to: "/finance",      label: "Finance",      icon: Banknote },
+  { section: "payroll",      to: "/payroll",      label: "Payroll",      icon: Wallet },
   { section: "files",        to: "/files",        label: "Files & media", icon: Folder },
   // Legals — workspace statutory + compliance warehouse (NDAs, employee
   // contracts, vendor MSAs, client SOWs, policies). Governance roles only

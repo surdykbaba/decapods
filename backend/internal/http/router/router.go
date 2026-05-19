@@ -393,6 +393,22 @@ func New(d Deps) Built {
 	authed.POST("/finance/invoices/lookup-irn",  mw.RequirePermission("invoice:read"),  fin.LookupIRN)
 	authed.GET("/finance/invoices/:id/payments", mw.RequirePermission("invoice:read"),  fin.ListInvoicePayments)
 
+	// Payroll — HR/Finance only. payroll:read for viewing salary structure
+	// + runs + payslips; payroll:write for editing comp, opening/
+	// generating/approving/paying runs. Granted to finance, hr, hr_manager
+	// (+ super_admin's wildcard) in rbac.go; nav-gated via the "payroll"
+	// visibility section.
+	pay := handlers.NewPayroll(d.DB)
+	authed.GET("/payroll/compensation",            mw.RequirePermission("payroll:read"),  pay.ListCompensation)
+	authed.PUT("/payroll/compensation/:userId",    mw.RequirePermission("payroll:write"), pay.PutCompensation)
+	authed.GET("/payroll/runs",                    mw.RequirePermission("payroll:read"),  pay.ListRuns)
+	authed.POST("/payroll/runs",                   mw.RequirePermission("payroll:write"), pay.CreateRun)
+	authed.GET("/payroll/runs/:id",                mw.RequirePermission("payroll:read"),  pay.GetRun)
+	authed.POST("/payroll/runs/:id/generate",      mw.RequirePermission("payroll:write"), pay.GenerateRun)
+	authed.POST("/payroll/runs/:id/approve",       mw.RequirePermission("payroll:write"), pay.ApproveRun)
+	authed.POST("/payroll/runs/:id/pay",           mw.RequirePermission("payroll:write"), pay.PayRun)
+	authed.GET("/payroll/runs/:id/export",         mw.RequirePermission("payroll:read"),  pay.ExportRun)
+
 	gov := handlers.NewGovernance(d.DB)
 	authed.GET("/governance/policies", mw.RequirePermission("policy:read"), gov.ListPolicies)
 	authed.POST("/governance/policies", mw.RequirePermission("policy:write"), gov.UpsertPolicy)

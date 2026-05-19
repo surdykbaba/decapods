@@ -8,9 +8,9 @@ var DefaultRolePermissions = map[string][]string{
 	"super_admin":       {"*"},
 	"ceo":               {"*:read", "approval:write", "analytics:read", "okr:write"},
 	"coo":               {"*:read", "approval:write", "analytics:read", "okr:write"},
-	"finance":           {"finance:*", "project:read", "invoice:*", "payment:*", "analytics:read", "okr:read"},
-	"hr":                {"workforce:*", "user:read", "analytics:read", "okr:write"},
-	"hr_manager":        {"workforce:*", "user:*", "governance:write", "analytics:read", "approval:write", "okr:write"},
+	"finance":           {"finance:*", "project:read", "invoice:*", "payment:*", "analytics:read", "okr:read", "payroll:*"},
+	"hr":                {"workforce:*", "user:read", "analytics:read", "okr:write", "payroll:*"},
+	"hr_manager":        {"workforce:*", "user:*", "governance:write", "analytics:read", "approval:write", "okr:write", "payroll:*"},
 	"business_dev":      {"opportunity:*", "client:*", "project:read", "document:write", "okr:write"},
 	"delivery_manager":  {"project:*", "task:*", "milestone:*", "workforce:read", "risk:write", "document:write", "okr:write"},
 	// project_manager — full write on projects + tasks + milestones so they

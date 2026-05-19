@@ -22,6 +22,7 @@ import { ProjectFilesTab } from "@/modules/projects/ProjectFilesTab";
 import { WorkforcePage } from "@/modules/workforce/WorkforcePage";
 import { BurnoutPage } from "@/modules/workforce/BurnoutPage";
 import { FinancePage } from "@/modules/finance/FinancePage";
+import { PayrollPage } from "@/modules/payroll/PayrollPage";
 import { InvoicesPage } from "@/modules/finance/InvoicesPage";
 import { GovernancePoliciesPage } from "@/modules/governance/PoliciesPage";
 import { AuditPage } from "@/modules/governance/AuditPage";
@@ -106,6 +107,7 @@ export function App() {
         <Route path="/workforce" element={<WorkforcePage />} />
         <Route path="/workforce/burnout" element={<BurnoutPage />} />
         <Route path="/finance" element={<FinancePage />} />
+        <Route path="/payroll" element={<PayrollPage />} />
         <Route path="/finance/invoices" element={<InvoicesPage />} />
 
         {/* Unified Relationships hub — Stakeholders, Vendors and PR & Agents

@@ -37,6 +37,7 @@ var NavSections = []struct {
 	// keeps the row-level API gates working unchanged.
 	{"relationships", "Relationships"},
 	{"finance",       "Finance"},
+	{"payroll",       "Payroll"},
 	{"files",         "Files & media"},
 	{"leave",         "Leave"},
 	{"attendance",    "Attendance"},
@@ -71,6 +72,12 @@ var DefaultRoleVisibility = map[string][]string{
 	"vendors":      {"super_admin", "ceo", "coo", "delivery_manager", "finance", "compliance_officer"},
 	"agents":       {"super_admin", "ceo", "coo", "business_dev", "compliance_officer"},
 	"finance":      {"super_admin", "ceo", "coo", "finance", "auditor"},
+	// Payroll — salaries + statutory deductions. HR and Finance only,
+	// per product policy. super_admin retained so the workspace owner can
+	// always reach it. Deliberately excludes ceo/coo from the sidebar
+	// (their *:read still reaches the API, but payroll stays off-nav for
+	// them unless a tenant widens this via Settings → Role visibility).
+	"payroll":      {"super_admin", "finance", "hr", "hr_manager"},
 	"files":        {"*"}, // everyone — same default as my_work
 	"leave":        {"*"}, // everyone can request leave; visibility of others' is gated by handlers
 	"campfire":     {"*"}, // everyone — Campfire is the workspace social layer
