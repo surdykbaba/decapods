@@ -43,6 +43,7 @@ var NavSections = []struct {
 	{"attendance",    "Attendance"},
 	{"campfire",      "Campfire"},
 	{"legals",        "Legals"},
+	{"learning",      "Learning"},
 	{"okrs",          "OKRs"},
 	{"settings",      "Settings"},
 }
@@ -93,6 +94,11 @@ var DefaultRoleVisibility = map[string][]string{
 	// only by default; widen via Settings → Role visibility for teams that
 	// want every member to read policies and templates.
 	"legals":       {"super_admin", "ceo", "coo", "hr", "hr_manager", "compliance_officer", "finance", "auditor"},
+	// Learning — visible to everyone by default. It's a benefit, not a
+	// gated admin tool; even contractors should see the catalog. Admins
+	// can narrow this via Settings → Role visibility if a tenant has
+	// procurement constraints (e.g. enterprise seats limited to FTEs).
+	"learning":     {"*"},
 	// OKRs — open to anyone who can be a key-result owner. Mirrors the
 	// rbac.go matrix: every role with okr:read or okr:write. The handler
 	// gates writes (create/update KRs, log check-ins) separately, so
