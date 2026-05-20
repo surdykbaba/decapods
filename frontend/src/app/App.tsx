@@ -46,6 +46,7 @@ import { CampfireUserPage } from "@/modules/campfire/CampfireUserPage";
 import { CampfireJoinPage } from "@/modules/campfire/CampfireJoinPage";
 import { ColleaguesPage } from "@/modules/colleagues/ColleaguesPage";
 import { LegalsPage } from "@/modules/legals/LegalsPage";
+import { LearningPage } from "@/modules/learning/LearningPage";
 import { AttendancePage } from "@/modules/attendance/AttendancePage";
 import { ArchivedProjectsPage } from "@/modules/settings/ArchivedProjectsPage";
 import { VendorDetailPage } from "@/modules/vendors/VendorDetailPage";
@@ -91,6 +92,7 @@ export function App() {
         <Route path="/campfire/join/:token" element={<CampfireJoinPage />} />
         <Route path="/colleagues" element={<ColleaguesPage />} />
         <Route path="/legals" element={<LegalsPage />} />
+        <Route path="/learning" element={<LearningPage />} />
         <Route path="/attendance" element={<AttendancePage />} />
         <Route path="/pipeline" element={<PipelinePage />} />
         <Route path="/pipeline/new" element={<OpportunityWizard />} />

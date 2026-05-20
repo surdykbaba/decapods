@@ -186,6 +186,25 @@ func New(d Deps) Built {
 	authed.PATCH("/legals/:id",          mw.RequirePermission("governance:write"), legals.Update)
 	authed.DELETE("/legals/:id",         mw.RequirePermission("governance:write"), legals.Delete)
 
+	// Learning & development — curated catalog + paths + per-user
+	// assignments. Catalog is community-curated (anyone can add); path
+	// creation is admin-only (governance:write); assignments go
+	// through the handler's own manager-of-target gate.
+	learning := handlers.NewLearning(d.DB)
+	authed.GET("/learning/resources",                       learning.ListResources)
+	authed.POST("/learning/resources",                      learning.CreateResource)
+	authed.PATCH("/learning/resources/:id",                 learning.UpdateResource)
+	authed.DELETE("/learning/resources/:id",                learning.DeleteResource)
+	authed.GET("/learning/paths",                           learning.ListPaths)
+	authed.GET("/learning/paths/:id",                       learning.GetPath)
+	authed.POST("/learning/paths",                          mw.RequirePermission("governance:write"), learning.CreatePath)
+	authed.POST("/learning/paths/:id/items",                mw.RequirePermission("governance:write"), learning.AddPathItem)
+	authed.DELETE("/learning/paths/:id/items/:resourceID",  mw.RequirePermission("governance:write"), learning.RemovePathItem)
+	authed.POST("/learning/assignments",                    learning.Assign)
+	authed.PATCH("/learning/assignments/:id",               learning.UpdateAssignment)
+	authed.GET("/me/learning",                              learning.MyLearning)
+	authed.GET("/members/:id/learning",                     learning.ReportLearning)
+
 	huddle := handlers.NewHuddle(d.DB)
 	authed.GET("/me/huddle",  huddle.Get)
 	authed.POST("/me/huddle", huddle.Save)

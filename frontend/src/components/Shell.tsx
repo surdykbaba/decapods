@@ -5,7 +5,7 @@ import {
   Sun, Moon, LogOut, ChevronDown,
   Handshake, UserCog, Folder, Plane,
   ShieldCheck, Menu, X, ClipboardCheck, Lock,
-  Smile, Scale, Target, Wallet,
+  Smile, Scale, Target, Wallet, GraduationCap,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useEffect, useMemo, useState } from "react";
@@ -52,6 +52,11 @@ const navTop: NavItem[] = [
   // by default; widen via Settings → Role visibility if every member
   // should be able to read policy templates.
   { section: "legals",       to: "/legals",       label: "Legals",       icon: Scale },
+  // Learning — curated catalog of external courses (LinkedIn Learning,
+  // Coursera, Pluralsight, Udemy, YouTube) + internal paths. Managers
+  // assign; reports work through. Real provider-API tracking lands
+  // once we have enterprise credentials.
+  { section: "learning",     to: "/learning",     label: "Learning",     icon: GraduationCap },
   { section: "leave",        to: "/leave",        label: "Leave",        icon: Plane },
   { section: "attendance",   to: "/attendance",   label: "Attendance & check-ins", icon: ClipboardCheck },
   // Campfire intentionally lives in the top-bar as an animated flame badge —
